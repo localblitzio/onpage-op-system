@@ -1,30 +1,63 @@
-# Runtime data and generated reports
+# Allowlist repo.
+# This workspace contains full Windows app bundles, JREs, generated classes,
+# reports, databases, and binary backups. Track only project source/scripts.
+
+*
+
+!.gitignore
+!AGENTS.md
+!CLAUDE.md
+
+!cora_dashboard/
+!cora_dashboard/app.py
+!cora_dashboard/README.md
+!cora_dashboard/TEST_CASES.md
+!cora_dashboard/test_dashboard.py
+!cora_dashboard/start-dashboard.bat
+!cora_dashboard/static/
+!cora_dashboard/static/index.html
+!cora_dashboard/static/app.js
+!cora_dashboard/static/styles.css
+
+!package_api_overlay.py
+!repair_api_enabled_jar.ps1
+!diagnose_cora_api_launch.ps1
+!rebuild_api_from_source.ps1
+!rebuild_recompiled_jar_from_build.ps1
+!apply_desktop_ui_tweaks.ps1
+!setup_git_tracking.ps1
+!launch-cora-seo-tool.ps1
+
+!Cora SEO Software/
+!Cora SEO Software/src/
+!Cora SEO Software/src/cora/
+!Cora SEO Software/src/cora/Main.java
+!Cora SEO Software/src/cora/api/
+!Cora SEO Software/src/cora/api/**
+!Cora SEO Software/src/cora/util/
+!Cora SEO Software/src/cora/util/BatchRunner.java
+!Cora SEO Software/src/cora/app-style.css
+!Cora SEO Software/build/
+!Cora SEO Software/build/cora/
+!Cora SEO Software/build/cora/cora.fxml
+!Cora SEO Software/build/cora/app-style.css
+
+# Explicit generated/runtime exclusions inside allowed folders.
 cora_dashboard/data/
+cora_dashboard/__pycache__/
+**/__pycache__/
+*.pyc
 *.sqlite3
 *.sqlite3-*
 *.xlsx
 *.xls
 *.csv
 *.log
-
-# Java binaries and packaged apps
 *.class
 *.jar
 *.jar.*
-**/jre/
-**/modules/
-**/.install4j/
-
-# Backups and recovery artifacts
 *.bak*
 *.backup*
-*.tmp
 debug-cora*.bat
 debug-cora*.log
-
-# Local OS/editor files
-Thumbs.db
-.DS_Store
-.vscode/
-.idea/
 
