@@ -1,0 +1,228 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.control.Button?>
+<?import javafx.scene.control.CheckBox?>
+<?import javafx.scene.control.ChoiceBox?>
+<?import javafx.scene.control.Label?>
+<?import javafx.scene.control.ProgressBar?>
+<?import javafx.scene.control.SplitPane?>
+<?import javafx.scene.control.Tab?>
+<?import javafx.scene.control.TabPane?>
+<?import javafx.scene.control.TableColumn?>
+<?import javafx.scene.control.TableView?>
+<?import javafx.scene.control.TextArea?>
+<?import javafx.scene.control.TextField?>
+<?import javafx.scene.control.ToolBar?>
+<?import javafx.scene.image.ImageView?>
+<?import javafx.scene.layout.AnchorPane?>
+<?import javafx.scene.shape.Line?>
+<?import javafx.scene.text.Font?>
+<?import javafx.scene.web.WebView?>
+
+<AnchorPane id="mainPane" maxHeight="-Infinity" maxWidth="-Infinity" minHeight="-Infinity" minWidth="-Infinity" prefHeight="850.0" prefWidth="1899.0" xmlns="http://javafx.com/javafx/18" xmlns:fx="http://javafx.com/fxml/1" fx:controller="cora.MainController">
+   <children>
+      <ToolBar prefHeight="70.0" prefWidth="1079.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="0.0">
+        <items>
+            <ImageView id="networkConnection" fx:id="networkConnection" fitHeight="55.0" fitWidth="55.0" pickOnBounds="true" preserveRatio="true" />
+            <Button id="helpButton" fx:id="helpButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Docs" textAlignment="CENTER">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="supportButton" fx:id="supportButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Skype" textAlignment="CENTER">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="platformButton" fx:id="platformButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="75.0" text="Settings" textAlignment="CENTER" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+          <Button id="correlateFactorsButton" fx:id="correlateFactorsButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="75.0" text="Get Data" textAlignment="CENTER">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="stopButton" fx:id="stopButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Stop" textAlignment="CENTER" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="diff" fx:id="diff" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Diff">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="trends" fx:id="trends" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Trends">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="volatility" fx:id="volatility" mnemonicParsing="false" prefHeight="55.0" prefWidth="80.0" text="Volatility">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="updateReportButton" fx:id="updateReportButton" mnemonicParsing="false" prefHeight="55.0" prefWidth="80.0" text="Update Report" textAlignment="CENTER" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="batchButton" fx:id="batchButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Batch" textAlignment="CENTER" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="conButton" fx:id="conButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="75.0" text="Local Blitz" textAlignment="CENTER" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="updateButton" fx:id="updateButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Update">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Button id="urlButton" fx:id="urlButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="55.0" prefWidth="70.0" text="Page" textAlignment="CENTER" visible="false" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+            <Label text="# of Searches" />
+            <ChoiceBox id="numberOfSearches" fx:id="numberOfSearches" prefHeight="27.0" prefWidth="46.0" />
+            <Label text="          " />
+            <Label text="Profile" />
+            <ChoiceBox id="profileChoiceBox" fx:id="profileChoiceBox" prefHeight="27.0" prefWidth="224.0" />
+        </items>
+      </ToolBar>
+      <ToolBar prefHeight="40.0" prefWidth="1079.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="70.0">
+         <items>
+            <Button id="centerWindows" fx:id="centerWindows" mnemonicParsing="false" text="C" />
+            <ChoiceBox id="platform" fx:id="platform" prefWidth="150.0" />
+            <ChoiceBox id="searchEngine" fx:id="searchEngine" prefWidth="150.0" />
+            <ChoiceBox id="variationType" fx:id="variationType" prefWidth="150.0" />
+            <ChoiceBox id="countryChoiceBox" fx:id="countryChoiceBox" prefHeight="27.0" prefWidth="114.0" />
+            <TextField id="nearTextField" fx:id="nearTextField" promptText="City, State" />
+            <ChoiceBox id="languageChoiceBox" fx:id="languageChoiceBox" prefHeight="27.0" prefWidth="118.0" style="-fx-font-family: 'Helvetica', Arial, sans-serif;" />
+            <TextField id="searchInput" fx:id="searchInput" prefHeight="27.0" prefWidth="320.0" promptText="Search Terms" />
+            <Button id="searchButton" fx:id="searchButton" contentDisplay="BOTTOM" mnemonicParsing="false" prefHeight="24.0" prefWidth="55.0" text="Search" textAlignment="CENTER" wrapText="true">
+               <font>
+                  <Font size="10.0" />
+               </font>
+            </Button>
+         </items>
+      </ToolBar>
+      <ToolBar prefHeight="40.0" prefWidth="200.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="110.0">
+         <items>
+            <TextField id="latitude" fx:id="latitude" promptText="Latitude" />
+            <TextField id="longitude" fx:id="longitude" promptText="Longitude" />
+            <ChoiceBox id="locationChoiceBox" fx:id="locationChoiceBox" prefWidth="150.0" />
+            <Label id="resourcesX" fx:id="resourcesX" prefHeight="17.0" prefWidth="813.0" />
+         </items>
+      </ToolBar>
+      <SplitPane dividerPositions="0.3552978386926726" prefHeight="160.0" prefWidth="200.0" AnchorPane.bottomAnchor="0.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="150.0">
+        <items>
+          <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="306.0" prefWidth="135.0">
+               <children>
+                  <SplitPane dividerPositions="0.3179347826086957" orientation="VERTICAL" prefHeight="200.0" prefWidth="160.0" AnchorPane.bottomAnchor="0.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="0.0">
+                    <items>
+                      <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="100.0" prefWidth="160.0">
+                           <children>
+                              <Label layoutX="7.0" layoutY="6.0" text="Variant Keywords (You may edit before getting data)" />
+                              <TextArea id="matchWordTextArea" fx:id="matchWordTextArea" layoutY="23.0" prefHeight="163.0" prefWidth="645.0" AnchorPane.bottomAnchor="44.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="23.0" />
+                              <Label layoutX="14.0" layoutY="333.0" text="Deficit Strategy" AnchorPane.bottomAnchor="14.0" AnchorPane.leftAnchor="12.0" />
+                              <ChoiceBox id="newDeficitStrategy" fx:id="newDeficitStrategy" layoutX="124.0" layoutY="328.0" prefWidth="150.0" AnchorPane.bottomAnchor="9.0" AnchorPane.leftAnchor="124.0" />
+                              <CheckBox id="includePage1Average" fx:id="includePage1Average" layoutX="356.0" layoutY="333.0" mnemonicParsing="false" text="Page 1 Average" AnchorPane.bottomAnchor="13.0" AnchorPane.leftAnchor="356.0" />
+                              <CheckBox id="includeSharedAverage" fx:id="includeSharedAverage" layoutX="489.0" layoutY="334.0" mnemonicParsing="false" text="Shared Average" AnchorPane.bottomAnchor="12.0" AnchorPane.leftAnchor="489.0" />
+                              <Label layoutX="294.0" layoutY="334.0" text="Include" AnchorPane.bottomAnchor="13.0" AnchorPane.leftAnchor="294.0" />
+                           </children>
+                        </AnchorPane>
+                      <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="100.0" prefWidth="160.0">
+                           <children>
+                              <TableView id="searchResultTable" fx:id="searchResultTable" prefHeight="200.0" prefWidth="200.0" AnchorPane.bottomAnchor="80.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="0.0">
+                                <columns>
+                                    <TableColumn id="trackColumn" fx:id="trackColumn" prefWidth="55.0" text="Track" />
+                                    <TableColumn id="competitorColumn" fx:id="competitorColumn" prefWidth="75.0" text="Competitor" />
+                                  <TableColumn id="includeColumn" fx:id="includeColumn" prefWidth="55.0" text="Include" />
+                                  <TableColumn id="rankColumn" fx:id="rankColumn" prefWidth="60.0" text="Rank" />
+                                  <TableColumn id="urlColumn" fx:id="urlColumn" prefWidth="399.0" text="URL" />
+                                </columns>
+                              </TableView>
+                              <Label layoutX="34.0" layoutY="462.0" text="Force URL" AnchorPane.bottomAnchor="54.0" AnchorPane.leftAnchor="10.0" />
+                              <TextField id="forceUrlTextField" fx:id="forceUrlTextField" layoutX="40.0" layoutY="465.0" prefHeight="27.0" prefWidth="367.0" AnchorPane.bottomAnchor="48.0" AnchorPane.leftAnchor="80.0" />
+                              <Button id="forceButton" fx:id="forceButton" layoutX="455.0" layoutY="466.0" mnemonicParsing="false" text="Add to end of results" AnchorPane.bottomAnchor="48.0" AnchorPane.leftAnchor="455.0" />
+                              <Button id="replaceResultsButton" fx:id="replaceResultsButton" layoutX="609.0" layoutY="466.0" mnemonicParsing="false" text="+" visible="false" AnchorPane.bottomAnchor="5.0" AnchorPane.leftAnchor="609.0" />
+                              <Label layoutX="10.0" layoutY="432.0" text="Force HTML" AnchorPane.bottomAnchor="22.0" />
+                              <ChoiceBox id="forceHTMLChoiceBox" fx:id="forceHTMLChoiceBox" layoutX="80.0" layoutY="428.0" prefHeight="26.0" prefWidth="367.0" AnchorPane.bottomAnchor="17.0" />
+                              <Button id="forceHTMLButton" fx:id="forceHTMLButton" layoutX="455.0" layoutY="429.0" mnemonicParsing="false" prefHeight="26.0" prefWidth="129.0" text="Force HTML" AnchorPane.bottomAnchor="17.0" />
+                           </children></AnchorPane>
+                    </items>
+                  </SplitPane>
+               </children>
+            </AnchorPane>
+          <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="160.0" prefWidth="100.0">
+               <children>
+                  <TabPane id="searchTabPane" fx:id="searchTabPane" prefHeight="200.0" prefWidth="200.0" tabClosingPolicy="UNAVAILABLE" AnchorPane.bottomAnchor="0.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="0.0">
+                     <tabs>
+                        <Tab id="automationTab" fx:id="automationTab" text="Progress">
+                           <content>
+                              <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="180.0" prefWidth="200.0">
+                                 <children>
+                                    <AnchorPane id="searchPhase" layoutY="423.0" prefHeight="112.0" prefWidth="1217.0" AnchorPane.bottomAnchor="0.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0" AnchorPane.topAnchor="0.0">
+                                       <children>
+                                          <Button id="searchPhase" fx:id="searchPhase" alignment="TOP_LEFT" layoutX="22.0" layoutY="8.0" mnemonicParsing="false" prefHeight="95.0" prefWidth="130.0" text="Search Phase" AnchorPane.leftAnchor="22.0" AnchorPane.topAnchor="8.0" />
+                                          <Button id="fetchPhase" fx:id="fetchPhase" alignment="TOP_LEFT" layoutX="172.0" layoutY="8.0" mnemonicParsing="false" prefHeight="95.0" prefWidth="130.0" text="Fetch Phase" AnchorPane.leftAnchor="172.0" AnchorPane.topAnchor="8.0" />
+                                          <Button id="preprocessPhase" fx:id="preprocessPhase" alignment="TOP_LEFT" layoutX="322.0" layoutY="8.0" mnemonicParsing="false" prefHeight="95.0" prefWidth="130.0" text="Preprocess Phase" AnchorPane.leftAnchor="322.0" AnchorPane.topAnchor="8.0" />
+                                          <Button id="measurementPhase" fx:id="measurementPhase" alignment="TOP_LEFT" layoutX="469.0" layoutY="8.0" mnemonicParsing="false" prefHeight="95.0" prefWidth="130.0" text="Measurement Phase" AnchorPane.leftAnchor="469.0" AnchorPane.topAnchor="8.0" />
+                                          <Button id="reportPhase" fx:id="reportPhase" alignment="TOP_LEFT" layoutX="617.0" layoutY="8.0" mnemonicParsing="false" prefHeight="95.0" prefWidth="130.0" text="Report Phase" AnchorPane.leftAnchor="617.0" AnchorPane.topAnchor="8.0" />
+                                          <Button id="donePhase" fx:id="donePhase" alignment="TOP_LEFT" layoutX="766.0" layoutY="8.0" mnemonicParsing="false" prefHeight="95.0" prefWidth="130.0" text="Done" AnchorPane.leftAnchor="766.0" AnchorPane.topAnchor="8.0" />
+                                          <WebView id="logWebView" fx:id="logWebView" prefHeight="200.0" prefWidth="200.0" AnchorPane.bottomAnchor="40.0" AnchorPane.leftAnchor="4.0" AnchorPane.rightAnchor="4.0" AnchorPane.topAnchor="111.0" />
+                                          <ToolBar prefHeight="40.0" prefWidth="200.0" AnchorPane.bottomAnchor="0.0" AnchorPane.leftAnchor="0.0" AnchorPane.rightAnchor="0.0">
+                                             <items>
+                                                <ProgressBar id="progressBar" fx:id="progressBar" prefHeight="20.0" prefWidth="124.0" progress="0.0" />
+                                                <Label id="actionLabel" fx:id="actionLabel" prefHeight="14.0" prefWidth="554.0" textAlignment="RIGHT">
+                                                   <font>
+                                                      <Font size="11.0" />
+                                                   </font>
+                                                </Label>
+                                             </items>
+                                          </ToolBar>
+                                       </children>
+                                    </AnchorPane>
+                                 </children>
+                              </AnchorPane>
+                           </content>
+                        </Tab>
+                        <Tab id="diagnosticsTab" fx:id="diagnosticsTab" text="Diagnostics">
+                           <content>
+                              <AnchorPane minHeight="0.0" minWidth="0.0" prefHeight="180.0" prefWidth="200.0">
+                                 <children>
+                                    <Label layoutX="14.0" layoutY="25.0" text="Search Term" />
+                                    <Label layoutX="14.0" layoutY="62.0" text="Variant Keywords" />
+                                    <Label layoutX="14.0" layoutY="100.0" text="URL" />
+                                    <TextField id="diagnosticSearchTerm" fx:id="diagnosticSearchTerm" layoutX="136.0" layoutY="20.0" prefHeight="27.0" prefWidth="491.0" />
+                                    <TextField id="diagnosticVariants" fx:id="diagnosticVariants" layoutX="136.0" layoutY="57.0" prefHeight="27.0" prefWidth="353.0" />
+                                    <TextField id="diagnosticUrl" fx:id="diagnosticUrl" layoutX="136.0" layoutY="95.0" prefHeight="27.0" prefWidth="493.0" />
+                                    <Label layoutX="500.0" layoutY="62.0" text="Comma delimited" textFill="#f50606" />
+                                    <Button id="diagnosticEvaluate" fx:id="diagnosticEvaluate" layoutX="91.0" layoutY="166.0" mnemonicParsing="false" text="Evaluate" />
+                                    <ChoiceBox id="diagnosticFactor" fx:id="diagnosticFactor" layoutX="136.0" layoutY="132.0" prefHeight="27.0" prefWidth="401.0" />
+                                    <Label layoutX="14.0" layoutY="137.0" text="Factor" />
+                                    <Label layoutX="17.0" layoutY="233.0" text="Result" />
+                                    <TextField id="diagnosticResult" fx:id="diagnosticResult" layoutX="136.0" layoutY="228.0" />
+                                    <Line endX="520.0" layoutX="115.0" layoutY="213.0" startX="-100.0" stroke="#e1dede" AnchorPane.leftAnchor="14.5" AnchorPane.rightAnchor="14.5" />
+                                    <Label layoutX="17.0" layoutY="277.0" text="Details" />
+                                    <TextArea id="diagnosticDetails" fx:id="diagnosticDetails" layoutX="136.0" layoutY="270.0" prefHeight="242.0" prefWidth="493.0" AnchorPane.bottomAnchor="16.0" AnchorPane.leftAnchor="136.0" AnchorPane.rightAnchor="19.0" AnchorPane.topAnchor="270.0" />
+                                    <Button id="diagnosticPopulate" fx:id="diagnosticPopulate" layoutX="14.0" layoutY="166.0" mnemonicParsing="false" text="Populate" />
+                                 </children>
+                              </AnchorPane>
+                           </content>
+                        </Tab>
+                     </tabs>
+                  </TabPane>
+               </children>
+            </AnchorPane>
+        </items>
+      </SplitPane>
+   </children>
+</AnchorPane>

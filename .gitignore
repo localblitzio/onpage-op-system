@@ -1,0 +1,30 @@
+# Runtime data and generated reports
+cora_dashboard/data/
+*.sqlite3
+*.sqlite3-*
+*.xlsx
+*.xls
+*.csv
+*.log
+
+# Java binaries and packaged apps
+*.class
+*.jar
+*.jar.*
+**/jre/
+**/modules/
+**/.install4j/
+
+# Backups and recovery artifacts
+*.bak*
+*.backup*
+*.tmp
+debug-cora*.bat
+debug-cora*.log
+
+# Local OS/editor files
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+
