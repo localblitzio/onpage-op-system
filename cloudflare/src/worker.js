@@ -33,6 +33,16 @@ function json(data, status = 200) {
   });
 }
 
+function html(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store, max-age=0"
+    }
+  });
+}
+
 function text(data, status = 200) {
   return new Response(data, {
     status,
@@ -156,11 +166,15 @@ async function handleArtifactUpload(request, env) {
   return json({ ok: true, local_id: localId, artifact_type: artifactType, r2_key: r2Key, public_url: publicUrl, uploaded_at: uploadedAt });
 }
 
-async function handleArtifactStatus(env) {
+async function artifactStatusData(env) {
   const rows = await env.DB.prepare(
     "SELECT artifact_type, COUNT(*) AS artifact_count, SUM(file_size) AS total_bytes, MAX(uploaded_at) AS last_uploaded_at FROM report_artifacts GROUP BY artifact_type ORDER BY artifact_type"
   ).all();
-  return json({ ok: true, artifacts: rows.results || [] });
+  return rows.results || [];
+}
+
+async function handleArtifactStatus(env) {
+  return json({ ok: true, artifacts: await artifactStatusData(env) });
 }
 
 async function handleSyncPush(request, env) {
@@ -175,14 +189,200 @@ async function handleSyncPush(request, env) {
   return json({ ok: true, ...result });
 }
 
-async function handleStatus(env) {
+async function syncStatusData(env) {
   const rows = await env.DB.prepare(
     "SELECT table_name, SUM(row_count) AS rows_received, MAX(received_at) AS last_received_at FROM sync_batches GROUP BY table_name ORDER BY table_name"
   ).all();
-  const artifacts = await env.DB.prepare(
-    "SELECT artifact_type, COUNT(*) AS artifact_count, SUM(file_size) AS total_bytes, MAX(uploaded_at) AS last_uploaded_at FROM report_artifacts GROUP BY artifact_type ORDER BY artifact_type"
+  return { tables: rows.results || [], artifacts: await artifactStatusData(env) };
+}
+
+async function handleStatus(env) {
+  return json({ ok: true, ...(await syncStatusData(env)) });
+}
+
+async function countTable(env, table) {
+  const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first();
+  return Number(row?.count || 0);
+}
+
+async function handleDashboardData(request, env) {
+  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, artifacts, sync] = await Promise.all([
+    countTable(env, "profiles"),
+    countTable(env, "projects"),
+    countTable(env, "keywords"),
+    countTable(env, "runs"),
+    countTable(env, "share_reports"),
+    countTable(env, "ranking_snapshots"),
+    countTable(env, "ranking_optimization_targets"),
+    artifactStatusData(env),
+    syncStatusData(env)
+  ]);
+  const recentReports = await env.DB.prepare(
+    `SELECT sr.id, sr.token, sr.level, sr.title, sr.created_at,
+            r.keyword, r.target_url, r.target_domain, r.imported_at,
+            p.name AS project_name,
+            a.artifact_count, a.total_bytes, a.last_uploaded_at, a.cloud_url
+     FROM share_reports sr
+     LEFT JOIN runs r ON r.id = sr.run_id
+     LEFT JOIN projects p ON p.id = r.project_id
+     LEFT JOIN (
+       SELECT token,
+              COUNT(*) AS artifact_count,
+              SUM(file_size) AS total_bytes,
+              MAX(uploaded_at) AS last_uploaded_at,
+              MAX(CASE WHEN artifact_type = 'report_html' THEN public_url END) AS cloud_url
+       FROM report_artifacts
+       GROUP BY token
+     ) a ON a.token = sr.token
+     WHERE sr.revoked_at IS NULL
+     ORDER BY sr.created_at DESC, sr.id DESC
+     LIMIT 50`
   ).all();
-  return json({ ok: true, tables: rows.results || [], artifacts: artifacts.results || [] });
+  const clientRows = await env.DB.prepare(
+    `SELECT p.id, p.name, p.client, p.site_domain,
+            (SELECT COUNT(*) FROM keywords k WHERE k.project_id = p.id) AS keyword_count,
+            (SELECT COUNT(*) FROM runs r WHERE r.project_id = p.id) AS run_count,
+            (SELECT COUNT(*) FROM ranking_snapshots rs WHERE rs.project_id = p.id) AS snapshot_count,
+            (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.project_id = p.id) AS target_count
+     FROM projects p
+     ORDER BY p.updated_at DESC, p.id DESC
+     LIMIT 50`
+  ).all();
+  return json({
+    ok: true,
+    generated_at: new Date().toISOString(),
+    worker_url: new URL(request.url).origin,
+    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets },
+    artifacts,
+    sync,
+    reports: recentReports.results || [],
+    clients: clientRows.results || []
+  });
+}
+
+function cloudDashboardHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>On Page Optimization System</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --panel-soft: #1d2630;
+      --line: #303b47;
+      --text: #edf2f7;
+      --muted: #9aa8b8;
+      --accent: #4db6ac;
+      --accent-strong: #6ee7dc;
+      --danger: #ff7b72;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, Segoe UI, Arial, sans-serif; }
+    header { border-bottom: 1px solid var(--line); background: #111821; padding: 18px 22px; }
+    header h1 { margin: 0; font-size: 22px; letter-spacing: 0; }
+    header p { margin: 4px 0 0; color: var(--muted); }
+    main { padding: 18px 22px 32px; max-width: 1400px; margin: 0 auto; }
+    .grid { display: grid; gap: 12px; }
+    .cards { grid-template-columns: repeat(4, minmax(140px, 1fr)); margin-bottom: 16px; }
+    .card, section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+    .card { padding: 14px; }
+    .card strong { display: block; font-size: 26px; }
+    .card span, .muted { color: var(--muted); }
+    .sections { grid-template-columns: minmax(0, 1.2fr) minmax(320px, .8fr); align-items: start; }
+    section { overflow: hidden; }
+    .section-head { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 14px 14px 10px; border-bottom: 1px solid var(--line); }
+    h2 { font-size: 16px; margin: 0; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { color: var(--muted); font-size: 12px; font-weight: 600; background: var(--panel-soft); }
+    td a { color: var(--accent-strong); text-decoration: none; }
+    td a:hover { text-decoration: underline; }
+    .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 2px 7px; color: var(--muted); font-size: 12px; }
+    .ok { color: var(--accent-strong); }
+    .warn { color: var(--danger); }
+    .toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
+    button { background: var(--accent); border: 0; border-radius: 6px; color: #061312; cursor: pointer; font-weight: 700; padding: 8px 10px; }
+    button.secondary { background: var(--panel-soft); color: var(--accent-strong); border: 1px solid var(--line); }
+    .status-list { padding: 12px; display: grid; gap: 8px; }
+    .status-row { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+    .status-row:last-child { border-bottom: 0; padding-bottom: 0; }
+    .empty { padding: 18px; color: var(--muted); }
+    @media (max-width: 900px) { .cards, .sections { grid-template-columns: 1fr; } th:nth-child(3), td:nth-child(3) { display: none; } }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>On Page Optimization System</h1>
+    <p>Cloud dashboard backed by Cloudflare D1 and R2. Cora desktop automation still runs on the local Windows machine.</p>
+  </header>
+  <main>
+    <div id="app"><div class="empty">Loading cloud dashboard...</div></div>
+  </main>
+  <script>
+    const fmtNum = (value) => Number(value || 0).toLocaleString();
+    const fmtDate = (value) => value ? new Date(value).toLocaleString() : "";
+    const fmtBytes = (value) => {
+      let size = Number(value || 0);
+      const units = ["B", "KB", "MB", "GB"];
+      let i = 0;
+      while (size >= 1024 && i < units.length - 1) { size /= 1024; i += 1; }
+      return size.toLocaleString(undefined, { maximumFractionDigits: i ? 1 : 0 }) + " " + units[i];
+    };
+    const esc = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    const reportUrl = (token) => "/share/report/" + encodeURIComponent(token);
+    const downloadUrl = (token) => reportUrl(token) + "/download";
+    function render(data) {
+      const counts = data.counts || {};
+      const artifactBytes = (data.artifacts || []).reduce((sum, row) => sum + Number(row.total_bytes || 0), 0);
+      const artifactFiles = (data.artifacts || []).reduce((sum, row) => sum + Number(row.artifact_count || 0), 0);
+      const lastSync = (data.sync?.tables || []).map((row) => row.last_received_at).filter(Boolean).sort().pop();
+      const cards = [
+        ["Clients", counts.projects],
+        ["Keywords", counts.keywords],
+        ["Cora Runs", counts.runs],
+        ["Reports", counts.reports],
+        ["Ranking Snapshots", counts.ranking_snapshots],
+        ["Optimization Targets", counts.ranking_optimization_targets],
+        ["Cloud Files", artifactFiles],
+        ["R2 Storage", fmtBytes(artifactBytes)]
+      ].map(([label, value]) => '<div class="card"><strong>' + esc(typeof value === "number" ? fmtNum(value) : value) + '</strong><span>' + esc(label) + '</span></div>').join("");
+      const reports = (data.reports || []).map((report) => '<tr>'
+        + '<td><strong>' + esc(report.title || report.keyword || "Cora Report") + '</strong><br><span class="muted">' + esc(report.project_name || "") + '</span></td>'
+        + '<td>' + esc(report.level || "") + '</td>'
+        + '<td>' + esc(fmtDate(report.created_at)) + '</td>'
+        + '<td><span class="pill">' + esc(fmtNum(report.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(report.total_bytes || 0)) + '</span></td>'
+        + '<td><a href="' + reportUrl(report.token) + '" target="_blank" rel="noopener">Open</a><br><a href="' + downloadUrl(report.token) + '">XLSX</a></td>'
+        + '</tr>').join("");
+      const clients = (data.clients || []).map((client) => '<tr>'
+        + '<td><strong>' + esc(client.name || "") + '</strong><br><span class="muted">' + esc(client.site_domain || client.client || "") + '</span></td>'
+        + '<td>' + esc(fmtNum(client.keyword_count)) + '</td>'
+        + '<td>' + esc(fmtNum(client.run_count)) + '</td>'
+        + '<td>' + esc(fmtNum(client.snapshot_count)) + '</td>'
+        + '<td>' + esc(fmtNum(client.target_count)) + '</td>'
+        + '</tr>').join("");
+      const syncRows = (data.sync?.tables || []).slice(-12).map((row) => '<div class="status-row"><span>' + esc(row.table_name) + '</span><strong>' + esc(fmtNum(row.rows_received)) + '</strong></div>').join("");
+      const artifactRows = (data.artifacts || []).map((row) => '<div class="status-row"><span>' + esc(row.artifact_type) + '</span><strong>' + esc(fmtNum(row.artifact_count)) + ' / ' + esc(fmtBytes(row.total_bytes)) + '</strong></div>').join("");
+      document.getElementById("app").innerHTML = '<div class="grid cards">' + cards + '</div>'
+        + '<div class="grid sections">'
+        + '<section><div class="section-head"><div><h2>Cloud Cora Reports</h2><div class="muted">Synced customer report pages and source XLSX files.</div></div><div class="toolbar"><button onclick="location.reload()">Refresh</button></div></div>'
+        + (reports ? '<table><thead><tr><th>Report</th><th>Level</th><th>Created</th><th>Files</th><th></th></tr></thead><tbody>' + reports + '</tbody></table>' : '<div class="empty">No cloud reports synced yet.</div>') + '</section>'
+        + '<section><div class="section-head"><div><h2>Production Status</h2><div class="muted">Last data sync: ' + esc(fmtDate(lastSync) || "Never") + '</div></div><span class="pill ok">Live</span></div>'
+        + '<div class="status-list">' + (artifactRows || '<div class="muted">No artifacts yet.</div>') + '</div>'
+        + '<div class="section-head"><h2>Recent Sync Tables</h2></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches yet.</div>') + '</div></section>'
+        + '<section><div class="section-head"><h2>Clients</h2></div>'
+        + (clients ? '<table><thead><tr><th>Client</th><th>Keywords</th><th>Runs</th><th>Snapshots</th><th>Targets</th></tr></thead><tbody>' + clients + '</tbody></table>' : '<div class="empty">No clients synced yet.</div>') + '</section>'
+        + '</div>';
+    }
+    fetch("/api/dashboard/data").then((r) => r.json()).then(render).catch((error) => {
+      document.getElementById("app").innerHTML = '<div class="empty warn">Failed to load cloud dashboard: ' + esc(error.message || error) + '</div>';
+    });
+  </script>
+</body>
+</html>`;
 }
 
 async function serveReportArtifact(request, env, token, artifactType) {
@@ -206,7 +406,9 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      if (url.pathname === "/" && request.method === "GET") return html(cloudDashboardHtml());
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
+      if (url.pathname === "/api/dashboard/data" && request.method === "GET") return handleDashboardData(request, env);
       const shareDownload = url.pathname.match(/^\/share\/report\/([^/]+)\/download$/);
       if (shareDownload && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);
