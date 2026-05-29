@@ -1306,6 +1306,25 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertEqual(first["project"]["id"], second["project"]["id"])
         self.assertTrue(second["duplicate"])
 
+    def test_apply_cloudflare_sync_cloud_data_command_supports_dry_run(self) -> None:
+        result = app.apply_cloudflare_command(
+            {"command_type": "sync_cloud_data", "payload": {"tables": ["projects", "keywords"], "dry_run": True}}
+        )
+
+        self.assertTrue(result["sync"]["dry_run"])
+        self.assertEqual([item["table"] for item in result["sync"]["tables"]], ["projects", "keywords"])
+
+    def test_apply_cloudflare_sync_artifacts_command_supports_dry_run(self) -> None:
+        run_id = self.insert_run("artifact keyword", "example.com", "sha-cloud-artifact", "2026-05-27T10:00:00")
+        report = app.create_share_report(run_id, "basic")
+
+        result = app.apply_cloudflare_command(
+            {"command_type": "sync_report_artifacts", "payload": {"report_ids": [report["id"]], "dry_run": True}}
+        )
+
+        self.assertTrue(result["artifacts"]["dry_run"])
+        self.assertEqual(result["artifacts"]["reports"], 1)
+
     def test_bridge_settings_default_blocks_cora_commands(self) -> None:
         settings = app.bridge_settings()
 

@@ -1060,6 +1060,18 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         result["duplicate"] = bool(existing)
         result["job"] = job
         changed_tables.add("managed_jobs")
+    elif command_type == "sync_cloud_data":
+        tables = payload.get("tables")
+        selected_tables = [str(table) for table in tables if table] if isinstance(tables, list) else None
+        result["sync"] = push_cloudflare_sync(tables=selected_tables, dry_run=bool(payload.get("dry_run")))
+    elif command_type == "sync_report_artifacts":
+        report_ids = payload.get("report_ids")
+        selected_report_ids = [int(value) for value in report_ids if value] if isinstance(report_ids, list) else None
+        result["artifacts"] = sync_cloudflare_report_artifacts(
+            report_ids=selected_report_ids,
+            dry_run=bool(payload.get("dry_run")),
+            force=bool(payload.get("force")),
+        )
     else:
         raise ValueError(f"Unsupported cloud command type: {command_type}")
     if changed_tables and cloudflare_sync_configured():
