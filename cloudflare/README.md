@@ -89,6 +89,8 @@ python ".\On Page Optimization System Dashboard\app.py" cloudflare-artifacts-syn
 
 The Worker serves synced report pages from `/share/report/{token}` and their source XLSX downloads from `/share/report/{token}/download`.
 
+The cloud portal roadmap, including future email-based users and admin management, lives in `ROADMAP.md`.
+
 By default, raw `workbook_rows` are not pushed because they can be large. To include them:
 
 ```powershell

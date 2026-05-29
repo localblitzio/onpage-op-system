@@ -53,6 +53,14 @@ function text(data, status = 200) {
   });
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 function requireSyncAuth(request, env) {
   const expected = env.SYNC_TOKEN || "";
   const header = request.headers.get("authorization") || "";
@@ -356,9 +364,9 @@ async function handleDashboardData(request, env) {
     syncStatusData(env)
   ]);
   const recentReports = await env.DB.prepare(
-    `SELECT sr.id, sr.token, sr.level, sr.title, sr.created_at,
-            r.keyword, r.target_url, r.target_domain, r.imported_at,
-            p.name AS project_name,
+    `SELECT sr.id, sr.token, sr.run_id, sr.level, sr.title, sr.notes, sr.created_at,
+            r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name,
+            p.id AS project_id, p.name AS project_name, p.client AS client_name, p.site_domain,
             a.artifact_count, a.total_bytes, a.last_uploaded_at, a.cloud_url
      FROM share_reports sr
      LEFT JOIN runs r ON r.id = sr.run_id
@@ -374,7 +382,7 @@ async function handleDashboardData(request, env) {
      ) a ON a.token = sr.token
      WHERE sr.revoked_at IS NULL
      ORDER BY sr.created_at DESC, sr.id DESC
-     LIMIT 50`
+     LIMIT 150`
   ).all();
   const clientRows = await env.DB.prepare(
     `SELECT p.id, p.name, p.client, p.site_domain,
@@ -669,9 +677,15 @@ function cloudMirrorHtml() {
     .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
     input, select { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
-    .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
+    .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-bottom:14px; }
     .review { background:rgba(77,182,172,.08); border:1px solid rgba(110,231,220,.35); border-radius:8px; margin:12px; padding:12px; }
     .review pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); }
+    .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px; border-bottom:1px solid var(--line); background:rgba(29,38,48,.55); }
+    .filters select { min-width:180px; }
+    .actions { display:flex; gap:6px; flex-wrap:wrap; }
+    .action-link, .copy-btn { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:6px 8px; display:inline-block; font-size:12px; cursor:pointer; text-decoration:none; }
+    .copy-btn { font:inherit; font-size:12px; }
+    .copy-btn:hover, .action-link:hover { border-color:var(--accent2); text-decoration:none; }
     @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2 { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
@@ -696,7 +710,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all" };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -718,6 +732,7 @@ function cloudMirrorHtml() {
     const readToken = () => localStorage.getItem("opos_read_token") || localStorage.getItem("opos_admin_token") || "";
     const adminToken = () => localStorage.getItem("opos_admin_token") || "";
     const authHeaders = (token) => token ? { "authorization": "Bearer " + token } : {};
+    const absoluteUrl = (path) => new URL(path, location.origin).href;
     function rows(items, predicate) {
       const q = state.q.toLowerCase();
       return (items || []).filter((item) => !q || JSON.stringify(item).toLowerCase().includes(q)).filter(predicate || (() => true));
@@ -750,7 +765,20 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Bridge Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (bridgeRows || '<div class="muted">No local bridge heartbeat yet.</div>') + '</div><div class="head"><h3>Cloud Files</h3></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
     }
     function reportTable(items) {
-      return table(["Report", "Client", "Level", "Files", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">' + esc(r.keyword || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.level || "") + '</td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><a href="' + reportUrl(r.token) + '" target="_blank">Open</a><br><a href="' + downloadUrl(r.token) + '">XLSX</a></td></tr>'), "No cloud reports synced yet.");
+      return table(["Report", "Client", "Keyword / URL", "Level", "Created", "Files", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">Run #' + esc(r.run_id || "") + '</span></td><td>' + esc(r.project_name || r.client_name || "") + '<br><span class="muted">' + esc(r.site_domain || "") + '</span></td><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.target_domain || r.target_url || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '<br><span class="muted">Uploaded ' + esc(fmtDate(r.last_uploaded_at)) + '</span></td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><div class="actions"><a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a><a class="action-link" href="' + downloadUrl(r.token) + '">XLSX</a><button class="copy-btn" data-copy="' + esc(absoluteUrl(reportUrl(r.token))) + '">Copy report</button><button class="copy-btn" data-copy="' + esc(absoluteUrl(downloadUrl(r.token))) + '">Copy XLSX</button></div></td></tr>'), "No cloud reports synced yet.");
+    }
+    function reportPortal(data) {
+      const allReports = data.reports || [];
+      const clients = [...new Map(allReports.map((r) => [String(r.project_id || r.project_name || ""), r.project_name || r.client_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const levels = ["basic", "medium", "comprehensive"];
+      const filtered = allReports.filter((r) => (state.reportClient === "all" || String(r.project_id || r.project_name || "") === state.reportClient) && (state.reportLevel === "all" || String(r.level || "").toLowerCase() === state.reportLevel));
+      const latest = filtered.map((r) => r.created_at).filter(Boolean).sort().pop();
+      const files = filtered.reduce((sum, r) => sum + Number(r.artifact_count || 0), 0);
+      const bytes = filtered.reduce((sum, r) => sum + Number(r.total_bytes || 0), 0);
+      const filters = '<div class="filters"><select id="report-client-filter"><option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.reportClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="report-level-filter"><option value="all">All report levels</option>' + levels.map((level) => '<option value="' + level + '"' + (state.reportLevel === level ? ' selected' : '') + '>' + esc(level[0].toUpperCase() + level.slice(1)) + '</option>').join("") + '</select><span class="muted">Use the search box above for keyword, URL, or report title.</span></div>';
+      setTimeout(bindReportControls, 0);
+      return cards([["Visible Reports", filtered.length],["Report Files", files],["Report Storage", fmtBytes(bytes)],["Latest Report", fmtDate(latest) || "None"]])
+        + '<section><div class="head"><h3>Cora Reports</h3><span class="pill ok">Share-ready</span></div>' + filters + reportTable(filtered) + '</section>';
     }
     function clientsTable(items) {
       return table(["Client", "Site", "Keywords", "Runs", "Snapshots", "Targets"], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '</td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td></tr>'));
@@ -853,6 +881,24 @@ function cloudMirrorHtml() {
       byId("cancel-command")?.addEventListener("click", () => { state.pendingWrite = null; render(); });
       document.querySelectorAll(".retry-command").forEach((button) => button.addEventListener("click", () => retryCommand(button.dataset.commandId).catch((e) => alert(e.message))));
     }
+    function bindReportControls() {
+      const client = document.getElementById("report-client-filter");
+      const level = document.getElementById("report-level-filter");
+      if (client) client.onchange = (event) => { state.reportClient = event.target.value || "all"; render(); };
+      if (level) level.onchange = (event) => { state.reportLevel = event.target.value || "all"; render(); };
+      document.querySelectorAll(".copy-btn").forEach((button) => {
+        button.onclick = async () => {
+          const value = button.dataset.copy || "";
+          try {
+            await navigator.clipboard.writeText(value);
+            button.textContent = "Copied";
+            setTimeout(() => { button.textContent = button.dataset.copy?.includes("/download") ? "Copy XLSX" : "Copy report"; }, 1200);
+          } catch (_err) {
+            prompt("Copy URL", value);
+          }
+        };
+      });
+    }
     function render() {
       const data = state.data;
       if (!data) return;
@@ -862,7 +908,7 @@ function cloudMirrorHtml() {
       const content = {
         overview: () => overview(data),
         clients: () => '<section><div class="head"><h3>Clients</h3></div>' + clientsTable(data.clients || []) + '</section>',
-        reports: () => '<section><div class="head"><h3>Cora Reports</h3></div>' + reportTable(data.reports || []) + '</section>',
+        reports: () => reportPortal(data),
         runs: () => '<section><div class="head"><h3>Cora Runs</h3></div>' + runsTable(data.runs || []) + '</section>',
         jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
         ranking: () => '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + snapshotsTable(data.snapshots || []) + '</section>',
@@ -872,6 +918,7 @@ function cloudMirrorHtml() {
         commands: () => commandsView(data)
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content();
+      setTimeout(bindReportControls, 0);
     }
     function lockedView(message) {
       document.getElementById("page-title").textContent = "Locked";
@@ -917,8 +964,93 @@ async function serveReportArtifact(request, env, token, artifactType) {
   if (artifactType === "source_xlsx") {
     const fileName = String(row.file_name || "cora-report.xlsx").replace(/"/g, "");
     headers.set("content-disposition", `attachment; filename="${fileName}"`);
+    return new Response(request.method === "HEAD" ? null : object.body, { headers });
   }
-  return new Response(request.method === "HEAD" ? null : object.body, { headers });
+  if (request.method === "HEAD") return new Response(null, { headers });
+  const sourceHtml = await object.text();
+  const meta = await reportShareMetadata(env, token);
+  return html(reportShareShell(request, meta, sourceHtml));
+}
+
+async function reportShareMetadata(env, token) {
+  return await env.DB.prepare(
+    `SELECT sr.id, sr.token, sr.level, sr.title, sr.notes, sr.created_at,
+            r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name,
+            p.name AS project_name, p.client AS client_name, p.site_domain,
+            a.file_size, a.uploaded_at
+     FROM share_reports sr
+     LEFT JOIN runs r ON r.id = sr.run_id
+     LEFT JOIN projects p ON p.id = r.project_id
+     LEFT JOIN report_artifacts a ON a.token = sr.token AND a.artifact_type = 'report_html'
+     WHERE sr.token = ? AND sr.revoked_at IS NULL
+     ORDER BY a.uploaded_at DESC
+     LIMIT 1`
+  ).bind(token).first();
+}
+
+function reportShareShell(request, meta, sourceHtml) {
+  const url = new URL(request.url);
+  const title = meta?.title || meta?.keyword || "Cora Report";
+  const client = meta?.project_name || meta?.client_name || "Client Report";
+  const download = `${url.pathname.replace(/\/$/, "")}/download`;
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(title)} | On Page Optimization System</title>
+  <style>
+    :root { color-scheme: light; --bg:#f5f7fb; --panel:#ffffff; --line:#d9e1ea; --text:#16202c; --muted:#607083; --accent:#00796b; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 Inter, Segoe UI, Arial, sans-serif; }
+    header { background:var(--panel); border-bottom:1px solid var(--line); padding:18px 22px; position:sticky; top:0; z-index:5; }
+    .bar { max-width:1280px; margin:0 auto; display:flex; justify-content:space-between; gap:18px; align-items:center; }
+    h1 { margin:0; font-size:20px; line-height:1.2; }
+    .meta { color:var(--muted); margin-top:4px; display:flex; gap:10px; flex-wrap:wrap; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    a, button { color:var(--accent); }
+    .button { border:1px solid var(--line); background:var(--panel); border-radius:7px; padding:8px 10px; text-decoration:none; cursor:pointer; font-weight:700; }
+    .primary { background:var(--accent); color:white; border-color:var(--accent); }
+    main { max-width:1280px; margin:14px auto 28px; padding:0 14px; }
+    .frame { background:white; border:1px solid var(--line); border-radius:8px; overflow:hidden; min-height:78vh; }
+    iframe { display:block; border:0; width:100%; height:78vh; background:white; }
+    @media (max-width:760px) { .bar { align-items:flex-start; flex-direction:column; } .actions { justify-content:flex-start; } iframe { height:75vh; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div>
+        <h1>${escapeHtml(title)}</h1>
+        <div class="meta">
+          <span>${escapeHtml(client)}</span>
+          <span>${escapeHtml(meta?.keyword || "")}</span>
+          <span>${escapeHtml(meta?.target_domain || meta?.target_url || "")}</span>
+          <span>${escapeHtml((meta?.level || "").toUpperCase())}</span>
+          <span>Created ${escapeHtml(meta?.created_at ? new Date(meta.created_at).toLocaleDateString() : "")}</span>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="button primary" href="${escapeHtml(download)}">Download XLSX</a>
+        <button class="button" id="copy-link">Copy report link</button>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="frame"><iframe title="Cora report" sandbox="allow-same-origin allow-popups allow-forms" srcdoc="${escapeHtml(sourceHtml)}"></iframe></div>
+  </main>
+  <script>
+    document.getElementById("copy-link").onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(location.href);
+        document.getElementById("copy-link").textContent = "Copied";
+      } catch (_err) {
+        prompt("Copy report link", location.href);
+      }
+    };
+  </script>
+</body>
+</html>`;
 }
 
 export default {
