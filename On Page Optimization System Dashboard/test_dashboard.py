@@ -1314,6 +1314,14 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertTrue(result["sync"]["dry_run"])
         self.assertEqual([item["table"] for item in result["sync"]["tables"]], ["projects", "keywords"])
 
+    def test_apply_cloudflare_sync_cloud_to_local_command_supports_dry_run(self) -> None:
+        result = app.apply_cloudflare_command(
+            {"command_type": "sync_cloud_to_local", "payload": {"tables": ["projects"], "dry_run": True}}
+        )
+
+        self.assertTrue(result["sync"]["dry_run"])
+        self.assertEqual(result["sync"]["direction"], "cloud_to_local")
+
     def test_apply_cloudflare_sync_artifacts_command_supports_dry_run(self) -> None:
         run_id = self.insert_run("artifact keyword", "example.com", "sha-cloud-artifact", "2026-05-27T10:00:00")
         report = app.create_share_report(run_id, "basic")

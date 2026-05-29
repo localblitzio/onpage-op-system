@@ -821,6 +821,44 @@ def cloudflare_table_rows(con: sqlite3.Connection, table: str, limit: int, offse
     return [row_to_dict(row) or {} for row in rows]
 
 
+def local_table_columns(con: sqlite3.Connection, table: str) -> list[str]:
+    return [str(row["name"]) for row in con.execute(f"PRAGMA table_info({table})").fetchall()]
+
+
+def upsert_local_rows(con: sqlite3.Connection, table: str, rows: list[dict[str, Any]]) -> int:
+    if table not in cloudflare_sync_tables():
+        raise ValueError(f"Unsupported Cloudflare sync table: {table}")
+    if not rows:
+        return 0
+    columns = [column for column in local_table_columns(con, table) if column in rows[0]]
+    if "id" not in columns:
+        return 0
+    placeholders = ", ".join("?" for _ in columns)
+    updates = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "id")
+    sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}"
+    count = 0
+    for row in rows:
+        con.execute(sql, [row.get(column) for column in columns])
+        count += 1
+    return count
+
+
+def pull_cloudflare_sync(tables: list[str] | None = None, limit: int = 5000) -> dict[str, Any]:
+    selected = [table for table in (tables or ["projects", "sites", "keywords", "content_plans", "share_reports"]) if table]
+    table_query = quote(",".join(selected))
+    data = cloudflare_get_json(f"/api/sync/export?tables={table_query}&limit={int(limit)}")
+    exported = data.get("tables") if isinstance(data.get("tables"), list) else []
+    results = []
+    with connect() as con:
+        for item in exported:
+            table = str(item.get("table") or "")
+            rows = item.get("rows") if isinstance(item.get("rows"), list) else []
+            count = upsert_local_rows(con, table, rows)
+            results.append({"table": table, "rows": count})
+        con.commit()
+    return {"ok": True, "direction": "cloud_to_local", "tables": results, "total_rows": sum(int(item["rows"]) for item in results)}
+
+
 def post_cloudflare_sync_batch(payload: dict[str, Any]) -> dict[str, Any]:
     if not cloudflare_sync_configured():
         raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
@@ -1075,6 +1113,13 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         tables = payload.get("tables")
         selected_tables = [str(table) for table in tables if table] if isinstance(tables, list) else None
         result["sync"] = push_cloudflare_sync(tables=selected_tables, dry_run=bool(payload.get("dry_run")))
+    elif command_type == "sync_cloud_to_local":
+        tables = payload.get("tables")
+        selected_tables = [str(table) for table in tables if table] if isinstance(tables, list) else None
+        if bool(payload.get("dry_run")):
+            result["sync"] = {"ok": True, "direction": "cloud_to_local", "dry_run": True, "tables": selected_tables or ["projects", "sites", "keywords", "content_plans", "share_reports"]}
+        else:
+            result["sync"] = pull_cloudflare_sync(tables=selected_tables, limit=int(payload.get("limit") or 5000))
     elif command_type == "sync_report_artifacts":
         report_ids = payload.get("report_ids")
         selected_report_ids = [int(value) for value in report_ids if value] if isinstance(report_ids, list) else None
@@ -7019,6 +7064,15 @@ def main(argv: list[str]) -> int:
         limit_arg = next((arg for arg in argv[2:] if arg.startswith("--limit=")), "")
         limit = int(limit_arg.removeprefix("--limit=")) if limit_arg else 25
         result = pull_cloudflare_commands(limit=limit)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if len(argv) > 1 and argv[1] == "cloudflare-sync-pull":
+        tables_arg = next((arg for arg in argv[2:] if arg.startswith("--tables=")), "")
+        tables = [value.strip() for value in tables_arg.removeprefix("--tables=").split(",") if value.strip()] if tables_arg else None
+        limit_arg = next((arg for arg in argv[2:] if arg.startswith("--limit=")), "")
+        limit = int(limit_arg.removeprefix("--limit=")) if limit_arg else 5000
+        result = pull_cloudflare_sync(tables=tables, limit=limit)
         print(json.dumps(result, indent=2, default=str))
         return 0
 
