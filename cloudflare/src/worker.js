@@ -2358,6 +2358,7 @@ function cloudMirrorHtml() {
     let state = { data: null, page: "clients", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     const pages = [
       ["clients", "Client Dashboard"],
+      ["new-client", "New Client"],
       ["reports", "Cora Reports"],
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
@@ -2375,7 +2376,7 @@ function cloudMirrorHtml() {
       ["admin", "Admin"]
     ];
     const navGroups = [
-      ["Clients", [["clients", "Client Dashboard"]]],
+      ["Clients", [["clients", "Client Dashboard"],["new-client", "New Client"]]],
       ["Cora", [["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
       ["Entity Explorer", [["entities", "Entity Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
       ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
@@ -2496,7 +2497,10 @@ function cloudMirrorHtml() {
         return acc;
       }, { keywords: 0, runs: 0, snapshots: 0, targets: 0, plans: 0 });
       return cards([["Clients", clients.length],["Keywords", totals.keywords],["Cora Runs", totals.runs],["Ranking Snapshots", totals.snapshots],["Saved Targets", totals.targets],["Content Plans", totals.plans]])
-        + '<section><div class="head"><h3>Client Dashboard</h3><span class="muted">Open a client first, then launch Cora, Ranking Snapshot, Entity Explorer, reports, and plans from that workspace.</span></div>' + clientsTable(clients) + '</section>';
+        + '<section><div class="head"><h3>Client Dashboard</h3><div class="toolbar"><button class="client-open-page" data-page-target="new-client" data-project-id="all">New Client</button></div></div><div class="empty">Open a client first, then launch Cora, Ranking Snapshot, Entity Explorer, reports, and plans from that workspace.</div>' + clientsTable(clients) + '</section>';
+    }
+    function newClientView() {
+      return '<section><div class="head"><h3>New Client</h3><span class="muted">Creates a cloud command that the sync bridge can pull into the local dashboard.</span></div><div class="command-grid"><div class="command-card"><h4>Client Profile</h4><input id="quick-client-name" placeholder="Client name"><input id="quick-client-site" placeholder="Main URL or domain"><input id="quick-client-notes" placeholder="Notes"><button id="quick-create-client">Review Create Client</button></div><div class="command-card"><h4>What Happens Next</h4><div class="muted">The client is reviewed before it is queued. After queueing, use Sync Status or Command Review to confirm it reached the local dashboard.</div><button class="client-open-page secondary" data-page-target="clients" data-project-id="all">Back to Clients</button></div></div></section>';
     }
     function profilesTable(items) {
       return table(["Profile", "Clients", "Attached Clients", "Updated"], rows(items).map((p) => '<tr><td><strong>' + esc(p.name || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(fmtNum(p.client_count || 0)) + '</td><td>' + esc(p.client_names || p.client || "") + '</td><td>' + esc(fmtDate(p.updated_at || p.created_at)) + '</td></tr>'), "No Cora profiles synced yet.");
@@ -3125,6 +3129,8 @@ function cloudMirrorHtml() {
       const targetHref = target ? (targetLower.startsWith("http://") || targetLower.startsWith("https://") ? target : "https://" + target) : "";
       const firstKeyword = (data.keywords || [])[0]?.keyword || (data.runs || [])[0]?.keyword || "";
       const latestEntityBatch = (data.entity_batches || []).slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))[0]?.id || "";
+      const bridge = (state.data?.bridges || [])[0] || {};
+      const bridgeReady = Boolean(bridge.online && bridge.allow_cora);
       const keywordRows = (data.keywords || []).map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong></td><td>' + esc(k.intent || "") + '</td><td>' + esc(k.priority || "") + '</td><td>' + esc(fmtDate(k.created_at)) + '</td></tr>');
       const runRows = (data.runs || []).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const reportRows = (data.reports || []).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">' + esc(r.keyword || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '</td><td>' + esc(fmtNum(r.artifact_count || 0)) + ' files</td><td><a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a></td></tr>');
@@ -3139,6 +3145,8 @@ function cloudMirrorHtml() {
       if (!target) nextActions.push("Add the client main URL locally, then push clients/sites to cloud.");
       if (!(data.keywords || []).length) nextActions.push("Add at least one keyword before running Cora, Ranking Snapshot, or Entity Explorer.");
       if (!client.profile_name) nextActions.push("Attach a Cora profile before queueing Cora work.");
+      if (!bridge.online) nextActions.push("Local bridge is offline, so cloud can prepare work but cannot launch local Cora yet.");
+      if (bridge.online && !bridge.allow_cora) nextActions.push("Local bridge is online, but Cora execution is disabled.");
       if ((data.targets || []).length) nextActions.push("Review Optimization Targets for pages that need on-page work.");
       if ((data.content_plans || []).length) nextActions.push("Open Content Plans to move planned work through drafting, review, and publish.");
       if (!nextActions.length) nextActions.push("Client workspace is ready. Pick a tool below to continue.");
@@ -3149,27 +3157,20 @@ function cloudMirrorHtml() {
         + '<div class="client-var"><span class="muted">Active Keyword</span><strong>' + esc(firstKeyword || "No keyword synced") + '</strong></div>'
         + '<div class="client-var"><span class="muted">Cora Profile</span><strong>' + esc(client.profile_name || "No profile attached") + '</strong></div>'
         + '</div></section>'
-        + '<section><div class="head"><h3>Next Actions</h3><span class="muted">Client-specific prompts</span></div><div class="status-list">' + nextActions.map((action) => '<div class="status-row"><span>' + esc(action) + '</span></div>').join("") + '</div></section>'
+        + '<section><div class="head"><h3>Readiness</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Cora ready' : 'Needs attention') + '</span></div><div class="status-list"><div class="status-row"><span>Local bridge<br><small class="muted">' + esc(bridge.bridge_id || 'No bridge heartbeat') + '</small></span><strong class="' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</strong></div><div class="status-row"><span>Cora execution</span><strong class="' + (bridge.allow_cora ? 'ok' : 'warn') + '">' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong></div>' + nextActions.map((action) => '<div class="status-row"><span>' + esc(action) + '</span></div>').join("") + '</div></section>'
         + '</div>';
       const toolCards = [
-        ["Cora", "Queue or review Cora jobs using this client URL, keywords, and Cora profile.", "commands", "Prepare Cora Run", "cora-command"],
-        ["Cora Runs", "Open imported Cora workbooks and report details for this client.", "runs", "Open Cora Runs", ""],
-        ["Cora Jobs", "Review local Cora queue activity scoped to this client.", "jobs", "Open Cora Jobs", ""],
-        ["Ranking Snapshot", "Create DataForSEO ranking snapshots and open existing snapshot details.", "ranking", "Open Ranking Snapshots", ""],
-        ["Optimization Targets", "Review ranking URLs saved from snapshots and move them into Cora or plans.", "targets", "Open Targets", ""],
-        ["Entity Explorer", "Run or review entity batches tied to this client's keywords.", "entities", "Open Entity Explorer", ""],
-        ["Entity Crossover", "Inspect overlap across selected LLM/entity sources.", "entity-crossover", "Open Crossover", ""],
-        ["Entity Sets", "Review saved entity sets for content and optimization work.", "entity-sets", "Open Entity Sets", ""],
-        ["Cora Reports", "Open customer reports and source XLSX artifacts for this client.", "reports", "Open Reports", ""],
-        ["Content Plans", "Track briefs, refreshes, and optimization tasks for this client.", "plans", "Open Plans", ""],
-        ["Sync", "Pull cloud edits locally or push fresh local data to cloud.", "sync", "Open Sync Status", ""]
-      ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "cora-command" ? "client-command" : "client-open-page") + '" data-client-command="cora" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(target) + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
-      const toolLauncher = '<section><div class="head"><h3>Client Run Tools</h3><span class="muted">Open each tool already scoped to this client where filters exist.</span></div><div class="tool-grid">' + toolCards + '</div></section>';
-      const actionButtons = '<section><div class="head"><h3>Command Shortcuts</h3><span class="muted">Pre-filled from this client.</span></div><div class="status-list"><div class="toolbar"><button class="client-command" data-client-command="ranking" data-project-id="' + esc(projectId) + '" data-target="' + esc(target) + '">Prepare Ranking Snapshot</button><button class="client-command secondary" data-client-command="entity" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '">Prepare Entity Explorer</button><button class="client-command secondary" data-client-command="pull" data-project-id="' + esc(projectId) + '">Pull Cloud Changes</button></div><div class="muted">Cora remains local-only. Ranking and Entity commands can run locally now; cloud execution for paid/API tools is staged behind provider secrets.</div></div></section>';
+        ["Cora", "Launch a local Cora run through the bridge using this client's URL, keyword, and profile.", "commands", "Run Cora Now", "cora"],
+        ["Ranking Snapshot", "Run or review DataForSEO ranking snapshots for this client.", "ranking", "Open Ranking Snapshot", "page"],
+        ["Entity Explorer", "Run entity and LSI research from this client's keywords.", "entities", "Open Entity Explorer", "page"],
+        ["Cora Reports", "Open stored customer reports and source XLSX artifacts.", "reports", "Open Reports", "page"],
+        ["Content Plans", "Track briefs, refreshes, and optimization tasks.", "plans", "Open Plans", "page"]
+      ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "page" ? "client-open-page" : "client-command") + '" data-client-command="' + esc(tool[4]) + '" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(target) + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
+      const secondaryLinks = '<div class="toolbar" style="padding:0 12px 12px;"><button class="client-open-page secondary" data-page-target="runs" data-project-id="' + esc(projectId) + '">Cora Runs</button><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Cora Jobs</button><button class="client-open-page secondary" data-page-target="cora-profiles" data-project-id="' + esc(projectId) + '">Cora Profiles</button><button class="client-open-page secondary" data-page-target="targets" data-project-id="' + esc(projectId) + '">Saved Targets</button><button class="client-open-page secondary" data-page-target="entity-sets" data-project-id="' + esc(projectId) + '">Entity Sets</button><button class="client-open-page secondary" data-page-target="sync" data-project-id="' + esc(projectId) + '">Sync Status</button></div>';
+      const toolLauncher = '<section><div class="head"><h3>Client Tools</h3><span class="muted">Primary workflows for this client. Technical controls are under System.</span></div><div class="tool-grid">' + toolCards + '</div>' + secondaryLinks + '</section>';
       return workspace
         + smallCards([["Keywords", (data.keywords || []).length],["Cora Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length],["Entity Batches", (data.entity_batches || []).length],["Entity Sets", (data.entity_sets || []).length]])
         + toolLauncher
-        + actionButtons
         + '<section><div class="head"><h3>Keywords</h3></div>' + detailTable(["Keyword","Intent","Priority","Created"], keywordRows, "No keywords synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Cora Runs</h3></div>' + detailTable(["Keyword","Target","Imported",""], runRows, "No Cora runs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Reports</h3></div>' + detailTable(["Report","Level","Created","Files",""], reportRows, "No reports synced for this client.") + '</section>'
@@ -3415,6 +3416,18 @@ function cloudMirrorHtml() {
       if (jobClient) jobClient.onchange = (event) => { state.jobClient = event.target.value || "all"; render(); };
       if (jobStatus) jobStatus.onchange = (event) => { state.jobStatus = event.target.value || "all"; render(); };
     }
+    function bindNewClientControls() {
+      document.getElementById("quick-create-client")?.addEventListener("click", () => {
+        const payload = {
+          execution_mode: "cloud",
+          name: document.getElementById("quick-client-name")?.value || "",
+          site_domain: document.getElementById("quick-client-site")?.value || "",
+          notes: document.getElementById("quick-client-notes")?.value || ""
+        };
+        setPage("commands");
+        setPendingCommand("create_project", payload);
+      });
+    }
     function bindDetailControls() {
       document.querySelectorAll(".detail-btn").forEach((button) => {
         if (button.classList.contains("sheet-btn")) return;
@@ -3507,6 +3520,7 @@ function cloudMirrorHtml() {
       const content = {
         overview: () => overview(data),
         clients: () => clientsView(data),
+        "new-client": () => newClientView(data),
         reports: () => reportPortal(data),
         runs: () => coraRunsView(data),
         jobs: () => coraJobsView(data),
@@ -3524,6 +3538,7 @@ function cloudMirrorHtml() {
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
+      if (state.page === "new-client") setTimeout(bindNewClientControls, 0);
       if (["runs", "jobs"].includes(state.page)) setTimeout(bindCoraListControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);
