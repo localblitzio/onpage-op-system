@@ -1920,6 +1920,10 @@ function cloudMirrorHtml() {
     .command-card button { justify-self:start; background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .field-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .field-row input { min-width:150px; flex:1 1 150px; }
+    .check-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+    .check-item { display:flex; gap:8px; align-items:flex-start; border:1px solid var(--line); border-radius:8px; padding:8px; background:rgba(29,38,48,.45); }
+    .check-item input { min-width:auto; margin-top:2px; }
+    .mini-btn { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:5px 7px; cursor:pointer; font-size:12px; }
     .bridge-flags { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:12px; }
     .bridge-flag { border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(29,38,48,.45); }
     .bridge-flag strong { display:block; font-size:15px; }
@@ -1935,7 +1939,7 @@ function cloudMirrorHtml() {
     .scroll-table { overflow:auto; max-height:520px; }
     .scroll-table table { min-width:860px; }
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
-    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
+    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
 <body>
@@ -1963,7 +1967,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", detail: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -2142,7 +2146,28 @@ function cloudMirrorHtml() {
       }), "No cloud commands yet.");
     }
     function auditTable(items) {
-      return table(["When", "Actor", "Action", "Object", "Metadata"], rows(items).map((event) => '<tr><td>' + esc(fmtDate(event.created_at)) + '</td><td>' + esc(event.actor || "") + '<br><span class="muted">' + esc(event.ip_address || "") + '</span></td><td><span class="pill">' + esc(event.action || "") + '</span></td><td>' + esc(event.object_type || "") + '<br><span class="muted">' + esc(event.object_id || "") + '</span></td><td><span class="muted">' + esc(JSON.stringify(event.metadata || {})) + '</span></td></tr>'), "No audit events yet.");
+      return table(["When", "Actor", "Action", "Object", "Metadata"], rows(items).map((event) => '<tr><td>' + esc(fmtDate(event.created_at)) + '</td><td>' + esc(event.actor || "") + '<br><span class="muted">' + esc(event.ip_address || "") + '</span></td><td><span class="pill">' + esc(event.action || "") + '</span></td><td>' + esc(event.object_type || "") + '<br><span class="muted">' + esc(event.object_id || "") + '</span></td><td><span class="muted">' + esc(JSON.stringify(event.metadata || {})) + '</span></td></tr>'), "No audit events match the filters.");
+    }
+    function auditView(data) {
+      const allEvents = data.audit_events || [];
+      const actors = [...new Set(allEvents.map((event) => event.actor || "").filter(Boolean))].sort();
+      const actions = [...new Set(allEvents.map((event) => event.action || "").filter(Boolean))].sort();
+      const objects = [...new Set(allEvents.map((event) => event.object_type || "").filter(Boolean))].sort();
+      const filtered = allEvents.filter((event) =>
+        (state.auditActor === "all" || String(event.actor || "") === state.auditActor) &&
+        (state.auditAction === "all" || String(event.action || "") === state.auditAction) &&
+        (state.auditObject === "all" || String(event.object_type || "") === state.auditObject)
+      );
+      const filters = '<div class="filters"><select id="audit-actor-filter"><option value="all">All actors</option>' + actors.map((actor) => '<option value="' + esc(actor) + '"' + (state.auditActor === actor ? ' selected' : '') + '>' + esc(actor) + '</option>').join("") + '</select><select id="audit-action-filter"><option value="all">All actions</option>' + actions.map((action) => '<option value="' + esc(action) + '"' + (state.auditAction === action ? ' selected' : '') + '>' + esc(action) + '</option>').join("") + '</select><select id="audit-object-filter"><option value="all">All object types</option>' + objects.map((object) => '<option value="' + esc(object) + '"' + (state.auditObject === object ? ' selected' : '') + '>' + esc(object) + '</option>').join("") + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(allEvents.length) + ' events</span></div>';
+      return '<section><div class="head"><h3>Audit Trail</h3><span class="muted">Recent report, sync, bridge, auth, and command events.</span></div>' + filters + auditTable(filtered) + '</section>';
+    }
+    function bindAuditFilters() {
+      const actor = document.getElementById("audit-actor-filter");
+      const action = document.getElementById("audit-action-filter");
+      const object = document.getElementById("audit-object-filter");
+      if (actor) actor.onchange = (event) => { state.auditActor = event.target.value || "all"; render(); };
+      if (action) action.onchange = (event) => { state.auditAction = event.target.value || "all"; render(); };
+      if (object) object.onchange = (event) => { state.auditObject = event.target.value || "all"; render(); };
     }
     async function apiGet(path) {
       const token = readToken();
@@ -2362,24 +2387,57 @@ function cloudMirrorHtml() {
       const users = admin.users || [];
       const policies = admin.tool_policies || [];
       const secrets = admin.secret_status || {};
+      const clients = data.clients || [];
+      const clientName = (id) => (clients.find((client) => String(client.id) === String(id))?.name || ("Client #" + id));
       const today = Object.fromEntries((admin.tool_usage_today || []).map((row) => [row.command_type, row.runs]));
       const month = Object.fromEntries((admin.tool_usage_month || []).map((row) => [row.command_type, row.runs]));
       const secretRows = Object.entries(secrets).map(([name, present]) => '<div class="status-row"><span>' + esc(name) + '</span><strong class="' + (present ? 'ok' : 'warn') + '">' + esc(present ? 'Configured' : 'Missing') + '</strong></div>').join("");
-      const userRows = users.map((u) => '<tr><td><strong>' + esc(u.email || "") + '</strong><br><span class="muted">' + esc(u.name || "") + '</span></td><td><span class="pill">' + esc(u.role || "") + '</span></td><td>' + esc(u.status || "") + '</td><td>' + esc((u.client_ids || []).join(", ")) + '</td><td>' + esc(fmtDate(u.last_login_at)) + '</td></tr>');
+      const userRows = users.map((u) => {
+        const clientScope = (u.client_ids || []).length ? (u.client_ids || []).map(clientName).join(", ") : "All clients";
+        const encoded = encodeURIComponent(JSON.stringify({ email: u.email || "", name: u.name || "", role: u.role || "read", status: u.status || "active", client_ids: u.client_ids || [] }));
+        return '<tr><td><strong>' + esc(u.email || "") + '</strong><br><span class="muted">' + esc(u.name || "") + '</span></td><td><span class="pill">' + esc(u.role || "") + '</span></td><td>' + esc(u.status || "") + '</td><td>' + esc(clientScope) + '</td><td>' + esc(fmtDate(u.last_login_at)) + '</td><td><button class="admin-edit-user mini-btn" data-user="' + encoded + '">Edit</button></td></tr>';
+      });
       const policyRows = policies.map((p) => '<tr><td><strong>' + esc(commandLabel(p.tool_key || p.tool_key)) + '</strong><br><span class="muted">' + esc(p.tool_key || "") + '</span></td><td>' + esc(p.cloud_enabled ? 'Cloud enabled' : 'Cloud disabled') + '</td><td>' + esc(p.daily_limit ?? "") + '</td><td>' + esc(p.monthly_limit ?? "") + '</td><td>' + esc(p.per_client_daily_limit ?? "") + '</td><td>' + esc(today[p.tool_key] || 0) + ' today<br><span class="muted">' + esc(month[p.tool_key] || 0) + ' this month</span></td></tr>');
-      const userForm = '<section><div class="head"><h3>Create / Update User</h3><span class="muted">Email login, roles, optional client scope.</span></div><div class="status-list"><div class="field-row"><input id="admin-user-email" type="email" placeholder="user@example.com"><input id="admin-user-name" placeholder="Name"><select id="admin-user-role"><option value="read">Read</option><option value="write">Write</option><option value="admin">Admin</option></select><select id="admin-user-status"><option value="active">Active</option><option value="disabled">Disabled</option></select></div><input id="admin-user-clients" placeholder="Optional client IDs: 1,2,3"><div class="toolbar"><button id="admin-save-user">Save User</button></div></div></section>';
+      const clientChecks = clients.map((client) => '<label class="check-item"><input class="admin-client-check" type="checkbox" value="' + esc(client.id) + '"><span><strong>' + esc(client.name || client.client || ("Client #" + client.id)) + '</strong><br><span class="muted">' + esc(client.site_domain || "") + '</span></span></label>').join("");
+      const userForm = '<section><div class="head"><h3>Create / Update User</h3><span class="muted">Email login, roles, client scope.</span></div><div class="status-list"><div class="field-row"><input id="admin-user-email" type="email" placeholder="user@example.com"><input id="admin-user-name" placeholder="Name"><select id="admin-user-role"><option value="read">Read - view only</option><option value="write">Write - queue client tools</option><option value="admin">Admin - full access</option></select><select id="admin-user-status"><option value="active">Active</option><option value="disabled">Disabled</option></select></div><div><div class="muted">Client access. Leave all unchecked for all clients.</div><div class="toolbar" style="margin:8px 0"><button id="admin-select-all-clients" type="button" class="secondary">Select All</button><button id="admin-clear-clients" type="button" class="secondary">Clear Clients</button></div><div class="check-list">' + (clientChecks || '<div class="muted">No clients synced yet.</div>') + '</div></div><div class="toolbar"><button id="admin-save-user">Save User</button><button id="admin-clear-user" type="button" class="secondary">Clear Form</button></div></div></section>';
       const policyForm = '<section><div class="head"><h3>Tool Guardrails</h3><span class="muted">Controls paid cloud tool execution.</span></div><div class="status-list"><div class="field-row"><select id="policy-tool"><option value="create_ranking_snapshot">Ranking Snapshot</option><option value="run_entity_lsi">Entity Explorer</option></select><select id="policy-cloud"><option value="true">Cloud enabled</option><option value="false">Cloud disabled</option></select><input id="policy-daily" placeholder="Daily limit"><input id="policy-monthly" placeholder="Monthly limit"><input id="policy-client-daily" placeholder="Per-client daily"></div><div class="toolbar"><button id="admin-save-policy">Save Policy</button></div></div>' + table(["Tool","Cloud","Daily","Monthly","Client Daily","Usage"], policyRows, "No tool policies yet.") + '</section>';
-      return '<div class="grid2"><section><div class="head"><h3>Current Access</h3><span class="pill ok">' + esc(data.user?.role || "") + '</span></div><div class="status-list"><div class="status-row"><span>User</span><strong>' + esc(data.user?.email || "") + '</strong></div><div class="head"><h3>Provider Secrets</h3></div>' + (secretRows || '<div class="muted">No secret status available.</div>') + '</div></section>' + userForm + '</div>' + policyForm + '<section><div class="head"><h3>Users</h3></div>' + table(["Email","Role","Status","Client Scope","Last Login"], userRows, "No cloud users yet.") + '</section>';
+      return '<div class="grid2"><section><div class="head"><h3>Current Access</h3><span class="pill ok">' + esc(data.user?.role || "") + '</span></div><div class="status-list"><div class="status-row"><span>User</span><strong>' + esc(data.user?.email || "") + '</strong></div><div class="head"><h3>Provider Secrets</h3></div>' + (secretRows || '<div class="muted">No secret status available.</div>') + '</div></section>' + userForm + '</div>' + policyForm + '<section><div class="head"><h3>Users</h3><span class="muted">Click Edit to load a user into the form.</span></div>' + table(["Email","Role","Status","Client Scope","Last Login",""], userRows, "No cloud users yet.") + '</section>';
     }
     function bindAdminForms() {
       const byId = (id) => document.getElementById(id);
+      const checkedClientIds = () => Array.from(document.querySelectorAll(".admin-client-check:checked")).map((input) => Number(input.value)).filter(Boolean);
+      const setClientChecks = (ids) => {
+        const wanted = new Set((ids || []).map((id) => String(id)));
+        document.querySelectorAll(".admin-client-check").forEach((input) => { input.checked = wanted.has(String(input.value)); });
+      };
+      const clearUserForm = () => {
+        byId("admin-user-email").value = "";
+        byId("admin-user-name").value = "";
+        byId("admin-user-role").value = "read";
+        byId("admin-user-status").value = "active";
+        setClientChecks([]);
+      };
+      byId("admin-select-all-clients")?.addEventListener("click", () => document.querySelectorAll(".admin-client-check").forEach((input) => { input.checked = true; }));
+      byId("admin-clear-clients")?.addEventListener("click", () => setClientChecks([]));
+      byId("admin-clear-user")?.addEventListener("click", clearUserForm);
+      document.querySelectorAll(".admin-edit-user").forEach((button) => {
+        button.addEventListener("click", () => {
+          const user = JSON.parse(decodeURIComponent(button.dataset.user || "%7B%7D"));
+          byId("admin-user-email").value = user.email || "";
+          byId("admin-user-name").value = user.name || "";
+          byId("admin-user-role").value = user.role || "read";
+          byId("admin-user-status").value = user.status || "active";
+          setClientChecks(user.client_ids || []);
+          byId("admin-user-email").focus();
+        });
+      });
       byId("admin-save-user")?.addEventListener("click", () => (async () => {
         const payload = {
           email: byId("admin-user-email").value,
           name: byId("admin-user-name").value,
           role: byId("admin-user-role").value,
           status: byId("admin-user-status").value,
-          client_ids: (byId("admin-user-clients").value || "").split(",").map((v) => Number(v.trim())).filter(Boolean)
+          client_ids: checkedClientIds()
         };
         const response = await fetch("/api/admin/users", { method: "POST", headers: writeHeaders(), body: JSON.stringify(payload) });
         const data = await response.json();
@@ -2523,13 +2581,14 @@ function cloudMirrorHtml() {
         targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
         entities: () => entitiesView(data),
         plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>',
-        audit: () => '<section><div class="head"><h3>Audit Trail</h3><span class="muted">Recent report, sync, bridge, and command events.</span></div>' + auditTable(data.audit_events || []) + '</section>',
+        audit: () => auditView(data),
         commands: () => commandsView(data),
         admin: () => adminView(data)
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
       setTimeout(bindDetailControls, 0);
+      if (state.page === "audit") setTimeout(bindAuditFilters, 0);
       if (state.page === "admin") setTimeout(bindAdminForms, 0);
     }
     function lockedView(message) {
