@@ -68,6 +68,12 @@ function requireAdminAuth(request, env) {
   return Boolean(expected && header === `Bearer ${expected}`);
 }
 
+function requireReadAuth(request, env) {
+  const header = request.headers.get("authorization") || "";
+  const tokens = [env.READ_TOKEN, env.ADMIN_TOKEN, env.SYNC_TOKEN].filter(Boolean);
+  return tokens.some((token) => header === `Bearer ${token}`);
+}
+
 const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora"]);
 
 async function sha256Hex(value) {
@@ -217,7 +223,9 @@ async function createCommand(request, env) {
   const commandType = String(payload.command_type || "").trim();
   if (!COMMAND_TYPES.has(commandType)) return json({ ok: false, error: "Unsupported command type" }, 400);
   const commandPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
-  const commandKey = String(payload.command_key || "").trim() || await sha256Hex(`${commandType}:${stableStringify(commandPayload)}`);
+  const commandKeyPayload = { ...commandPayload };
+  delete commandKeyPayload.reviewed_at;
+  const commandKey = String(payload.command_key || "").trim() || await sha256Hex(`${commandType}:${stableStringify(commandKeyPayload)}`);
   const now = new Date().toISOString();
   const existing = await env.DB.prepare("SELECT * FROM cloud_commands WHERE command_key = ?").bind(commandKey).first();
   if (existing && !payload.force_duplicate) {
@@ -240,7 +248,7 @@ function normalizeCommand(row) {
 }
 
 async function listCommands(request, env) {
-  if (!requireSyncAuth(request, env) && !requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
   const limit = Math.min(Number(url.searchParams.get("limit") || 100), 250);
@@ -258,6 +266,7 @@ async function updateCommand(request, env, id) {
   const payload = await request.json();
   const status = String(payload.status || "").trim();
   if (!["pending", "claimed", "complete", "failed"].includes(status)) return json({ ok: false, error: "Unsupported command status" }, 400);
+  if (status === "pending" && !requireAdminAuth(request, env)) return json({ ok: false, error: "Admin token required to reset commands" }, 403);
   const now = new Date().toISOString();
   if (status === "claimed") {
     await env.DB.prepare("UPDATE cloud_commands SET status = 'claimed', claimed_at = COALESCE(claimed_at, ?) WHERE id = ?").bind(now, id).run();
@@ -332,6 +341,7 @@ async function countTable(env, table) {
 }
 
 async function handleDashboardData(request, env) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
     countTable(env, "projects"),
@@ -390,6 +400,7 @@ async function handleDashboardData(request, env) {
 }
 
 async function handleDashboardMirrorData(request, env) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   const overview = await handleDashboardData(request, env).then((response) => response.json());
   const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands] = await Promise.all([
     env.DB.prepare(
@@ -656,7 +667,11 @@ function cloudMirrorHtml() {
     .status-row:last-child { border-bottom:0; padding-bottom:0; }
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
-    input { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
+    .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
+    input, select { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
+    .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; }
+    .review { background:rgba(77,182,172,.08); border:1px solid rgba(110,231,220,.35); border-radius:8px; margin:12px; padding:12px; }
+    .review pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); }
     @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2 { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
@@ -671,11 +686,17 @@ function cloudMirrorHtml() {
         <div><h2 id="page-title">Overview</h2><div id="page-note" class="muted">Loading synced production data...</div></div>
         <div class="toolbar"><input id="search" placeholder="Filter current page"><button id="refresh">Refresh</button></div>
       </div>
+      <div class="access">
+        <span class="muted">Dashboard access</span>
+        <input id="read-token" type="password" placeholder="Read/admin token">
+        <button id="save-read-token">Unlock</button>
+        <button id="lock-dashboard" class="secondary">Lock</button>
+      </div>
       <div id="app"><div class="empty">Loading cloud mirror...</div></div>
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "" };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -694,6 +715,9 @@ function cloudMirrorHtml() {
     const esc = (v) => String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
     const reportUrl = (token) => "/share/report/" + encodeURIComponent(token);
     const downloadUrl = (token) => reportUrl(token) + "/download";
+    const readToken = () => localStorage.getItem("opos_read_token") || localStorage.getItem("opos_admin_token") || "";
+    const adminToken = () => localStorage.getItem("opos_admin_token") || "";
+    const authHeaders = (token) => token ? { "authorization": "Bearer " + token } : {};
     function rows(items, predicate) {
       const q = state.q.toLowerCase();
       return (items || []).filter((item) => !q || JSON.stringify(item).toLowerCase().includes(q)).filter(predicate || (() => true));
@@ -759,23 +783,39 @@ function cloudMirrorHtml() {
       return (state.data?.runs || []).map((r) => '<option value="' + esc(r.id) + '">' + esc((r.keyword || "Run") + " | " + (r.project_name || "")) + '</option>').join("");
     }
     function commandsTable(items) {
-      return table(["Command", "Status", "Created", "Result", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(fmtDate(c.created_at)) + '</td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td><td>' + (c.status === "failed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Retry</button>' : '') + (c.status === "claimed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Reset</button>' : '') + '</td></tr>'), "No cloud commands yet.");
+      return table(["Command", "Status", "Queued By", "Timeline", "Result", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(c.created_by || "") + '</td><td><span class="muted">Queued ' + esc(fmtDate(c.created_at)) + '<br>Claimed ' + esc(fmtDate(c.claimed_at)) + '<br>Done ' + esc(fmtDate(c.completed_at)) + '</span></td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td><td>' + (c.status === "failed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Retry</button>' : '') + (c.status === "claimed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Reset</button>' : '') + '</td></tr>'), "No cloud commands yet.");
     }
-    async function createCommand(command_type, payload) {
-      const token = localStorage.getItem("opos_admin_token") || "";
+    function commandSummary(command_type, payload) {
+      if (command_type === "create_project") return 'Create or reuse client "' + (payload.name || "") + '" for ' + (payload.site_domain || "no domain");
+      if (command_type === "add_keyword") return 'Add or reuse keyword "' + (payload.keyword || "") + '" on client ID ' + (payload.project_id || "");
+      if (command_type === "create_content_plan") return 'Create or reuse content plan "' + (payload.title || "") + '" on client ID ' + (payload.project_id || "");
+      if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
+      if (command_type === "run_cora") return 'Queue Cora locally for "' + (payload.keyword || "") + '" against ' + (payload.target_url || "") + '. Local bridge must allow Cora execution.';
+      return command_type;
+    }
+    function setPendingCommand(command_type, payload) {
+      state.pendingWrite = { command_type, payload, summary: commandSummary(command_type, payload) };
+      render();
+    }
+    async function sendPendingCommand() {
+      const pending = state.pendingWrite;
+      if (!pending) return;
+      const token = adminToken();
       if (!token) throw new Error("Unlock cloud writes first.");
+      const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
       const response = await fetch("/api/commands", {
         method: "POST",
         headers: { "content-type": "application/json", "authorization": "Bearer " + token },
-        body: JSON.stringify({ command_type, payload, created_by: "cloud-dashboard" })
+        body: JSON.stringify({ command_type: pending.command_type, payload: { ...pending.payload, reviewed_at: new Date().toISOString() }, created_by: operator })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Command failed");
+      state.pendingWrite = null;
       await load();
       if (data.duplicate) alert("Matching command already exists; not queued again.");
     }
     async function retryCommand(id) {
-      const token = localStorage.getItem("opos_admin_token") || "";
+      const token = adminToken();
       if (!token) throw new Error("Unlock cloud writes first.");
       const response = await fetch("/api/commands/" + encodeURIComponent(id), {
         method: "POST",
@@ -787,26 +827,30 @@ function cloudMirrorHtml() {
       await load();
     }
     function commandsView(data) {
+      const pending = state.pendingWrite;
+      const review = pending ? '<section><div class="head"><h3>Review Command</h3><span class="pill warn">Not queued yet</span></div><div class="review"><strong>' + esc(pending.summary) + '</strong><pre>' + esc(JSON.stringify(pending.payload, null, 2)) + '</pre><div class="toolbar"><button id="confirm-command">Queue Reviewed Command</button><button id="cancel-command" class="secondary">Cancel</button></div></div></section>' : '';
       const forms = '<div class="grid2">'
-        + '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Commands run locally</span></div><div class="status-list"><div class="muted">Enter the Cloudflare admin/sync token. The browser stores it locally and sends it only to this Worker.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(localStorage.getItem("opos_admin_token") || "") + '"><div class="toolbar"><button id="save-token">Save Token</button><button id="clear-token">Clear</button></div></div></section>'
-        + '<section><div class="head"><h3>Create Client</h3></div><div class="status-list"><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Queue Create Client</button></div></section>'
-        + '<section><div class="head"><h3>Add Keyword</h3></div><div class="status-list"><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Queue Keyword</button></div></section>'
-        + '<section><div class="head"><h3>Content Plan</h3></div><div class="status-list"><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Queue Content Plan</button></div></section>'
-        + '<section><div class="head"><h3>Customer Report</h3></div><div class="status-list"><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Queue Report</button></div></section>'
-        + '<section><div class="head"><h3>Run Cora</h3></div><div class="status-list"><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Queue Cora Run</button></div></section>'
-        + '</div><section><div class="head"><h3>Command History</h3></div>' + commandsTable(data.commands || []) + '</section>';
+        + '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Commands run locally</span></div><div class="status-list"><div class="muted">Writes require the admin/sync token. Dashboard read access is separate and can use READ_TOKEN when configured.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>'
+        + '<section><div class="head"><h3>Create Client</h3></div><div class="status-list"><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div></section>'
+        + '<section><div class="head"><h3>Add Keyword</h3></div><div class="status-list"><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Review Keyword</button></div></section>'
+        + '<section><div class="head"><h3>Content Plan</h3></div><div class="status-list"><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div></section>'
+        + '<section><div class="head"><h3>Customer Report</h3></div><div class="status-list"><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></section>'
+        + '<section><div class="head"><h3>Run Cora</h3></div><div class="status-list"><div class="muted">This only queues work. The local bridge must have Cora execution explicitly enabled.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div></section>'
+        + '</div>' + review + '<section><div class="head"><h3>Command History</h3><span class="muted">Queued, claimed, completed, and local result are tracked here.</span></div>' + commandsTable(data.commands || []) + '</section>';
       setTimeout(bindCommandForms, 0);
       return forms;
     }
     function bindCommandForms() {
       const byId = (id) => document.getElementById(id);
-      byId("save-token")?.addEventListener("click", () => { localStorage.setItem("opos_admin_token", byId("admin-token").value || ""); alert("Token saved."); });
+      byId("save-token")?.addEventListener("click", () => { localStorage.setItem("opos_admin_token", byId("admin-token").value || ""); localStorage.setItem("opos_operator_name", byId("operator-name").value || "cloud-dashboard"); alert("Write access saved."); });
       byId("clear-token")?.addEventListener("click", () => { localStorage.removeItem("opos_admin_token"); byId("admin-token").value = ""; });
-      byId("cmd-create-client")?.addEventListener("click", () => createCommand("create_project", { name: byId("cmd-client-name").value, site_domain: byId("cmd-client-site").value, notes: byId("cmd-client-notes").value }).catch((e) => alert(e.message)));
-      byId("cmd-add-keyword")?.addEventListener("click", () => createCommand("add_keyword", { project_id: Number(byId("cmd-keyword-project").value), keyword: byId("cmd-keyword").value }).catch((e) => alert(e.message)));
-      byId("cmd-content-plan")?.addEventListener("click", () => createCommand("create_content_plan", { project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }).catch((e) => alert(e.message)));
-      byId("cmd-share-report")?.addEventListener("click", () => createCommand("create_share_report", { run_id: Number(byId("cmd-report-run").value), level: byId("cmd-report-level").value, title: byId("cmd-report-title").value }).catch((e) => alert(e.message)));
-      byId("cmd-run-cora")?.addEventListener("click", () => createCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }).catch((e) => alert(e.message)));
+      byId("cmd-create-client")?.addEventListener("click", () => setPendingCommand("create_project", { name: byId("cmd-client-name").value, site_domain: byId("cmd-client-site").value, notes: byId("cmd-client-notes").value }));
+      byId("cmd-add-keyword")?.addEventListener("click", () => setPendingCommand("add_keyword", { project_id: Number(byId("cmd-keyword-project").value), keyword: byId("cmd-keyword").value }));
+      byId("cmd-content-plan")?.addEventListener("click", () => setPendingCommand("create_content_plan", { project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }));
+      byId("cmd-share-report")?.addEventListener("click", () => setPendingCommand("create_share_report", { run_id: Number(byId("cmd-report-run").value), level: byId("cmd-report-level").value, title: byId("cmd-report-title").value }));
+      byId("cmd-run-cora")?.addEventListener("click", () => setPendingCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }));
+      byId("confirm-command")?.addEventListener("click", () => sendPendingCommand().catch((e) => alert(e.message)));
+      byId("cancel-command")?.addEventListener("click", () => { state.pendingWrite = null; render(); });
       document.querySelectorAll(".retry-command").forEach((button) => button.addEventListener("click", () => retryCommand(button.dataset.commandId).catch((e) => alert(e.message))));
     }
     function render() {
@@ -829,8 +873,19 @@ function cloudMirrorHtml() {
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content();
     }
+    function lockedView(message) {
+      document.getElementById("page-title").textContent = "Locked";
+      document.getElementById("page-note").textContent = "Enter a read/admin token to view cloud dashboard data.";
+      document.getElementById("app").innerHTML = '<section><div class="head"><h3>Dashboard Locked</h3><span class="pill warn">Auth required</span></div><div class="empty">' + esc(message || "Cloud dashboard data is protected. Public customer report links still work without this token.") + '</div></section>';
+    }
     async function load() {
-      const response = await fetch("/api/dashboard/mirror");
+      const token = readToken();
+      if (!token) {
+        state.data = null;
+        lockedView();
+        return;
+      }
+      const response = await fetch("/api/dashboard/mirror", { headers: authHeaders(token) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Mirror load failed");
       state.data = data;
@@ -839,7 +894,10 @@ function cloudMirrorHtml() {
     renderNav();
     document.getElementById("refresh").onclick = () => load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
     document.getElementById("search").oninput = (event) => { state.q = event.target.value || ""; render(); };
-    load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
+    document.getElementById("read-token").value = readToken();
+    document.getElementById("save-read-token").onclick = () => { localStorage.setItem("opos_read_token", document.getElementById("read-token").value || ""); load().catch((error) => lockedView(error.message || error)); };
+    document.getElementById("lock-dashboard").onclick = () => { localStorage.removeItem("opos_read_token"); localStorage.removeItem("opos_admin_token"); state.data = null; document.getElementById("read-token").value = ""; lockedView("Dashboard locked in this browser."); };
+    load().catch((error) => lockedView(error.message || error));
     setPage("overview");
   </script>
 </body>
@@ -880,7 +938,10 @@ export default {
       if (shareDownload && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);
       if (shareReport && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareReport[1]), "report_html");
-      if (url.pathname === "/api/sync/status" && request.method === "GET") return handleStatus(env);
+      if (url.pathname === "/api/sync/status" && request.method === "GET") {
+        if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+        return handleStatus(env);
+      }
       if (url.pathname === "/api/sync/push" && request.method === "POST") return handleSyncPush(request, env);
       if (url.pathname === "/api/artifacts/status" && request.method === "GET") {
         if (!requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);

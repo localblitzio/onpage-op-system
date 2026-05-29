@@ -31,6 +31,20 @@ Put the D1 database id into `wrangler.toml`.
 wrangler secret put SYNC_TOKEN
 ```
 
+Optional but recommended for the public dashboard:
+
+```bash
+wrangler secret put READ_TOKEN
+wrangler secret put ADMIN_TOKEN
+```
+
+Auth roles:
+
+- `READ_TOKEN` can view the cloud dashboard and synced mirror data.
+- `ADMIN_TOKEN` can queue/reset cloud commands.
+- `SYNC_TOKEN` is used by the local dashboard bridge and can also act as the fallback admin/read token if the other secrets are not set.
+- Public customer report URLs under `/share/report/{token}` do not require dashboard auth.
+
 5. Initialize D1:
 
 ```bash
