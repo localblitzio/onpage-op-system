@@ -970,6 +970,17 @@ function cloudMirrorHtml() {
     .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-bottom:14px; }
     .review { background:rgba(77,182,172,.08); border:1px solid rgba(110,231,220,.35); border-radius:8px; margin:12px; padding:12px; }
     .review pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); }
+    .review.danger { background:rgba(255,123,114,.08); border-color:rgba(255,123,114,.45); }
+    .command-group { border-color:rgba(110,231,220,.25); }
+    .command-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; padding:12px; }
+    .command-card { border:1px solid var(--line); border-radius:8px; padding:12px; background:rgba(29,38,48,.45); display:grid; gap:8px; }
+    .command-card h4 { margin:0; font-size:14px; }
+    .command-card button { justify-self:start; background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
+    .field-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .field-row input { min-width:150px; flex:1 1 150px; }
+    .bridge-flags { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:12px; }
+    .bridge-flag { border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(29,38,48,.45); }
+    .bridge-flag strong { display:block; font-size:15px; }
     .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px; border-bottom:1px solid var(--line); background:rgba(29,38,48,.55); }
     .filters select { min-width:180px; }
     .actions { display:flex; gap:6px; flex-wrap:wrap; }
@@ -982,7 +993,7 @@ function cloudMirrorHtml() {
     .scroll-table { overflow:auto; max-height:520px; }
     .scroll-table table { min-width:860px; }
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
-    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2 { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
+    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
 <body>
@@ -1108,8 +1119,58 @@ function cloudMirrorHtml() {
     function runOptions() {
       return (state.data?.runs || []).map((r) => '<option value="' + esc(r.id) + '">' + esc((r.keyword || "Run") + " | " + (r.project_name || "")) + '</option>').join("");
     }
+    function commandLabel(type) {
+      const labels = {
+        create_project: "Create Client",
+        add_keyword: "Add Keyword",
+        create_content_plan: "Content Plan",
+        create_share_report: "Customer Report",
+        run_cora: "Run Cora",
+        create_ranking_snapshot: "Ranking Snapshot",
+        run_entity_lsi: "Entity Explorer",
+        sync_cloud_data: "Sync Cloud Data",
+        sync_report_artifacts: "Sync Report Files"
+      };
+      return labels[type] || type;
+    }
+    function commandStatusLabel(status) {
+      if (status === "pending") return "Queued";
+      if (status === "claimed") return "Claimed locally";
+      if (status === "complete") return "Complete";
+      if (status === "failed") return "Failed";
+      return status || "";
+    }
+    function commandStatusClass(status) {
+      return status === "complete" ? "ok" : status === "failed" ? "warn" : "";
+    }
+    function isPaidLiveCommand(command_type, payload) {
+      return ["create_ranking_snapshot", "run_entity_lsi"].includes(command_type) && !payload?.dry_run;
+    }
+    function commandRisk(command_type, payload) {
+      if (command_type === "run_cora") return "Needs local bridge with Cora enabled.";
+      if (isPaidLiveCommand(command_type, payload)) return "Paid/API run. This can use DataForSEO or LLM credits.";
+      if (["create_ranking_snapshot", "run_entity_lsi"].includes(command_type)) return "Dry run only. No paid/API execution.";
+      if (["sync_cloud_data", "sync_report_artifacts"].includes(command_type)) return "Local bridge sync command.";
+      return "Cloud write command.";
+    }
+    function commandResultActions(c) {
+      const result = c.result || {};
+      const actions = [];
+      const reportToken = result.report?.token || result.token;
+      const snapshotId = result.snapshot?.id || result.snapshot_id;
+      const entityRunId = result.runs?.[0]?.id || result.run?.id || result.entity_run_id;
+      if (reportToken) actions.push('<a class="action-link" href="' + reportUrl(reportToken) + '" target="_blank">Open Report</a>');
+      if (snapshotId) actions.push('<button class="detail-btn" data-detail-type="snapshot" data-detail-id="' + esc(snapshotId) + '">Open Snapshot</button>');
+      if (entityRunId) actions.push('<button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(entityRunId) + '">Open Entity Run</button>');
+      return actions.join("");
+    }
     function commandsTable(items) {
-      return table(["Command", "Status", "Queued By", "Timeline", "Result", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(c.created_by || "") + '</td><td><span class="muted">Queued ' + esc(fmtDate(c.created_at)) + '<br>Claimed ' + esc(fmtDate(c.claimed_at)) + '<br>Done ' + esc(fmtDate(c.completed_at)) + '</span></td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td><td>' + (c.status === "failed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Retry</button>' : '') + (c.status === "claimed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Reset</button>' : '') + '</td></tr>'), "No cloud commands yet.");
+      return table(["Command", "Status", "Queued By", "Timeline", "Result", ""], rows(items).map((c) => {
+        const actions = commandResultActions(c);
+        const retry = c.status === "failed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Retry</button>' : '';
+        const reset = c.status === "claimed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Reset</button>' : '';
+        return '<tr><td><strong>' + esc(commandLabel(c.command_type || "")) + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill ' + commandStatusClass(c.status) + '">' + esc(commandStatusLabel(c.status)) + '</span><br><span class="muted">' + esc(c.error || commandRisk(c.command_type, c.payload || {})) + '</span></td><td>' + esc(c.created_by || "") + '</td><td><span class="muted">Queued ' + esc(fmtDate(c.created_at)) + '<br>Claimed ' + esc(fmtDate(c.claimed_at)) + '<br>Done ' + esc(fmtDate(c.completed_at)) + '</span></td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span><div class="actions">' + actions + '</div></td><td><div class="actions">' + retry + reset + '</div></td></tr>';
+      }), "No cloud commands yet.");
     }
     function auditTable(items) {
       return table(["When", "Actor", "Action", "Object", "Metadata"], rows(items).map((event) => '<tr><td>' + esc(fmtDate(event.created_at)) + '</td><td>' + esc(event.actor || "") + '<br><span class="muted">' + esc(event.ip_address || "") + '</span></td><td><span class="pill">' + esc(event.action || "") + '</span></td><td>' + esc(event.object_type || "") + '<br><span class="muted">' + esc(event.object_id || "") + '</span></td><td><span class="muted">' + esc(JSON.stringify(event.metadata || {})) + '</span></td></tr>'), "No audit events yet.");
@@ -1272,12 +1333,33 @@ function cloudMirrorHtml() {
       return command_type;
     }
     function setPendingCommand(command_type, payload) {
+      const error = validateCommand(command_type, payload);
+      if (error) {
+        alert(error);
+        return;
+      }
       state.pendingWrite = { command_type, payload, summary: commandSummary(command_type, payload) };
       render();
+    }
+    function validateCommand(command_type, payload) {
+      if (command_type === "create_project" && !(payload.name || "").trim()) return "Client name is required.";
+      if (command_type === "add_keyword" && (!(payload.project_id) || !(payload.keyword || "").trim())) return "Select a client and enter a keyword.";
+      if (command_type === "create_content_plan" && (!(payload.project_id) || !(payload.title || "").trim())) return "Select a client and enter a plan title.";
+      if (command_type === "create_share_report" && !payload.run_id) return "Select a Cora run for the report.";
+      if (command_type === "run_cora" && (!(payload.project_id) || !(payload.keyword || "").trim() || !(payload.target_url || "").trim())) return "Select a client, keyword, and target URL for Cora.";
+      if (command_type === "create_ranking_snapshot" && (!(payload.project_id) || !(payload.target || "").trim())) return "Select a client and enter a target domain.";
+      if (command_type === "run_entity_lsi") {
+        if (!payload.project_id || !(payload.seed_keyword || "").trim()) return "Select a client and enter a seed keyword.";
+        if (!Array.isArray(payload.targets) || !payload.targets.length) return "Add at least one Entity Explorer model target as apiKeyId:model.";
+      }
+      return "";
     }
     async function sendPendingCommand() {
       const pending = state.pendingWrite;
       if (!pending) return;
+      if (isPaidLiveCommand(pending.command_type, pending.payload) && !document.getElementById("confirm-paid-command")?.checked) {
+        throw new Error("Confirm the paid/API run before queueing.");
+      }
       const token = adminToken();
       if (!token) throw new Error("Unlock cloud writes first.");
       const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
@@ -1306,19 +1388,15 @@ function cloudMirrorHtml() {
     }
     function commandsView(data) {
       const pending = state.pendingWrite;
-      const review = pending ? '<section><div class="head"><h3>Review Command</h3><span class="pill warn">Not queued yet</span></div><div class="review"><strong>' + esc(pending.summary) + '</strong><pre>' + esc(JSON.stringify(pending.payload, null, 2)) + '</pre><div class="toolbar"><button id="confirm-command">Queue Reviewed Command</button><button id="cancel-command" class="secondary">Cancel</button></div></div></section>' : '';
-      const forms = '<div class="grid2">'
-        + '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Commands run locally</span></div><div class="status-list"><div class="muted">Writes require the admin/sync token. Dashboard read access is separate and can use READ_TOKEN when configured.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>'
-        + '<section><div class="head"><h3>Sync Cloud Mirror</h3></div><div class="status-list"><div class="muted">Queue a local bridge sync back to Cloudflare. Leave tables empty for the full mirror dataset.</div><input id="cmd-sync-tables" placeholder="Optional tables: projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Sync</button></div></section>'
-        + '<section><div class="head"><h3>Sync Report Files</h3></div><div class="status-list"><div class="muted">Queue local upload of report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></section>'
-        + '<section><div class="head"><h3>Create Client</h3></div><div class="status-list"><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div></section>'
-        + '<section><div class="head"><h3>Add Keyword</h3></div><div class="status-list"><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Review Keyword</button></div></section>'
-        + '<section><div class="head"><h3>Content Plan</h3></div><div class="status-list"><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div></section>'
-        + '<section><div class="head"><h3>Customer Report</h3></div><div class="status-list"><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></section>'
-        + '<section><div class="head"><h3>Run Cora</h3></div><div class="status-list"><div class="muted">This only queues work. The local bridge must have Cora execution explicitly enabled.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div></section>'
-        + '<section><div class="head"><h3>Ranking Snapshot</h3><span class="pill warn">Paid/API tool</span></div><div class="status-list"><div class="muted">Runs DataForSEO Labs locally. Keep dry run checked to validate the command without API spend.</div><select id="cmd-ranking-project">' + projectOptions() + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com"><div class="toolbar"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div></section>'
-        + '<section><div class="head"><h3>Entity Explorer</h3><span class="pill warn">Paid/API tool</span></div><div class="status-list"><div class="muted">Runs selected LLM targets locally. Targets use apiKeyId:model, one per line or comma-separated.</div><select id="cmd-entity-project">' + projectOptions() + '</select><input id="cmd-entity-seed" placeholder="Seed keyword"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="1:gpt-5.4&#10;2:claude-sonnet-4-6"></textarea><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></section>'
-        + '</div>' + review + '<section><div class="head"><h3>Command History</h3><span class="muted">Queued, claimed, completed, and local result are tracked here.</span></div>' + commandsTable(data.commands || []) + '</section>';
+      const paidLive = pending && isPaidLiveCommand(pending.command_type, pending.payload);
+      const review = pending ? '<section><div class="head"><h3>Review Command</h3><span class="pill ' + (paidLive ? 'warn' : '') + '">' + esc(paidLive ? 'Paid/API review' : 'Not queued yet') + '</span></div><div class="review ' + (paidLive ? 'danger' : '') + '"><strong>' + esc(pending.summary) + '</strong><div class="muted">' + esc(commandRisk(pending.command_type, pending.payload)) + '</div>' + (paidLive ? '<label class="muted"><input id="confirm-paid-command" type="checkbox" style="min-width:auto"> I understand this can use paid API credits.</label>' : '') + '<pre>' + esc(JSON.stringify(pending.payload, null, 2)) + '</pre><div class="toolbar"><button id="confirm-command">Queue Reviewed Command</button><button id="cancel-command" class="secondary">Cancel</button></div></div></section>' : '';
+      const bridge = (data.bridges || [])[0] || {};
+      const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
+      const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes require the admin/sync token. Dashboard read access is separate and can use READ_TOKEN when configured.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
+      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Cloud Mirror</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
+      const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
+      const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge required</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs locally. Dry run is checked by default.</div><select id="cmd-ranking-project">' + projectOptions() + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Runs selected LLM targets locally. Use apiKeyId:model, one per line or comma-separated.</div><select id="cmd-entity-project">' + projectOptions() + '</select><input id="cmd-entity-seed" placeholder="Seed keyword"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="1:gpt-5.4&#10;2:claude-sonnet-4-6"></textarea><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
+      const forms = '<div class="grid2">' + access + bridgePanel + '</div>' + review + syncGroup + clientGroup + toolGroup + '<section><div class="head"><h3>Command History</h3><span class="muted">Queued, claimed locally, completed, failed, and local result are tracked here.</span></div>' + commandsTable(data.commands || []) + '</section>';
       setTimeout(bindCommandForms, 0);
       return forms;
     }
@@ -1326,6 +1404,11 @@ function cloudMirrorHtml() {
       const byId = (id) => document.getElementById(id);
       byId("save-token")?.addEventListener("click", () => { localStorage.setItem("opos_admin_token", byId("admin-token").value || ""); localStorage.setItem("opos_operator_name", byId("operator-name").value || "cloud-dashboard"); alert("Write access saved."); });
       byId("clear-token")?.addEventListener("click", () => { localStorage.removeItem("opos_admin_token"); byId("admin-token").value = ""; });
+      byId("cmd-bridge-dry-sync")?.addEventListener("click", () => setPendingCommand("sync_cloud_data", { tables: ["projects"], dry_run: true }));
+      byId("cmd-bridge-dry-ranking")?.addEventListener("click", () => {
+        const projectId = Number((state.data?.clients || [])[0]?.id || 0);
+        setPendingCommand("create_ranking_snapshot", { project_id: projectId, target: "example.com", location_code: 2840, language_code: "en", limit: 100, dry_run: true });
+      });
       byId("cmd-create-client")?.addEventListener("click", () => setPendingCommand("create_project", { name: byId("cmd-client-name").value, site_domain: byId("cmd-client-site").value, notes: byId("cmd-client-notes").value }));
       byId("cmd-add-keyword")?.addEventListener("click", () => setPendingCommand("add_keyword", { project_id: Number(byId("cmd-keyword-project").value), keyword: byId("cmd-keyword").value }));
       byId("cmd-content-plan")?.addEventListener("click", () => setPendingCommand("create_content_plan", { project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }));
