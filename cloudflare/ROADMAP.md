@@ -8,6 +8,7 @@
 - Audit events are recorded for report views/downloads, sync pushes, artifact uploads, bridge status changes, and command lifecycle events.
 - Cloud mirror drilldowns exist for Cora runs, ranking snapshots, and entity sets.
 - Client workspace drilldowns tie together keywords, runs, reports, snapshots, targets, jobs, content plans, and entity activity.
+- Entity Explorer run drilldowns expose parsed entities, LSI keywords, related keywords, questions, topics, summary, errors, and raw response preview.
 
 ## Report Portal
 
@@ -21,8 +22,9 @@
 - Cora run drilldowns expose recommendations, SERP rows, LSI keywords, and sheet summaries.
 - Ranking Snapshot drilldowns expose ranking keywords, ranking pages, and optimization targets.
 - Entity Set drilldowns expose selected terms and source metadata.
+- Entity Explorer run drilldowns expose each model's parsed extraction payload.
 - Client workspaces expose each client's synced operational data in one place.
-- Remaining parity work: detailed Entity Explorer run payloads, workbook row exploration, local UI structure matching, and broader cloud actions.
+- Remaining parity work: workbook row exploration, local UI structure matching, and broader cloud actions.
 
 ## User And Admin Management
 

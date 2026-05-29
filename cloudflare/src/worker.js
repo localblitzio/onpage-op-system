@@ -645,6 +645,38 @@ async function handleEntitySetDetail(request, env, id) {
   });
 }
 
+async function handleEntityRunDetail(request, env, id) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const run = await env.DB.prepare(
+    `SELECT r.*, p.name AS project_name
+     FROM entity_lsi_runs r
+     LEFT JOIN projects p ON p.id = r.project_id
+     WHERE r.id = ?`
+  ).bind(id).first();
+  if (!run) return json({ ok: false, error: "Entity Explorer run not found" }, 404);
+  await logAudit(request, env, "entity_run_detail_view", "entity_lsi_run", id, {
+    seed_keyword: run.seed_keyword || "",
+    provider: run.provider || "",
+    model: run.model || ""
+  }, "cloud-dashboard");
+  return json({
+    ok: true,
+    entity_run: {
+      ...run,
+      entities: parseJsonField(run.entities_json, []),
+      lsi_keywords: parseJsonField(run.lsi_keywords_json, []),
+      related_keywords: parseJsonField(run.related_keywords_json, []),
+      questions: parseJsonField(run.questions_json, []),
+      topics: parseJsonField(run.topics_json, []),
+      entities_json: undefined,
+      lsi_keywords_json: undefined,
+      related_keywords_json: undefined,
+      questions_json: undefined,
+      topics_json: undefined
+    }
+  });
+}
+
 async function handleClientDetail(request, env, id) {
   if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   const client = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
@@ -1007,7 +1039,7 @@ function cloudMirrorHtml() {
     }
     function entitiesView(data) {
       const batches = table(["Seed", "Client", "Depth", "Progress", "Status"], rows(data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td></tr>'));
-      const runs = table(["Seed", "Provider", "Model", "Status", "Completed"], rows(data.entity_runs || []).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '</td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td></tr>'));
+      const runs = table(["Seed", "Provider", "Model", "Status", "Completed", ""], rows(data.entity_runs || []).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '</td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>'));
       const sets = table(["Set", "Client", "Terms", "Updated", ""], rows(data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>'));
       return '<div class="grid2"><section><div class="head"><h3>Entity Batches</h3></div>' + batches + '</section><section><div class="head"><h3>Entity Sets</h3></div>' + sets + '</section></div><section><div class="head"><h3>Model Runs</h3></div>' + runs + '</section>';
     }
@@ -1039,6 +1071,7 @@ function cloudMirrorHtml() {
         client: "/api/clients/" + encodeURIComponent(id) + "/detail",
         run: "/api/runs/" + encodeURIComponent(id) + "/detail",
         snapshot: "/api/ranking-snapshots/" + encodeURIComponent(id) + "/detail",
+        "entity-run": "/api/entity-runs/" + encodeURIComponent(id) + "/detail",
         "entity-set": "/api/entity-sets/" + encodeURIComponent(id) + "/detail"
       };
       state.detail = { type, loading: true, id };
@@ -1085,6 +1118,31 @@ function cloudMirrorHtml() {
       return smallCards([["Entity Set", set.name || ""],["Client", set.project_name || ""],["Terms", terms.length],["Created", fmtDate(set.created_at)],["Updated", fmtDate(set.updated_at)],["Source Batch", set.source_batch_id || ""]])
         + '<section><div class="head"><h3>Entity Terms</h3></div>' + detailTable(["Term","Type","Sources","Source Detail","Notes"], termRows, "No entity terms synced for this set.") + '</section>';
     }
+    function listItemsTable(values, label) {
+      const items = Array.isArray(values) ? values : [];
+      const body = items.map((item) => {
+        if (item && typeof item === "object") {
+          const name = item.term || item.entity || item.keyword || item.question || item.topic || item.name || item.text || "";
+          const type = item.type || item.category || item.intent || "";
+          const score = item.score || item.relevance || item.source_count || item.count || "";
+          return '<tr><td><strong>' + esc(name || JSON.stringify(item)) + '</strong></td><td>' + esc(type) + '</td><td>' + esc(score) + '</td><td><span class="muted">' + esc(JSON.stringify(item)) + '</span></td></tr>';
+        }
+        return '<tr><td><strong>' + esc(item) + '</strong></td><td></td><td></td><td></td></tr>';
+      });
+      return detailTable(["Term", "Type", "Score", "Raw"], body, "No " + label + " synced for this run.");
+    }
+    function entityRunDetail(data) {
+      const run = data.entity_run || {};
+      const rawPreview = String(run.raw_response || "").slice(0, 6000);
+      return smallCards([["Seed", run.seed_keyword || ""],["Client", run.project_name || ""],["Provider", run.provider || ""],["Model", run.model || ""],["Status", run.status || ""],["Depth", run.depth || ""],["Entities", (run.entities || []).length],["LSI", (run.lsi_keywords || []).length],["Related", (run.related_keywords || []).length]])
+        + '<section><div class="head"><h3>Summary</h3></div><div class="empty">' + esc(run.summary || run.error || "No summary synced.") + '</div></section>'
+        + '<section><div class="head"><h3>Entities</h3></div>' + listItemsTable(run.entities, "entities") + '</section>'
+        + '<section><div class="head"><h3>LSI Keywords</h3></div>' + listItemsTable(run.lsi_keywords, "LSI keywords") + '</section>'
+        + '<section><div class="head"><h3>Related Keywords</h3></div>' + listItemsTable(run.related_keywords, "related keywords") + '</section>'
+        + '<section><div class="head"><h3>Questions</h3></div>' + listItemsTable(run.questions, "questions") + '</section>'
+        + '<section><div class="head"><h3>Topics</h3></div>' + listItemsTable(run.topics, "topics") + '</section>'
+        + '<section><div class="head"><h3>Raw Response Preview</h3></div><div class="empty"><pre>' + esc(rawPreview || "No raw response synced.") + '</pre></div></section>';
+    }
     function clientDetail(data) {
       const client = data.client || {};
       const keywordRows = (data.keywords || []).map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong></td><td>' + esc(k.intent || "") + '</td><td>' + esc(k.priority || "") + '</td><td>' + esc(fmtDate(k.created_at)) + '</td></tr>');
@@ -1095,6 +1153,7 @@ function cloudMirrorHtml() {
       const jobRows = (data.jobs || []).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>');
       const planRows = (data.content_plans || []).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>');
       const entityRows = (data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td></tr>');
+      const entityRunRows = (data.entity_runs || []).map((r) => '<tr><td><strong>' + esc(r.seed_keyword || "") + '</strong></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span></td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const setRows = (data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
       return smallCards([["Client", client.name || ""],["Main URL", client.site_domain || ""],["Keywords", (data.keywords || []).length],["Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length]])
         + '<section><div class="head"><h3>Keywords</h3></div>' + detailTable(["Keyword","Intent","Priority","Created"], keywordRows, "No keywords synced for this client.") + '</section>'
@@ -1105,14 +1164,15 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Jobs</h3></div>' + detailTable(["Keyword","Tool/Profile","Status","Updated"], jobRows, "No jobs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Content Plans</h3></div>' + detailTable(["Title","Keyword","Type","Status","Due"], planRows, "No content plans synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Entity Activity</h3></div>' + detailTable(["Seed","Depth","Progress","Status","Updated"], entityRows, "No entity batches synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Entity Model Runs</h3></div>' + detailTable(["Seed","Provider","Model","Status",""], entityRunRows, "No entity model runs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Entity Sets</h3></div>' + detailTable(["Set","Terms","Updated",""], setRows, "No entity sets synced for this client.") + '</section>';
     }
     function detailPanel() {
       const detail = state.detail;
       if (!detail) return "";
       if (detail.loading) return '<section class="detail-panel"><div class="head"><h3>Loading Details</h3><button class="close-detail">Close</button></div><div class="empty">Loading detail data...</div></section>';
-      const renderers = { client: clientDetail, run: runDetail, snapshot: snapshotDetail, "entity-set": entitySetDetail };
-      const title = detail.type === "client" ? "Client Workspace" : detail.type === "run" ? "Cora Run Detail" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : "Entity Set Detail";
+      const renderers = { client: clientDetail, run: runDetail, snapshot: snapshotDetail, "entity-run": entityRunDetail, "entity-set": entitySetDetail };
+      const title = detail.type === "client" ? "Client Workspace" : detail.type === "run" ? "Cora Run Detail" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : detail.type === "entity-run" ? "Entity Explorer Run Detail" : "Entity Set Detail";
       return '<section class="detail-panel"><div class="head"><h3>' + esc(title) + '</h3><button class="close-detail">Close</button></div>' + (renderers[detail.type] ? renderers[detail.type](detail.data || {}) : '<div class="empty">Unsupported detail type.</div>') + '</section>';
     }
     function commandSummary(command_type, payload) {
@@ -1393,6 +1453,8 @@ export default {
       if (runDetailRoute && request.method === "GET") return handleRunDetail(request, env, Number(runDetailRoute[1]));
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
       if (rankingSnapshotDetailRoute && request.method === "GET") return handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
+      const entityRunDetailRoute = url.pathname.match(/^\/api\/entity-runs\/(\d+)\/detail$/);
+      if (entityRunDetailRoute && request.method === "GET") return handleEntityRunDetail(request, env, Number(entityRunDetailRoute[1]));
       const entitySetDetailRoute = url.pathname.match(/^\/api\/entity-sets\/(\d+)\/detail$/);
       if (entitySetDetailRoute && request.method === "GET") return handleEntitySetDetail(request, env, Number(entitySetDetailRoute[1]));
       if (url.pathname === "/api/commands" && request.method === "GET") return listCommands(request, env);
