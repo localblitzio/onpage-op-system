@@ -1967,7 +1967,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", detail: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -1977,6 +1977,8 @@ function cloudMirrorHtml() {
       ["ranking", "Ranking Snapshots"],
       ["targets", "Optimization Targets"],
       ["entities", "Entity Explorer"],
+      ["entity-crossover", "Entity Crossover"],
+      ["entity-sets", "Entity Sets"],
       ["plans", "Content Plans"],
       ["audit", "Audit Trail"],
       ["commands", "Cloud Commands"],
@@ -2061,11 +2063,51 @@ function cloudMirrorHtml() {
     function targetsTable(items) {
       return table(["URL", "Client", "Keyword", "Position", "Score", "Status"], rows(items).map((t) => '<tr><td><strong>' + esc(t.url || "") + '</strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_score)) + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>'));
     }
-    function entitiesView(data) {
-      const batches = table(["Seed", "Client", "Depth", "Progress", "Status"], rows(data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td></tr>'));
-      const runs = table(["Seed", "Provider", "Model", "Status", "Completed", ""], rows(data.entity_runs || []).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '</td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>'));
-      const sets = table(["Set", "Client", "Terms", "Updated", ""], rows(data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>'));
-      return '<div class="grid2"><section><div class="head"><h3>Entity Batches</h3></div>' + batches + '</section><section><div class="head"><h3>Entity Sets</h3></div>' + sets + '</section></div><section><div class="head"><h3>Model Runs</h3></div>' + runs + '</section>';
+    function entityBatchStatusClass(status) {
+      return status === "complete" ? "ok" : status === "failed" || status === "partial" ? "warn" : "";
+    }
+    function entityBatchProgress(batch) {
+      const total = Number(batch.target_count || 0);
+      const complete = Number(batch.completed_count || 0);
+      const failed = Number(batch.failed_count || 0);
+      return esc(fmtNum(complete)) + ' complete' + (failed ? ', ' + esc(fmtNum(failed)) + ' failed' : '') + (total ? ' / ' + esc(fmtNum(total)) + ' total' : '');
+    }
+    function entityExplorerView(data) {
+      const batches = data.entity_batches || [];
+      const runs = data.entity_runs || [];
+      const sets = data.entity_sets || [];
+      const latest = batches.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
+      const batchRows = batches.map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong><br><span class="muted">' + esc(fmtDate(b.created_at)) + '</span></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + entityBatchProgress(b) + '</td><td><span class="pill ' + entityBatchStatusClass(b.status) + '">' + esc(b.status || "") + '</span></td><td><button class="entity-batch-select detail-btn" data-batch-id="' + esc(b.id) + '">Open Crossover</button></td></tr>');
+      const runRows = runs.slice(0, 60).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '<br><span class="muted">' + esc(r.project_name || "") + '</span></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill ' + (r.status === "complete" ? "ok" : r.status === "failed" ? "warn" : "") + '">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
+      const actions = '<div class="toolbar"><button class="entity-page-link" data-entity-page="entity-crossover">Entity Crossover</button><button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button><button class="entity-page-link secondary" data-entity-page="commands">Run Entity Explorer</button></div>';
+      setTimeout(bindEntityPageControls, 0);
+      return cards([["Entity Batches", batches.length],["Model Runs", runs.length],["Entity Sets", sets.length],["Latest Batch", latest ? latest.seed_keyword : "None"]])
+        + '<section><div class="head"><h3>Entity Explorer</h3><span class="muted">Cloud mirror of local Entity & LSI work.</span></div><div class="status-list">' + actions + '</div></section>'
+        + '<section><div class="head"><h3>Entity Batches</h3></div>' + table(["Seed","Client","Depth","Progress","Status",""], rows(batchRows.map((html, i) => ({ html, _search: JSON.stringify(batches[i] || {}) }))).map((row) => row.html), "No entity batches synced yet.") + '</section>'
+        + '<section><div class="head"><h3>Model Runs</h3></div>' + table(["Seed","Provider","Model","Status","Completed",""], rows(runRows.map((html, i) => ({ html, _search: JSON.stringify(runs[i] || {}) }))).map((row) => row.html), "No entity model runs synced yet.") + '</section>';
+    }
+    function entityCrossoverView(data) {
+      const batches = data.entity_batches || [];
+      const selected = state.entityBatch === "all" ? batches[0] : batches.find((batch) => String(batch.id) === String(state.entityBatch));
+      const batchRuns = selected ? (data.entity_runs || []).filter((run) => String(run.batch_id || "") === String(selected.id)) : [];
+      const batchOptions = '<select id="entity-batch-filter">' + (batches.length ? batches.map((batch) => '<option value="' + esc(batch.id) + '"' + (selected && String(batch.id) === String(selected.id) ? ' selected' : '') + '>' + esc((batch.seed_keyword || "Batch") + " | " + (batch.project_name || "") + " | " + fmtDate(batch.created_at)) + '</option>').join("") : '<option value="all">No batches</option>') + '</select>';
+      const batchRows = batches.map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong><br><span class="muted">' + esc(b.project_name || "") + '</span></td><td>' + esc(b.depth || "") + '</td><td>' + entityBatchProgress(b) + '</td><td><span class="pill ' + entityBatchStatusClass(b.status) + '">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td><td><button class="entity-batch-select detail-btn" data-batch-id="' + esc(b.id) + '">Open</button></td></tr>');
+      const runRows = batchRuns.map((r) => '<tr><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill ' + (r.status === "complete" ? "ok" : r.status === "failed" ? "warn" : "") + '">' + esc(r.status || "") + '</span></td><td><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
+      setTimeout(bindEntityPageControls, 0);
+      return '<section><div class="head"><h3>Entity Crossover</h3><span class="muted">Read-only cloud view of multi-model entity batches.</span></div><div class="filters">' + batchOptions + '<button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button></div></section>'
+        + (selected ? cards([["Selected Batch", selected.seed_keyword || ""],["Client", selected.project_name || ""],["Progress", entityBatchProgress(selected)],["Models", batchRuns.length]]) : "")
+        + '<section><div class="head"><h3>Selected Batch Model Runs</h3></div>' + table(["Provider","Model","Status","Summary / Error","Completed",""], runRows, "Select or run an entity batch first.") + '</section>'
+        + '<section><div class="head"><h3>All Entity Batches</h3></div>' + table(["Seed","Depth","Progress","Status","Updated",""], rows(batchRows.map((html, i) => ({ html, _search: JSON.stringify(batches[i] || {}) }))).map((row) => row.html), "No entity batches synced yet.") + '</section>';
+    }
+    function entitySetsView(data) {
+      const sets = data.entity_sets || [];
+      const clients = [...new Map(sets.map((set) => [String(set.project_id || ""), set.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const filtered = sets.filter((set) => state.entitySetClient === "all" || String(set.project_id || "") === state.entitySetClient);
+      const filters = '<div class="filters"><select id="entity-set-client-filter"><option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.entitySetClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(sets.length) + ' sets</span></div>';
+      const setRows = filtered.map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(s.source_batch_id || "") + '</td><td>' + esc(fmtDate(s.updated_at || s.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
+      setTimeout(bindEntityPageControls, 0);
+      return cards([["Entity Sets", sets.length],["Visible Sets", filtered.length],["Saved Terms", sets.reduce((sum, set) => sum + Number(set.term_count || 0), 0)],["Clients", clients.length]])
+        + '<section><div class="head"><h3>Entity Sets</h3><span class="muted">Saved approved entity/LSI terms from crossover analysis.</span></div>' + filters + table(["Set","Client","Terms","Source Batch","Updated",""], setRows, "No entity sets synced yet.") + '</section>';
     }
     function plansTable(items) {
       return table(["Title", "Client", "Keyword", "Type", "Status", "Due"], rows(items).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.project_name || "") + '</td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span><br><span class="muted">' + esc(p.priority || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>'));
@@ -2168,6 +2210,21 @@ function cloudMirrorHtml() {
       if (actor) actor.onchange = (event) => { state.auditActor = event.target.value || "all"; render(); };
       if (action) action.onchange = (event) => { state.auditAction = event.target.value || "all"; render(); };
       if (object) object.onchange = (event) => { state.auditObject = event.target.value || "all"; render(); };
+    }
+    function bindEntityPageControls() {
+      document.querySelectorAll(".entity-page-link").forEach((button) => {
+        button.onclick = () => setPage(button.dataset.entityPage || "entities");
+      });
+      document.querySelectorAll(".entity-batch-select").forEach((button) => {
+        button.onclick = () => {
+          state.entityBatch = button.dataset.batchId || "all";
+          setPage("entity-crossover");
+        };
+      });
+      const batchFilter = document.getElementById("entity-batch-filter");
+      if (batchFilter) batchFilter.onchange = (event) => { state.entityBatch = event.target.value || "all"; render(); };
+      const setClient = document.getElementById("entity-set-client-filter");
+      if (setClient) setClient.onchange = (event) => { state.entitySetClient = event.target.value || "all"; render(); };
     }
     async function apiGet(path) {
       const token = readToken();
@@ -2579,7 +2636,9 @@ function cloudMirrorHtml() {
         jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
         ranking: () => '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + snapshotsTable(data.snapshots || []) + '</section>',
         targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
-        entities: () => entitiesView(data),
+        entities: () => entityExplorerView(data),
+        "entity-crossover": () => entityCrossoverView(data),
+        "entity-sets": () => entitySetsView(data),
         plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>',
         audit: () => auditView(data),
         commands: () => commandsView(data),
@@ -2588,6 +2647,7 @@ function cloudMirrorHtml() {
       document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
       setTimeout(bindDetailControls, 0);
+      if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);
       if (state.page === "audit") setTimeout(bindAuditFilters, 0);
       if (state.page === "admin") setTimeout(bindAdminForms, 0);
     }
