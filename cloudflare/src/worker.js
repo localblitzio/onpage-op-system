@@ -2637,14 +2637,28 @@ function cloudMirrorHtml() {
     }
     function rankingView(data) {
       const allSnapshots = data.snapshots || [];
-      const clients = [...new Map(allSnapshots.map((snapshot) => [String(snapshot.project_id || ""), snapshot.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const clientRows = data.clients || [];
+      const clients = clientRows.length ? clientRows.map((client) => [String(client.id || ""), client.name || "Client " + client.id]) : [...new Map(allSnapshots.map((snapshot) => [String(snapshot.project_id || ""), snapshot.project_name || "Unassigned"]).filter(([id]) => id)).entries()].map(([id, name]) => ({ id, name }));
       const snapshots = allSnapshots.filter((snapshot) => state.rankingClient === "all" || String(snapshot.project_id || "") === state.rankingClient);
       const pair = defaultSnapshotPair(snapshots);
       const baseValue = state.rankingBase || pair.base || "";
       const compareValue = state.rankingCompare || pair.compare || "";
       const options = snapshots.map((snapshot) => '<option value="' + esc(snapshot.id) + '">' + esc(snapshotOptionLabel(snapshot)) + '</option>').join("");
-      const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.rankingClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
+      const selectedClientId = state.rankingClient !== "all" ? state.rankingClient : String(clientRows[0]?.id || "");
+      const selectedClient = clientRows.find((client) => String(client.id || "") === String(selectedClientId)) || clientRows[0] || {};
+      const targetRaw = selectedClient.site_domain || selectedClient.client || "";
+      let target = targetRaw ? String(targetRaw).trim() : "";
+      target = target.replace("https://", "").replace("http://", "");
+      if (target.toLowerCase().startsWith("www.")) target = target.slice(4);
+      if (target.endsWith("/")) target = target.slice(0, -1);
+      const clientOptions = '<option value="all">All clients</option>' + clients.map((client) => {
+        const id = Array.isArray(client) ? client[0] : String(client.id || "");
+        const name = Array.isArray(client) ? client[1] : client.name || ("Client " + id);
+        return '<option value="' + esc(id) + '"' + (state.rankingClient === id ? ' selected' : '') + '>' + esc(name) + '</option>';
+      }).join("");
+      const runClientOptions = clientRows.map((client) => '<option value="' + esc(client.id) + '"' + (String(client.id || "") === String(selectedClient.id || "") ? ' selected' : '') + '>' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
       const filters = '<div class="filters"><select id="ranking-client-filter">' + clientOptions + '</select><span class="muted">' + esc(snapshots.length) + ' of ' + esc(allSnapshots.length) + ' snapshots</span></div>';
+      const runPanel = '<section><div class="head"><h3>Run Ranking Snapshot</h3><span class="pill ok">DataForSEO Labs</span></div><div class="status-list"><div class="field-row"><select id="ranking-run-client">' + runClientOptions + '</select><input id="ranking-run-target" placeholder="domain.com" value="' + esc(target) + '"></div><div class="field-row"><input id="ranking-run-location" placeholder="Location code" value="2840"><input id="ranking-run-language" placeholder="Language" value="en"><input id="ranking-run-limit" placeholder="Limit" value="1000"></div><div class="toolbar"><label class="muted"><input id="ranking-run-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="ranking-run-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="ranking-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="ranking-run-snapshot">Run Snapshot</button><div class="muted">DataForSEO Labs data is a weekly snapshot, not live rank tracking.</div></div></section>';
       const form = '<section><div class="head"><h3>Compare Snapshots</h3><span class="muted">Compare weekly DataForSEO Labs snapshots from the same client.</span></div>' + filters + '<div class="field-row" style="padding:12px;"><select id="ranking-compare-base"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><select id="ranking-compare-to"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><button id="ranking-compare-run"' + (snapshots.length >= 2 ? "" : " disabled") + '>Compare</button></div>' + (snapshots.length < 2 ? '<div class="empty">Run or sync at least two snapshots for this client to compare movement.</div>' : '') + '</section>';
       setTimeout(() => {
         const base = document.getElementById("ranking-compare-base");
@@ -2653,7 +2667,8 @@ function cloudMirrorHtml() {
         if (compare && compareValue) compare.value = String(compareValue);
         bindRankingControls();
       }, 0);
-      return form
+      return runPanel
+        + form
         + (state.rankingComparison ? rankingComparisonResults(state.rankingComparison) : "")
         + '<section><div class="head"><h3>Ranking Snapshots</h3><span class="muted">Open a snapshot for keywords, pages, and saved optimization targets.</span></div>' + snapshotsTable(snapshots) + '</section>';
     }
@@ -2682,7 +2697,7 @@ function cloudMirrorHtml() {
       const statuses = ["all", "new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"];
       const statusOptions = statuses.map((status) => '<option value="' + esc(status) + '"' + (state.targetStatus === status ? ' selected' : '') + '>' + esc(status === "all" ? "All statuses" : status.replaceAll("_", " ")) + '</option>').join("");
       const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.targetClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
-      const rowsHtml = filtered.map((t) => '<tr><td><input class="target-check" type="checkbox" data-target-id="' + esc(t.id) + '" ' + (state.targetSelection[String(t.id)] ? "checked" : "") + '></td><td><strong><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_count)) + '</td><td>' + esc(fmtNum(t.total_search_volume)) + '</td><td><span class="pill">' + esc(fmtNum(t.opportunity_score)) + '</span><br><span class="muted">' + esc(t.priority_type || "") + '</span></td><td><span class="pill">' + esc(t.status || "new") + '</span></td><td><button class="target-action mini-btn" data-target-id="' + esc(t.id) + '" data-action="cora">Review Cora</button><button class="target-action mini-btn" data-target-id="' + esc(t.id) + '" data-action="plan">Review Plan</button></td></tr>');
+      const rowsHtml = filtered.map((t) => '<tr><td><input class="target-check" type="checkbox" data-target-id="' + esc(t.id) + '" ' + (state.targetSelection[String(t.id)] ? "checked" : "") + '></td><td><strong><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_count)) + '</td><td>' + esc(fmtNum(t.total_search_volume)) + '</td><td><span class="pill">' + esc(fmtNum(t.opportunity_score)) + '</span><br><span class="muted">' + esc(t.priority_type || "") + '</span></td><td><span class="pill">' + esc(t.status || "new") + '</span></td><td><button class="target-action mini-btn" data-target-id="' + esc(t.id) + '" data-action="cora">Open Cora</button><button class="target-action mini-btn" data-target-id="' + esc(t.id) + '" data-action="plan">Create Plan</button></td></tr>');
       const selectedProjectIds = [...new Set(filtered.filter((target) => state.targetSelection[String(target.id)]).map((target) => String(target.project_id || "")).filter(Boolean))];
       const canBulkStatus = selectedCount > 0 && selectedProjectIds.length === 1;
       const toolbar = '<div class="filters"><select id="target-client-filter">' + clientOptions + '</select><select id="target-status-filter">' + statusOptions + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(targets.length) + ' targets</span></div>'
@@ -2705,17 +2720,26 @@ function cloudMirrorHtml() {
       const allBatches = data.entity_batches || [];
       const allRuns = data.entity_runs || [];
       const allSets = data.entity_sets || [];
-      const clients = [...new Map(allBatches.concat(allRuns).concat(allSets).map((item) => [String(item.project_id || ""), item.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const clientRows = data.clients || [];
+      const clients = clientRows.length ? clientRows.map((client) => [String(client.id || ""), client.name || ("Client " + client.id)]) : [...new Map(allBatches.concat(allRuns).concat(allSets).map((item) => [String(item.project_id || ""), item.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
       const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.entityClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
+      const selectedClientId = state.entityClient !== "all" ? state.entityClient : String((state.commandPrefill || {}).project_id || clientRows[0]?.id || "");
+      const selectedClient = clientRows.find((client) => String(client.id || "") === String(selectedClientId)) || clientRows[0] || {};
+      const runClientOptions = clientRows.map((client) => '<option value="' + esc(client.id) + '"' + (String(client.id || "") === String(selectedClient.id || "") ? ' selected' : '') + '>' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
+      const clientKeywords = (data.keywords || []).filter((keyword) => String(keyword.project_id || "") === String(selectedClient.id || ""));
+      const keywordOptions = clientKeywords.map((keyword) => '<option value="' + esc(keyword.keyword || "") + '">').join("");
+      const defaultSeed = (state.commandPrefill || {}).seed_keyword || (state.commandPrefill || {}).keyword || clientKeywords[0]?.keyword || "";
       const batches = allBatches.filter((batch) => state.entityClient === "all" || String(batch.project_id || "") === state.entityClient);
       const runs = allRuns.filter((run) => state.entityClient === "all" || String(run.project_id || "") === state.entityClient);
       const sets = allSets.filter((set) => state.entityClient === "all" || String(set.project_id || "") === state.entityClient);
       const latest = batches.slice().sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
       const batchRows = batches.map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong><br><span class="muted">' + esc(fmtDate(b.created_at)) + '</span></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + entityBatchProgress(b) + '</td><td><span class="pill ' + entityBatchStatusClass(b.status) + '">' + esc(b.status || "") + '</span></td><td><button class="entity-batch-select detail-btn" data-batch-id="' + esc(b.id) + '">Open Crossover</button><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(b.id) + '">Detail</button></td></tr>');
       const runRows = runs.slice(0, 60).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '<br><span class="muted">' + esc(r.project_name || "") + '</span></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill ' + (r.status === "complete" ? "ok" : r.status === "failed" ? "warn" : "") + '">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
-      const actions = '<div class="filters"><select id="entity-client-filter">' + clientOptions + '</select><span class="muted">' + esc(batches.length) + ' of ' + esc(allBatches.length) + ' batches</span></div><div class="toolbar"><button class="entity-page-link" data-entity-page="entity-crossover">Entity Crossover</button><button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button><button class="entity-run-prefill secondary">Run Entity Explorer</button></div>';
+      const actions = '<div class="filters"><select id="entity-client-filter">' + clientOptions + '</select><span class="muted">' + esc(batches.length) + ' of ' + esc(allBatches.length) + ' batches</span></div><div class="toolbar"><button class="entity-page-link" data-entity-page="entity-crossover">Entity Crossover</button><button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button></div>';
+      const runPanel = '<section><div class="head"><h3>Run Entity Explorer</h3><span class="pill ok">Cloud LLM APIs</span></div><div class="status-list"><div class="field-row"><select id="entity-run-client">' + runClientOptions + '</select><input id="entity-run-seed" list="entity-keyword-list" placeholder="Seed keyword" value="' + esc(defaultSeed) + '"><datalist id="entity-keyword-list">' + keywordOptions + '</datalist><select id="entity-run-depth"><option value="1">1 - Light</option><option value="2">2 - Focused</option><option value="3" selected>3 - Standard</option><option value="4">4 - Deep</option><option value="5">5 - Comprehensive</option></select></div><textarea id="entity-run-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8&#10;google:gemini-3.1-pro-preview&#10;perplexity:perplexity/sonar"></textarea><div class="toolbar"><label class="muted"><input id="entity-run-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="entity-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="entity-run-start">Run Entity Explorer</button></div></section>';
       setTimeout(bindEntityPageControls, 0);
       return cards([["Entity Batches", allBatches.length],["Visible Batches", batches.length],["Visible Model Runs", runs.length],["Visible Entity Sets", sets.length],["Latest Batch", latest ? latest.seed_keyword : "None"]])
+        + runPanel
         + '<section><div class="head"><h3>Entity Explorer</h3><span class="muted">Cloud mirror of local Entity & LSI work.</span></div><div class="status-list">' + actions + '</div></section>'
         + '<section><div class="head"><h3>Entity Batches</h3></div>' + table(["Seed","Client","Depth","Progress","Status",""], rows(batchRows.map((html, i) => ({ html, _search: JSON.stringify(batches[i] || {}) }))).map((row) => row.html), "No entity batches synced yet.") + '</section>'
         + '<section><div class="head"><h3>Model Runs</h3></div>' + table(["Seed","Provider","Model","Status","Completed",""], rows(runRows.map((html, i) => ({ html, _search: JSON.stringify(runs[i] || {}) }))).map((row) => row.html), "No entity model runs synced yet.") + '</section>';
@@ -2766,7 +2790,7 @@ function cloudMirrorHtml() {
       const statusOptions = statuses.map((status) => '<option value="' + esc(status) + '"' + (state.planStatus === status ? ' selected' : '') + '>' + esc(status === "all" ? "All statuses" : status.replaceAll("_", " ")) + '</option>').join("");
       const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.planClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
       const priorityOptions = '<option value="all">All priorities</option>' + priorities.map((priority) => '<option value="' + esc(priority) + '"' + (state.planPriority === priority ? ' selected' : '') + '>' + esc(priority) + '</option>').join("");
-      const rowsHtml = filtered.map((p) => '<tr><td><input class="plan-check" type="checkbox" data-plan-id="' + esc(p.id) + '" ' + (state.planSelection[String(p.id)] ? "checked" : "") + '></td><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.project_name || "") + '</td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '<br><span class="muted">' + esc(p.intent || "") + '</span></td><td><span class="pill">' + esc(p.status || "") + '</span></td><td>' + esc(p.priority || "") + '</td><td>' + esc(p.due_date || "") + '</td><td><button class="plan-action mini-btn" data-plan-id="' + esc(p.id) + '" data-action="client">Open Client</button><button class="plan-action mini-btn" data-plan-id="' + esc(p.id) + '" data-action="cora">Review Cora</button></td></tr>');
+      const rowsHtml = filtered.map((p) => '<tr><td><input class="plan-check" type="checkbox" data-plan-id="' + esc(p.id) + '" ' + (state.planSelection[String(p.id)] ? "checked" : "") + '></td><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.project_name || "") + '</td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '<br><span class="muted">' + esc(p.intent || "") + '</span></td><td><span class="pill">' + esc(p.status || "") + '</span></td><td>' + esc(p.priority || "") + '</td><td>' + esc(p.due_date || "") + '</td><td><button class="plan-action mini-btn" data-plan-id="' + esc(p.id) + '" data-action="client">Open Client</button><button class="plan-action mini-btn" data-plan-id="' + esc(p.id) + '" data-action="cora">Open Cora</button></td></tr>');
       const toolbar = '<div class="filters"><select id="plan-client-filter">' + clientOptions + '</select><select id="plan-status-filter">' + statusOptions + '</select><select id="plan-priority-filter">' + priorityOptions + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(plans.length) + ' plans</span></div>'
         + '<div class="toolbar"><button id="plan-select-visible" class="secondary">Select Visible</button><button id="plan-clear-selected" class="secondary">Clear</button><select id="plan-bulk-status"><option value="planned">Planned</option><option value="in_progress">In Progress</option><option value="drafting">Drafting</option><option value="review">Review</option><option value="published">Published</option><option value="paused">Paused</option><option value="done">Done</option><option value="archived">Archived</option></select><button id="plan-update-status" ' + (canBulkStatus ? "" : "disabled") + '>Update Status</button></div>'
         + (selectedCount && selectedProjectIds.length > 1 ? '<div class="empty warn">Select plans from one client at a time before updating status.</div>' : '');
@@ -2890,6 +2914,36 @@ function cloudMirrorHtml() {
     function bindRankingControls() {
       const client = document.getElementById("ranking-client-filter");
       if (client) client.onchange = (event) => { state.rankingClient = event.target.value || "all"; state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; render(); };
+      const runClient = document.getElementById("ranking-run-client");
+      if (runClient) runClient.onchange = (event) => { state.rankingClient = event.target.value || "all"; state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; render(); };
+      const runButton = document.getElementById("ranking-run-snapshot");
+      if (runButton) runButton.onclick = () => {
+        (async () => {
+          if (runButton.disabled) return;
+          const originalLabel = runButton.textContent;
+          runButton.disabled = true;
+          runButton.textContent = "Running...";
+          try {
+            const result = await postCommand("create_ranking_snapshot", {
+              execution_mode: "cloud",
+              project_id: Number(document.getElementById("ranking-run-client")?.value || 0),
+              target: document.getElementById("ranking-run-target")?.value || "",
+              location_code: Number(document.getElementById("ranking-run-location")?.value || 2840),
+              language_code: document.getElementById("ranking-run-language")?.value || "en",
+              limit: Number(document.getElementById("ranking-run-limit")?.value || 1000),
+              include_subdomains: Boolean(document.getElementById("ranking-run-subdomains")?.checked),
+              force_refresh: Boolean(document.getElementById("ranking-run-force")?.checked),
+              dry_run: Boolean(document.getElementById("ranking-run-dry")?.checked)
+            });
+            await load();
+            alert(result.duplicate ? "Matching ranking snapshot command already exists." : "Ranking snapshot started.");
+          } catch (error) {
+            runButton.disabled = false;
+            runButton.textContent = originalLabel;
+            throw error;
+          }
+        })().catch((error) => alert(error.message || error));
+      };
       const button = document.getElementById("ranking-compare-run");
       if (!button) return;
       button.onclick = async () => {
@@ -2936,11 +2990,15 @@ function cloudMirrorHtml() {
           const target = (state.data?.targets || []).find((item) => String(item.id) === String(button.dataset.targetId));
           if (!target) return;
           if (button.dataset.action === "cora") {
-            setPage("commands");
-            setPendingCommand("run_cora", targetActionPayload(target, "cora"));
+            state.coraClient = String(target.project_id || "all");
+            state.commandPrefill = { project_id: Number(target.project_id || 0), keyword: target.keyword || "", target: target.url || "", target_url: target.url || "", command: "cora" };
+            setPage("cora");
           } else {
-            setPage("commands");
-            setPendingCommand("create_content_plan", targetActionPayload(target, "plan"));
+            (async () => {
+              const result = await postCommand("create_content_plan", targetActionPayload(target, "plan"));
+              await load();
+              alert(result.duplicate ? "Matching content plan already exists." : "Content plan created.");
+            })().catch((error) => alert(error.message || error));
           }
         };
       });
@@ -2993,8 +3051,9 @@ function cloudMirrorHtml() {
           if (!plan) return;
           if (button.dataset.action === "client") openDetail("client", plan.project_id).catch((error) => alert(error.message || error));
           if (button.dataset.action === "cora") {
-            setPage("commands");
-            setPendingCommand("run_cora", { project_id: Number(plan.project_id || 0), keyword: plan.keyword || plan.title || "", target_url: "", execution_mode: "local" });
+            state.coraClient = String(plan.project_id || "all");
+            state.commandPrefill = { project_id: Number(plan.project_id || 0), keyword: plan.keyword || plan.title || "", target: "", target_url: "", command: "cora" };
+            setPage("cora");
           }
         };
       });
@@ -3027,6 +3086,35 @@ function cloudMirrorHtml() {
       if (batchFilter) batchFilter.onchange = (event) => { state.entityBatch = event.target.value || "all"; render(); };
       const entityClient = document.getElementById("entity-client-filter");
       if (entityClient) entityClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; render(); };
+      const entityRunClient = document.getElementById("entity-run-client");
+      if (entityRunClient) entityRunClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; state.commandPrefill = null; render(); };
+      document.getElementById("entity-run-start")?.addEventListener("click", (event) => {
+        (async () => {
+          const button = event.currentTarget;
+          if (button.disabled) return;
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          button.textContent = "Starting...";
+          try {
+            const result = await postCommand("run_entity_lsi", {
+              execution_mode: "cloud",
+              project_id: Number(document.getElementById("entity-run-client")?.value || 0),
+              seed_keyword: document.getElementById("entity-run-seed")?.value || "",
+              depth: Number(document.getElementById("entity-run-depth")?.value || 3),
+              targets: parseEntityTargets(document.getElementById("entity-run-targets")?.value || ""),
+              run_async: Boolean(document.getElementById("entity-run-async")?.checked),
+              dry_run: Boolean(document.getElementById("entity-run-dry")?.checked)
+            });
+            state.commandPrefill = null;
+            await load();
+            alert(result.duplicate ? "Matching Entity Explorer command already exists." : "Entity Explorer started.");
+          } catch (error) {
+            button.disabled = false;
+            button.textContent = originalLabel;
+            throw error;
+          }
+        })().catch((error) => alert(error.message || error));
+      });
       const setClient = document.getElementById("entity-set-client-filter");
       if (setClient) setClient.onchange = (event) => { state.entitySetClient = event.target.value || "all"; render(); };
       document.querySelectorAll(".entity-run-prefill").forEach((button) => {
@@ -3615,14 +3703,16 @@ function cloudMirrorHtml() {
           const profile = button.dataset.profile || "";
           if (button.dataset.clientCommand === "ranking") {
             state.commandPrefill = { project_id: projectId, keyword, target, command: "ranking" };
-            setPage("commands");
+            state.rankingClient = String(projectId || "all");
+            setPage("ranking");
           } else if (button.dataset.clientCommand === "cora") {
             state.commandPrefill = { project_id: projectId, keyword, target, target_url: target, cora_profile: profile, command: "cora" };
-            setPage("commands");
-            setPendingCommand("run_cora", { project_id: projectId, keyword, target_url: target, cora_profile: profile, execution_mode: "local" });
+            state.coraClient = String(projectId || "all");
+            setPage("cora");
           } else if (button.dataset.clientCommand === "entity") {
             state.commandPrefill = { project_id: projectId, keyword, seed_keyword: keyword, command: "entity" };
-            setPage("commands");
+            state.entityClient = String(projectId || "all");
+            setPage("entities");
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
             setPendingCommand("sync_cloud_to_local", { tables: ["projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
