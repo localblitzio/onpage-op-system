@@ -1471,7 +1471,7 @@ async function handleDashboardMirrorData(request, env) {
   const overview = await handleDashboardData(request, env).then((response) => response.json());
   const profileScope = scopeClause(scope, "p.id");
   const profileWhere = scope.scoped && profileScope.sql ? `WHERE ${profileScope.sql}` : "";
-  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, commands, audits] = await Promise.all([
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, keywordRows, commands, audits] = await Promise.all([
     env.DB.prepare(
       `SELECT r.id, r.project_id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
@@ -1559,6 +1559,13 @@ async function handleDashboardMirrorData(request, env) {
        ORDER BY pr.updated_at DESC, pr.id DESC
        LIMIT 150`
     ).bind(...profileScope.binds).all(),
+    env.DB.prepare(
+      `SELECT k.id, k.project_id, k.keyword, k.intent, k.priority, k.created_at, p.name AS project_name
+       FROM keywords k
+       LEFT JOIN projects p ON p.id = k.project_id
+       ORDER BY k.created_at DESC, k.id DESC
+       LIMIT 500`
+    ).all(),
     env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 100").all(),
     recentAuditEvents(env, 120)
   ]);
@@ -1574,6 +1581,7 @@ async function handleDashboardMirrorData(request, env) {
     entity_sets: filterScope(entitySets.results || [], scope),
     content_plans: filterScope(contentPlans.results || [], scope),
     profiles: profileRows.results || [],
+    keywords: filterScope(keywordRows.results || [], scope),
     commands: filterScope(normalizedCommands.map((command) => ({ ...command, project_id: command.payload?.project_id || command.result?.project?.id || command.result?.snapshot?.project_id || null })), scope),
     audit_events: scope.scoped ? [] : audits
   });
@@ -2312,6 +2320,7 @@ function cloudMirrorHtml() {
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
+    button:disabled { opacity:.55; cursor:not-allowed; }
     input, select, textarea { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
     textarea { width:100%; min-height:72px; resize:vertical; font:inherit; }
     .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-bottom:14px; }
@@ -2383,10 +2392,11 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     const pages = [
       ["clients", "Client Dashboard"],
       ["new-client", "New Client"],
+      ["cora", "Cora"],
       ["reports", "Cora Reports"],
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
@@ -2405,7 +2415,7 @@ function cloudMirrorHtml() {
     ];
     const navGroups = [
       ["Clients", [["clients", "Client Dashboard"],["new-client", "New Client"]]],
-      ["Cora", [["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
+      ["Cora", [["cora", "Run Cora"],["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
       ["Entity Explorer", [["entities", "Entity Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
       ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
       ["Planning", [["plans", "Content Plans"]]],
@@ -2530,6 +2540,37 @@ function cloudMirrorHtml() {
     }
     function newClientView() {
       return '<section><div class="head"><h3>New Client</h3><span class="muted">Creates a cloud command that the sync bridge can pull into the local dashboard.</span></div><div class="command-grid"><div class="command-card"><h4>Client Profile</h4><input id="quick-client-name" placeholder="Client name"><input id="quick-client-site" placeholder="Main URL or domain"><input id="quick-client-notes" placeholder="Notes"><button id="quick-create-client">Review Create Client</button></div><div class="command-card"><h4>What Happens Next</h4><div class="muted">The client is reviewed before it is queued. After queueing, use Sync Status or Command Review to confirm it reached the local dashboard.</div><button class="client-open-page secondary" data-page-target="clients" data-project-id="all">Back to Clients</button></div></div></section>';
+    }
+    function coraView(data) {
+      const clients = data.clients || [];
+      const prefill = state.commandPrefill || {};
+      const selectedProject = String(state.coraClient !== "all" ? state.coraClient : (prefill.project_id || clients[0]?.id || ""));
+      const client = clients.find((row) => String(row.id) === selectedProject) || clients[0] || {};
+      const targetRaw = client.site_domain || client.client || prefill.target || "";
+      const targetLower = String(targetRaw || "").toLowerCase();
+      const target = targetRaw ? (targetLower.startsWith("http://") || targetLower.startsWith("https://") ? targetRaw : "https://" + targetRaw) : "";
+      const bridge = (data.bridges || [])[0] || {};
+      const bridgeReady = Boolean(bridge.online && bridge.allow_cora);
+      const clientKeywords = (data.keywords || []).filter((keyword) => String(keyword.project_id || "") === String(client.id || ""));
+      const prefillKeyword = String(prefill.keyword || "");
+      const keywordChecks = clientKeywords.slice(0, 80).map((keyword, index) => {
+        const checked = prefillKeyword ? String(keyword.keyword || "") === prefillKeyword : index === 0;
+        return '<label class="check-item"><input class="cora-keyword-check" type="checkbox" value="' + esc(keyword.keyword || "") + '"' + (checked ? ' checked' : '') + '><span><strong>' + esc(keyword.keyword || "") + '</strong><br><small class="muted">' + esc([keyword.intent, keyword.priority].filter(Boolean).join(" / ") || "Synced keyword") + '</small></span></label>';
+      }).join("");
+      const clientOptions = clients.map((row) => '<option value="' + esc(row.id) + '"' + (String(row.id) === String(client.id || "") ? ' selected' : '') + '>' + esc(row.name || ("Client " + row.id)) + '</option>').join("");
+      const recentCommands = (data.commands || []).filter((command) => command.command_type === "run_cora" && String(command.project_id || command.payload?.project_id || "") === String(client.id || "")).slice(0, 8);
+      const commandRows = recentCommands.map((command) => '<div class="status-row"><span><strong>' + esc(command.payload?.keyword || "Cora run") + '</strong><br><small class="muted">' + esc(command.payload?.target_url || "") + '</small></span><strong class="' + commandStatusClass(command.status) + '">' + esc(commandStatusLabel(command.status)) + '</strong></div>').join("");
+      const recentJobs = (data.jobs || []).filter((job) => String(job.project_id || "") === String(client.id || "")).slice(0, 8);
+      const jobRows = recentJobs.map((job) => '<tr><td><strong>' + esc(job.keyword || "") + '</strong><br><span class="muted">' + esc(job.target_domain || job.target_url || "") + '</span></td><td>' + esc(job.cora_profile || "") + '</td><td><span class="pill">' + esc(job.status || "") + '</span></td><td>' + esc(fmtDate(job.updated_at || job.last_activity_at || job.started_at)) + '</td></tr>');
+      if (!clients.length) return '<section><div class="head"><h3>Run Cora</h3><span class="pill warn">No clients</span></div><div class="empty">Sync or create a client before running Cora.</div></section>';
+      return '<div class="grid2"><section><div class="head"><h3>Run Cora</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Remote bridge online' : 'Queued for remote bridge') + '</span></div><div class="status-list">'
+        + '<div class="field-row"><select id="cora-client-select">' + clientOptions + '</select><input id="cora-target-url" placeholder="Target URL" value="' + esc(target) + '"><input id="cora-profile" placeholder="Cora profile" value="' + esc(client.profile_name || prefill.cora_profile || "") + '"></div>'
+        + '<div class="muted">Cora runs on the connected Windows machine through the remote bridge. The workflow matches local; only execution happens remotely.</div>'
+        + '<div><div class="head" style="padding:0 0 8px;border:0;"><h3>Keywords</h3><span class="muted">Select one or more</span></div><div class="check-list">' + (keywordChecks || '<div class="empty">No synced keywords for this client.</div>') + '</div></div>'
+        + '<input id="cora-extra-keyword" placeholder="Optional extra keyword">'
+        + '<div class="toolbar"><button id="cora-run-selected">' + esc(bridgeReady ? 'Run Selected Keywords' : 'Queue for Remote Cora') + '</button><button id="cora-refresh" class="secondary">Refresh</button></div>'
+        + '</div></section><section><div class="head"><h3>Remote Cora Bridge</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.bridge_id || "No bridge") + '</strong><span class="muted">Machine</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? "Enabled" : "Off") + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(fmtDate(bridge.last_seen_at) || "Never") + '</strong><span class="muted">Last seen</span></div></div><div class="status-list">' + (commandRows || '<div class="muted">No Cora launch commands for this client yet.</div>') + '</div></section></div>'
+        + '<section><div class="head"><h3>Recent Cora Jobs</h3><span class="muted">Synced from the local dashboard.</span></div>' + detailTable(["Keyword","Profile","Status","Updated"], jobRows, "No Cora jobs synced for this client.") + '</section>';
     }
     function profilesTable(items) {
       return table(["Profile", "Clients", "Attached Clients", "Updated"], rows(items).map((p) => '<tr><td><strong>' + esc(p.name || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(fmtNum(p.client_count || 0)) + '</td><td>' + esc(p.client_names || p.client || "") + '</td><td>' + esc(fmtDate(p.updated_at || p.created_at)) + '</td></tr>'), "No Cora profiles synced yet.");
@@ -3193,9 +3234,9 @@ function cloudMirrorHtml() {
         + '</div></section>'
         + '<section><div class="head"><h3>Readiness</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Cora ready' : 'Needs attention') + '</span></div><div class="status-list"><div class="status-row"><span>Local bridge<br><small class="muted">' + esc(bridge.bridge_id || 'No bridge heartbeat') + '</small></span><strong class="' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</strong></div><div class="status-row"><span>Cora execution</span><strong class="' + (bridge.allow_cora ? 'ok' : 'warn') + '">' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong></div>' + nextActions.map((action) => '<div class="status-row"><span>' + esc(action) + '</span></div>').join("") + '</div></section>'
         + '</div>';
-      const coraButtonLabel = bridgeReady ? "Run Cora Now" : "Prepare Cora Run";
+      const coraButtonLabel = bridgeReady ? "Run Cora" : "Queue Cora";
       const toolCards = [
-        ["Cora", "Launch a local Cora run through the bridge using this client's URL, keyword, and profile.", "commands", coraButtonLabel, "cora"],
+        ["Cora", "Run Cora for this client's URL and keywords. Execution happens on the remote bridge machine.", "cora", coraButtonLabel, "page"],
         ["Ranking Snapshot", "Run or review DataForSEO ranking snapshots for this client.", "ranking", "Open Ranking Snapshot", "page"],
         ["Entity Explorer", "Run entity and LSI research from this client's keywords.", "entities", "Open Entity Explorer", "page"],
         ["Cora Reports", "Open stored customer reports and source XLSX artifacts.", "reports", "Open Reports", "page"],
@@ -3203,7 +3244,7 @@ function cloudMirrorHtml() {
       ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "page" ? "client-open-page" : "client-command") + '" data-client-command="' + esc(tool[4]) + '" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(coraTarget) + '" data-profile="' + esc(client.profile_name || "") + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
       const secondaryLinks = '<div class="toolbar" style="padding:0 12px 12px;"><button class="client-open-page secondary" data-page-target="runs" data-project-id="' + esc(projectId) + '">Cora Runs</button><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Cora Jobs</button><button class="client-open-page secondary" data-page-target="cora-profiles" data-project-id="' + esc(projectId) + '">Cora Profiles</button><button class="client-open-page secondary" data-page-target="targets" data-project-id="' + esc(projectId) + '">Saved Targets</button><button class="client-open-page secondary" data-page-target="entity-sets" data-project-id="' + esc(projectId) + '">Entity Sets</button><button class="client-open-page secondary" data-page-target="sync" data-project-id="' + esc(projectId) + '">Sync Status</button></div>';
       const toolLauncher = '<section><div class="head"><h3>Client Tools</h3><span class="muted">Primary workflows for this client. Technical controls are under System.</span></div><div class="tool-grid">' + toolCards + '</div>' + secondaryLinks + '</section>';
-      const coraLaunchPanel = '<section><div class="head"><h3>Cora Launch Status</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Ready to queue' : 'Review only') + '</span></div><div class="status-list"><div class="status-row"><span>Next run</span><strong>' + esc(firstKeyword || "No keyword") + '</strong></div><div class="status-row"><span>Target URL</span><strong>' + esc(target || "No URL") + '</strong></div><div class="status-row"><span>Profile</span><strong>' + esc(client.profile_name || "No profile") + '</strong></div><div class="muted">Click ' + esc(coraButtonLabel) + ' to open a prefilled review. Queueing still requires confirmation so cloud cannot accidentally spend local Cora time.</div></div><div class="head"><h3>Cloud Launch Queue</h3><button class="client-open-page secondary" data-page-target="commands" data-project-id="' + esc(projectId) + '">Open Review</button></div><div class="status-list">' + (recentCommandRows || '<div class="muted">No cloud Cora launch commands for this client yet.</div>') + '</div><div class="head"><h3>Recent Cora Jobs</h3><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Open Jobs</button></div><div class="status-list">' + (recentJobRows || '<div class="muted">No Cora jobs synced for this client yet.</div>') + '</div></section>';
+      const coraLaunchPanel = '<section><div class="head"><h3>Cora Launch Status</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Remote bridge ready' : 'Queue for bridge') + '</span></div><div class="status-list"><div class="status-row"><span>Next run</span><strong>' + esc(firstKeyword || "No keyword") + '</strong></div><div class="status-row"><span>Target URL</span><strong>' + esc(target || "No URL") + '</strong></div><div class="status-row"><span>Profile</span><strong>' + esc(client.profile_name || "No profile") + '</strong></div><div class="muted">Open Cora to run selected keywords. The report runs on the connected Windows machine through the remote bridge.</div></div><div class="head"><h3>Recent Launches</h3><button class="client-open-page secondary" data-page-target="cora" data-project-id="' + esc(projectId) + '">Open Cora</button></div><div class="status-list">' + (recentCommandRows || '<div class="muted">No cloud Cora launch commands for this client yet.</div>') + '</div><div class="head"><h3>Recent Cora Jobs</h3><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Open Jobs</button></div><div class="status-list">' + (recentJobRows || '<div class="muted">No Cora jobs synced for this client yet.</div>') + '</div></section>';
       return workspace
         + smallCards([["Keywords", (data.keywords || []).length],["Cora Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length],["Entity Batches", (data.entity_batches || []).length],["Entity Sets", (data.entity_sets || []).length]])
         + toolLauncher
@@ -3259,7 +3300,7 @@ function cloudMirrorHtml() {
         if (!payload.project_id) missing.push("client");
         if (!(payload.keyword || "").trim()) missing.push("keyword");
         if (!(payload.target_url || "").trim()) missing.push("target URL");
-        if (missing.length) return "Cora needs: " + missing.join(", ") + ". Add the missing client data, then try Run Cora Now again.";
+        if (missing.length) return "Cora needs: " + missing.join(", ") + ". Add the missing client data, then try Run Cora again.";
       }
       if (command_type === "create_ranking_snapshot" && (!(payload.project_id) || !(payload.target || "").trim())) return "Select a client and enter a target domain.";
       if (command_type === "run_entity_lsi") {
@@ -3270,15 +3311,31 @@ function cloudMirrorHtml() {
       }
       return "";
     }
+    async function postCommand(command_type, payload) {
+      if (!canWrite()) {
+        throw new Error("Write access required. Enter the admin token under Unlock Writes, or log in with a write/admin email account, then queue again.");
+      }
+      const error = validateCommand(command_type, payload);
+      if (error) throw new Error(error);
+      const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
+      const response = await fetch("/api/commands", {
+        method: "POST",
+        headers: writeHeaders(),
+        body: JSON.stringify({ command_type, payload: { ...payload, reviewed_at: new Date().toISOString() }, created_by: operator })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 401) throw new Error("Unauthorized: write access is required. Enter the admin token under Unlock Writes, or log in with a write/admin email account.");
+        throw new Error(data.error || "Command failed");
+      }
+      return data;
+    }
     async function sendPendingCommand() {
       const pending = state.pendingWrite;
       if (!pending) return;
       const button = document.getElementById("confirm-command");
       const originalLabel = button?.textContent || "Queue Reviewed Command";
       if (button?.disabled) return;
-      if (!canWrite()) {
-        throw new Error("Write access required. Enter the admin token under Unlock Writes, or log in with a write/admin email account, then queue again.");
-      }
       if (isPaidLiveCommand(pending.command_type, pending.payload) && !document.getElementById("confirm-paid-command")?.checked) {
         throw new Error("Confirm the paid/API run before queueing.");
       }
@@ -3287,17 +3344,7 @@ function cloudMirrorHtml() {
         button.textContent = "Queueing...";
       }
       try {
-        const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
-        const response = await fetch("/api/commands", {
-          method: "POST",
-          headers: writeHeaders(),
-          body: JSON.stringify({ command_type: pending.command_type, payload: { ...pending.payload, reviewed_at: new Date().toISOString() }, created_by: operator })
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          if (response.status === 401) throw new Error("Unauthorized: write access is required. Enter the admin token under Unlock Writes, or log in with a write/admin email account.");
-          throw new Error(data.error || "Command failed");
-        }
+        const data = await postCommand(pending.command_type, pending.payload);
         state.pendingWrite = null;
         await load();
         if (data.duplicate) alert("Matching command already exists; not queued again.");
@@ -3484,6 +3531,53 @@ function cloudMirrorHtml() {
       if (jobClient) jobClient.onchange = (event) => { state.jobClient = event.target.value || "all"; render(); };
       if (jobStatus) jobStatus.onchange = (event) => { state.jobStatus = event.target.value || "all"; render(); };
     }
+    function bindCoraControls() {
+      const clientSelect = document.getElementById("cora-client-select");
+      if (clientSelect) clientSelect.onchange = (event) => {
+        state.coraClient = event.target.value || "all";
+        state.commandPrefill = null;
+        render();
+      };
+      document.getElementById("cora-refresh")?.addEventListener("click", () => load().catch((error) => alert(error.message || error)));
+      document.getElementById("cora-run-selected")?.addEventListener("click", (event) => {
+        (async () => {
+          const button = event.currentTarget;
+          if (button.disabled) return;
+          const projectId = Number(document.getElementById("cora-client-select")?.value || 0);
+          const targetUrl = document.getElementById("cora-target-url")?.value || "";
+          const profile = document.getElementById("cora-profile")?.value || "";
+          const checked = [...document.querySelectorAll(".cora-keyword-check:checked")].map((box) => box.value.trim()).filter(Boolean);
+          const extra = (document.getElementById("cora-extra-keyword")?.value || "").trim();
+          const keywords = [...new Set(extra ? checked.concat(extra) : checked)];
+          if (!keywords.length) throw new Error("Select at least one keyword or enter an extra keyword.");
+          const originalLabel = button.textContent;
+          button.disabled = true;
+          let queued = 0;
+          let duplicates = 0;
+          try {
+            for (let index = 0; index < keywords.length; index += 1) {
+              button.textContent = "Queueing " + (index + 1) + " of " + keywords.length + "...";
+              const result = await postCommand("run_cora", {
+                project_id: projectId,
+                keyword: keywords[index],
+                target_url: targetUrl,
+                cora_profile: profile,
+                execution_mode: "local"
+              });
+              if (result.duplicate) duplicates += 1;
+              else queued += 1;
+            }
+            state.commandPrefill = null;
+            await load();
+            alert((queued ? queued + " Cora run(s) queued." : "No new Cora runs queued.") + (duplicates ? " " + duplicates + " matching run(s) already existed." : ""));
+          } catch (error) {
+            button.disabled = false;
+            button.textContent = originalLabel;
+            throw error;
+          }
+        })().catch((error) => alert(error.message || error));
+      });
+    }
     function bindNewClientControls() {
       document.getElementById("quick-create-client")?.addEventListener("click", () => {
         const payload = {
@@ -3545,6 +3639,10 @@ function cloudMirrorHtml() {
             state.jobClient = projectId;
             state.jobStatus = "all";
           }
+          if (page === "cora") {
+            state.coraClient = projectId;
+            state.commandPrefill = { project_id: Number(projectId || 0), keyword: button.dataset.keyword || "", target: button.dataset.target || "", target_url: button.dataset.target || "", cora_profile: button.dataset.profile || "", command: "cora" };
+          }
           if (page === "commands") {
             state.commandClient = projectId;
             state.commandStatus = "all";
@@ -3596,6 +3694,7 @@ function cloudMirrorHtml() {
         overview: () => overview(data),
         clients: () => clientsView(data),
         "new-client": () => newClientView(data),
+        cora: () => coraView(data),
         reports: () => reportPortal(data),
         runs: () => coraRunsView(data),
         jobs: () => coraJobsView(data),
@@ -3614,6 +3713,7 @@ function cloudMirrorHtml() {
       document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
       if (state.page === "new-client") setTimeout(bindNewClientControls, 0);
+      if (state.page === "cora") setTimeout(bindCoraControls, 0);
       if (["runs", "jobs"].includes(state.page)) setTimeout(bindCoraListControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);
