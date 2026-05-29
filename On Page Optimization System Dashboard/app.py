@@ -708,8 +708,10 @@ def post_cloudflare_sync_batch(payload: dict[str, Any]) -> dict[str, Any]:
         f"{CLOUDFLARE_SYNC_URL}/api/sync/push",
         data=body,
         headers={
+            "Accept": "application/json",
             "Content-Type": "application/json",
             "Authorization": f"Bearer {CLOUDFLARE_SYNC_TOKEN}",
+            "User-Agent": "OnPageOptimizationSystemDashboard/1.0",
         },
         method="POST",
     )
