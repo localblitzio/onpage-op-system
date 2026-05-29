@@ -3058,7 +3058,8 @@ function cloudMirrorHtml() {
       const client = data.client || {};
       const projectId = String(client.id || "");
       const target = client.site_domain || client.client || "";
-      const targetHref = target ? (/^https?:\/\//i.test(target) ? target : "https://" + target) : "";
+      const targetLower = String(target || "").toLowerCase();
+      const targetHref = target ? (targetLower.startsWith("http://") || targetLower.startsWith("https://") ? target : "https://" + target) : "";
       const firstKeyword = (data.keywords || [])[0]?.keyword || (data.runs || [])[0]?.keyword || "";
       const latestEntityBatch = (data.entity_batches || []).slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))[0]?.id || "";
       const keywordRows = (data.keywords || []).map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong></td><td>' + esc(k.intent || "") + '</td><td>' + esc(k.priority || "") + '</td><td>' + esc(fmtDate(k.created_at)) + '</td></tr>');
