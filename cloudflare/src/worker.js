@@ -1314,9 +1314,33 @@ async function recentAuditEvents(env, limit = 100) {
 
 async function syncStatusData(env) {
   const rows = await env.DB.prepare(
-    "SELECT table_name, SUM(row_count) AS rows_received, MAX(received_at) AS last_received_at FROM sync_batches GROUP BY table_name ORDER BY table_name"
+    "SELECT table_name, SUM(row_count) AS rows_received, COUNT(*) AS batch_count, MAX(received_at) AS last_received_at FROM sync_batches GROUP BY table_name ORDER BY table_name"
   ).all();
-  return { tables: rows.results || [], artifacts: await artifactStatusData(env) };
+  const recent = await env.DB.prepare(
+    "SELECT table_name, row_count, source, received_at FROM sync_batches ORDER BY received_at DESC, id DESC LIMIT 80"
+  ).all();
+  const tableRows = rows.results || [];
+  const seen = new Set(tableRows.map((row) => row.table_name));
+  const coreTables = ["projects", "sites", "pages", "keywords", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "entity_sets"];
+  for (const table of coreTables) {
+    if (!seen.has(table)) tableRows.push({ table_name: table, rows_received: 0, batch_count: 0, last_received_at: null });
+  }
+  const enriched = [];
+  for (const row of tableRows) {
+    const table = row.table_name;
+    const columns = TABLE_COLUMNS[table];
+    let cloudRows = null;
+    if (columns) {
+      try {
+        cloudRows = await countTable(env, table);
+      } catch (_err) {
+        cloudRows = null;
+      }
+    }
+    enriched.push({ ...row, cloud_rows: cloudRows });
+  }
+  enriched.sort((a, b) => String(a.table_name || "").localeCompare(String(b.table_name || "")));
+  return { tables: enriched, recent_batches: recent.results || [], artifacts: await artifactStatusData(env) };
 }
 
 async function handleStatus(env) {
@@ -2333,6 +2357,7 @@ function cloudMirrorHtml() {
       ["entity-crossover", "Entity Crossover"],
       ["entity-sets", "Entity Sets"],
       ["plans", "Content Plans"],
+      ["sync", "Sync Status"],
       ["audit", "Audit Trail"],
       ["commands", "Cloud Commands"],
       ["admin", "Admin"]
@@ -2384,6 +2409,42 @@ function cloudMirrorHtml() {
       return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Content Plans", counts.content_plans],["Entity Sets", counts.entity_sets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
         + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
         + '<section><div class="head"><h3>Bridge Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (bridgeRows || '<div class="muted">No local bridge heartbeat yet.</div>') + '</div><div class="head"><h3>Cloud Files</h3></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
+    }
+    function syncAgeInfo(value) {
+      if (!value) return { label: "Never", cls: "warn" };
+      const age = Date.now() - Date.parse(value);
+      if (!Number.isFinite(age)) return { label: fmtDate(value), cls: "warn" };
+      const minutes = Math.max(0, Math.round(age / 60000));
+      if (minutes < 60) return { label: minutes + "m ago", cls: "ok" };
+      const hours = Math.round(minutes / 60);
+      if (hours < 24) return { label: hours + "h ago", cls: "ok" };
+      const days = Math.round(hours / 24);
+      return { label: days + "d ago", cls: days > 7 ? "warn" : "" };
+    }
+    function syncView(data) {
+      const sync = data.sync || {};
+      const bridgeRows = data.bridges || [];
+      const tableRows = sync.tables || [];
+      const recent = sync.recent_batches || [];
+      const artifacts = data.artifacts || [];
+      const online = bridgeRows.filter((bridge) => bridge.online).length;
+      const lastSync = tableRows.map((row) => row.last_received_at).filter(Boolean).sort().pop();
+      const staleTables = tableRows.filter((row) => !row.last_received_at || (Date.now() - Date.parse(row.last_received_at || 0)) > 7 * 86400000).length;
+      const tableHtml = tableRows.map((row) => {
+        const age = syncAgeInfo(row.last_received_at);
+        return '<tr><td><strong>' + esc(row.table_name || "") + '</strong></td><td>' + esc(fmtNum(row.cloud_rows ?? 0)) + '</td><td>' + esc(fmtNum(row.rows_received || 0)) + '</td><td>' + esc(fmtNum(row.batch_count || 0)) + '</td><td><span class="pill ' + age.cls + '">' + esc(age.label) + '</span><br><span class="muted">' + esc(fmtDate(row.last_received_at)) + '</span></td></tr>';
+      });
+      const bridgeHtml = bridgeRows.map((bridge) => '<tr><td><strong>' + esc(bridge.bridge_id || "") + '</strong><br><span class="muted">' + esc(bridge.version || "") + '</span></td><td><span class="pill ' + (bridge.online ? "ok" : "warn") + '">' + esc(bridge.online ? "Online" : "Offline") + '</span></td><td>' + esc(bridge.allow_cora ? "Enabled" : "Off") + '</td><td>' + esc(bridge.allow_paid_tools ? "Enabled" : "Off") + '</td><td>' + esc(bridge.poll_interval || "") + 's</td><td>' + esc(fmtDate(bridge.last_seen_at)) + '</td></tr>');
+      const artifactHtml = artifacts.map((item) => '<tr><td><strong>' + esc(item.artifact_type || "") + '</strong></td><td>' + esc(fmtNum(item.artifact_count || 0)) + '</td><td>' + esc(fmtBytes(item.total_bytes || 0)) + '</td><td>' + esc(fmtDate(item.last_uploaded_at)) + '</td></tr>');
+      const recentHtml = recent.slice(0, 30).map((batch) => '<tr><td>' + esc(batch.table_name || "") + '</td><td>' + esc(fmtNum(batch.row_count || 0)) + '</td><td>' + esc(batch.source || "") + '</td><td>' + esc(fmtDate(batch.received_at)) + '</td></tr>');
+      const shortcuts = '<section><div class="head"><h3>Sync Shortcuts</h3><span class="muted">Creates reviewed commands; local bridge performs local-only sync work.</span></div><div class="toolbar"><button id="sync-review-push">Review Full Push</button><button id="sync-review-pull" class="secondary">Review Pull Core Tables</button><button id="sync-review-files" class="secondary">Review Report File Sync</button></div></section>';
+      setTimeout(bindSyncControls, 0);
+      return cards([["Last Sync", syncAgeInfo(lastSync).label],["Online Bridges", online],["Tracked Tables", tableRows.length],["Stale Tables", staleTables],["Artifact Types", artifacts.length]])
+        + shortcuts
+        + '<div class="grid2"><section><div class="head"><h3>Bridge Health</h3></div>' + detailTable(["Bridge","Status","Cora","Paid/API","Poll","Last Seen"], bridgeHtml, "No local bridge heartbeat yet.") + '</section>'
+        + '<section><div class="head"><h3>Report Artifacts</h3></div>' + detailTable(["Type","Files","Storage","Uploaded"], artifactHtml, "No report files synced to R2 yet.") + '</section></div>'
+        + '<section><div class="head"><h3>Table Freshness</h3><span class="muted">Cloud row counts and latest received sync batch.</span></div>' + detailTable(["Table","Cloud Rows","Rows Received","Batches","Freshness"], tableHtml, "No sync table status yet.") + '</section>'
+        + '<section><div class="head"><h3>Recent Sync Batches</h3></div>' + detailTable(["Table","Rows","Source","Received"], recentHtml, "No recent sync batches.") + '</section>';
     }
     function reportTable(items) {
       return table(["Report", "Client", "Keyword / URL", "Level", "Created", "Files", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">Run #' + esc(r.run_id || "") + '</span></td><td>' + esc(r.project_name || r.client_name || "") + '<br><span class="muted">' + esc(r.site_domain || "") + '</span></td><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.target_domain || r.target_url || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '<br><span class="muted">Uploaded ' + esc(fmtDate(r.last_uploaded_at)) + '</span></td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><div class="actions"><a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a><a class="action-link" href="' + downloadUrl(r.token) + '">XLSX</a><button class="copy-btn" data-copy="' + esc(absoluteUrl(reportUrl(r.token))) + '">Copy report</button><button class="copy-btn" data-copy="' + esc(absoluteUrl(downloadUrl(r.token))) + '">Copy XLSX</button></div></td></tr>'), "No cloud reports synced yet.");
@@ -2551,7 +2612,7 @@ function cloudMirrorHtml() {
     function plansView(data) {
       const plans = data.content_plans || [];
       const clients = [...new Map(plans.map((plan) => [String(plan.project_id || ""), plan.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
-      const priorities = [...new Set(plans.map((plan) => cleanText(plan.priority)).filter(Boolean))].sort();
+      const priorities = [...new Set(plans.map((plan) => String(plan.priority || "").trim()).filter(Boolean))].sort();
       const filtered = plans.filter((plan) =>
         (state.planClient === "all" || String(plan.project_id || "") === state.planClient) &&
         (state.planStatus === "all" || String(plan.status || "planned") === state.planStatus) &&
@@ -2670,6 +2731,20 @@ function cloudMirrorHtml() {
       if (actor) actor.onchange = (event) => { state.auditActor = event.target.value || "all"; render(); };
       if (action) action.onchange = (event) => { state.auditAction = event.target.value || "all"; render(); };
       if (object) object.onchange = (event) => { state.auditObject = event.target.value || "all"; render(); };
+    }
+    function bindSyncControls() {
+      document.getElementById("sync-review-push")?.addEventListener("click", () => {
+        setPage("commands");
+        setPendingCommand("sync_cloud_data", { tables: [], dry_run: false });
+      });
+      document.getElementById("sync-review-pull")?.addEventListener("click", () => {
+        setPage("commands");
+        setPendingCommand("sync_cloud_to_local", { tables: ["projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
+      });
+      document.getElementById("sync-review-files")?.addEventListener("click", () => {
+        setPage("commands");
+        setPendingCommand("sync_report_artifacts", { report_ids: [], dry_run: false, force: false });
+      });
     }
     function bindRankingControls() {
       const button = document.getElementById("ranking-compare-run");
@@ -3277,6 +3352,7 @@ function cloudMirrorHtml() {
         "entity-crossover": () => entityCrossoverView(data),
         "entity-sets": () => entitySetsView(data),
         plans: () => plansView(data),
+        sync: () => syncView(data),
         audit: () => auditView(data),
         commands: () => commandsView(data),
         admin: () => adminView(data)
@@ -3287,6 +3363,7 @@ function cloudMirrorHtml() {
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);
       if (state.page === "targets") setTimeout(bindTargetControls, 0);
       if (state.page === "plans") setTimeout(bindPlanControls, 0);
+      if (state.page === "sync") setTimeout(bindSyncControls, 0);
       if (state.page === "audit") setTimeout(bindAuditFilters, 0);
       if (state.page === "admin") setTimeout(bindAdminForms, 0);
     }
