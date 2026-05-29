@@ -1142,9 +1142,26 @@ async function createCommand(request, env) {
     commandKey = await sha256Hex(`${commandKey}:${now}:${crypto.randomUUID()}`);
   }
   const initialStatus = executionMode === "cloud" ? "claimed" : "pending";
-  const result = await env.DB.prepare(
-    "INSERT INTO cloud_commands (command_key, command_type, payload_json, status, created_by, created_at, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  ).bind(commandKey, commandType, JSON.stringify(commandPayload), initialStatus, String(payload.created_by || "cloud-dashboard"), now, executionMode === "cloud" ? now : null).run();
+  let result;
+  try {
+    result = await env.DB.prepare(
+      "INSERT INTO cloud_commands (command_key, command_type, payload_json, status, created_by, created_at, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).bind(commandKey, commandType, JSON.stringify(commandPayload), initialStatus, String(payload.created_by || "cloud-dashboard"), now, executionMode === "cloud" ? now : null).run();
+  } catch (error) {
+    const message = error?.message || String(error);
+    if (!payload.force_duplicate && /UNIQUE constraint failed: cloud_commands\.command_key|SQLITE_CONSTRAINT/i.test(message)) {
+      const duplicate = await env.DB.prepare("SELECT * FROM cloud_commands WHERE command_key = ?").bind(commandKey).first();
+      if (duplicate) {
+        await logAudit(request, env, "command_duplicate", "cloud_command", duplicate.id, {
+          command_type: commandType,
+          status: duplicate.status,
+          race: true
+        }, String(payload.created_by || "cloud-dashboard"));
+        return json({ ok: true, duplicate: true, command: normalizeCommand(duplicate) }, 200);
+      }
+    }
+    throw error;
+  }
   await recordToolUsage(request, env, commandType, commandPayload);
   const command = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(result.meta.last_row_id).first();
   await logAudit(request, env, "command_created", "cloud_command", command?.id, {
@@ -3256,26 +3273,41 @@ function cloudMirrorHtml() {
     async function sendPendingCommand() {
       const pending = state.pendingWrite;
       if (!pending) return;
+      const button = document.getElementById("confirm-command");
+      const originalLabel = button?.textContent || "Queue Reviewed Command";
+      if (button?.disabled) return;
       if (!canWrite()) {
         throw new Error("Write access required. Enter the admin token under Unlock Writes, or log in with a write/admin email account, then queue again.");
       }
       if (isPaidLiveCommand(pending.command_type, pending.payload) && !document.getElementById("confirm-paid-command")?.checked) {
         throw new Error("Confirm the paid/API run before queueing.");
       }
-      const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
-      const response = await fetch("/api/commands", {
-        method: "POST",
-        headers: writeHeaders(),
-        body: JSON.stringify({ command_type: pending.command_type, payload: { ...pending.payload, reviewed_at: new Date().toISOString() }, created_by: operator })
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        if (response.status === 401) throw new Error("Unauthorized: write access is required. Enter the admin token under Unlock Writes, or log in with a write/admin email account.");
-        throw new Error(data.error || "Command failed");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Queueing...";
       }
-      state.pendingWrite = null;
-      await load();
-      if (data.duplicate) alert("Matching command already exists; not queued again.");
+      try {
+        const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
+        const response = await fetch("/api/commands", {
+          method: "POST",
+          headers: writeHeaders(),
+          body: JSON.stringify({ command_type: pending.command_type, payload: { ...pending.payload, reviewed_at: new Date().toISOString() }, created_by: operator })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          if (response.status === 401) throw new Error("Unauthorized: write access is required. Enter the admin token under Unlock Writes, or log in with a write/admin email account.");
+          throw new Error(data.error || "Command failed");
+        }
+        state.pendingWrite = null;
+        await load();
+        if (data.duplicate) alert("Matching command already exists; not queued again.");
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
     }
     async function retryCommand(id) {
       const response = await fetch("/api/commands/" + encodeURIComponent(id), {
