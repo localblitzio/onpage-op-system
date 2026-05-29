@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS bridge_heartbeats (
   last_seen_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor TEXT,
+  action TEXT NOT NULL,
+  object_type TEXT,
+  object_id TEXT,
+  metadata_json TEXT,
+  ip_address TEXT,
+  user_agent TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, profile_id INTEGER, name TEXT, client TEXT, site_domain TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, project_id INTEGER, domain TEXT, name TEXT, created_at TEXT);
@@ -289,6 +301,8 @@ CREATE INDEX IF NOT EXISTS idx_report_artifacts_token ON report_artifacts(token,
 CREATE INDEX IF NOT EXISTS idx_cloud_commands_status ON cloud_commands(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_cloud_commands_key ON cloud_commands(command_key);
 CREATE INDEX IF NOT EXISTS idx_bridge_heartbeats_seen ON bridge_heartbeats(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_events_object ON audit_events(object_type, object_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_serp_run ON serp_results(run_id);

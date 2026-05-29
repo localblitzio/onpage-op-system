@@ -45,6 +45,8 @@ Auth roles:
 - `SYNC_TOKEN` is used by the local dashboard bridge and can also act as the fallback admin/read token if the other secrets are not set.
 - Public customer report URLs under `/share/report/{token}` do not require dashboard auth.
 
+The cloud dashboard includes an Audit Trail page for recent sync, bridge, command, report view, and report download events.
+
 5. Initialize D1:
 
 ```bash

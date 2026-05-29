@@ -121,6 +121,27 @@ function artifactPublicUrl(request, token, artifactType) {
   return `${url.origin}/share/report/${encodeURIComponent(token)}${suffix}`;
 }
 
+async function logAudit(request, env, action, objectType, objectId, metadata = {}, actor = "") {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO audit_events
+       (actor, action, object_type, object_id, metadata_json, ip_address, user_agent, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(
+      actor || "",
+      action,
+      objectType || "",
+      objectId == null ? "" : String(objectId),
+      JSON.stringify(metadata || {}),
+      request.headers.get("cf-connecting-ip") || "",
+      (request.headers.get("user-agent") || "").slice(0, 500),
+      new Date().toISOString()
+    ).run();
+  } catch (_err) {
+    // Audit logging must not break report sharing, sync, or command execution.
+  }
+}
+
 function normalizeRows(table, rows) {
   const columns = TABLE_COLUMNS[table];
   if (!columns) throw new Error(`Unsupported table: ${table}`);
@@ -199,6 +220,12 @@ async function handleArtifactUpload(request, env) {
     publicUrl,
     uploadedAt
   ).run();
+  await logAudit(request, env, "artifact_upload", "report_artifact", localId, {
+    token,
+    artifact_type: artifactType,
+    file_name: fileName,
+    file_size: Number(payload.file_size || bytes.byteLength || 0)
+  }, "local-sync");
   return json({ ok: true, local_id: localId, artifact_type: artifactType, r2_key: r2Key, public_url: publicUrl, uploaded_at: uploadedAt });
 }
 
@@ -222,6 +249,7 @@ async function handleSyncPush(request, env) {
   await env.DB.prepare(
     "INSERT INTO sync_batches (table_name, row_count, source, received_at) VALUES (?, ?, ?, ?)"
   ).bind(table, result.rows, String(payload.source || "local"), new Date().toISOString()).run();
+  await logAudit(request, env, "sync_push", table, "", { rows: result.rows, source: String(payload.source || "local") }, "local-sync");
   return json({ ok: true, ...result });
 }
 
@@ -237,12 +265,20 @@ async function createCommand(request, env) {
   const now = new Date().toISOString();
   const existing = await env.DB.prepare("SELECT * FROM cloud_commands WHERE command_key = ?").bind(commandKey).first();
   if (existing && !payload.force_duplicate) {
+    await logAudit(request, env, "command_duplicate", "cloud_command", existing.id, {
+      command_type: commandType,
+      status: existing.status
+    }, String(payload.created_by || "cloud-dashboard"));
     return json({ ok: true, duplicate: true, command: normalizeCommand(existing) }, 200);
   }
   const result = await env.DB.prepare(
     "INSERT INTO cloud_commands (command_key, command_type, payload_json, status, created_by, created_at) VALUES (?, ?, ?, 'pending', ?, ?)"
   ).bind(commandKey, commandType, JSON.stringify(commandPayload), String(payload.created_by || "cloud-dashboard"), now).run();
   const command = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(result.meta.last_row_id).first();
+  await logAudit(request, env, "command_created", "cloud_command", command?.id, {
+    command_type: commandType,
+    command_key: commandKey
+  }, String(payload.created_by || "cloud-dashboard"));
   return json({ ok: true, command: normalizeCommand(command) }, 201);
 }
 
@@ -286,6 +322,10 @@ async function updateCommand(request, env, id) {
     ).bind(status, payload.result ? JSON.stringify(payload.result) : null, payload.error ? String(payload.error).slice(0, 2000) : null, now, id).run();
   }
   const row = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(id).first();
+  await logAudit(request, env, `command_${status}`, "cloud_command", id, {
+    command_type: row?.command_type,
+    error: row?.error || ""
+  }, requireSyncAuth(request, env) ? "local-bridge" : "cloud-dashboard");
   return json({ ok: true, command: normalizeCommand(row) });
 }
 
@@ -294,6 +334,7 @@ async function bridgeHeartbeat(request, env) {
   const payload = await request.json();
   const bridgeId = String(payload.bridge_id || "local-dashboard").trim();
   const now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT * FROM bridge_heartbeats WHERE bridge_id = ?").bind(bridgeId).first();
   await env.DB.prepare(
     `INSERT INTO bridge_heartbeats
      (bridge_id, status, version, allow_cora, poll_interval, last_poll_at, last_result_json, last_seen_at)
@@ -317,6 +358,13 @@ async function bridgeHeartbeat(request, env) {
     now
   ).run();
   const row = await env.DB.prepare("SELECT * FROM bridge_heartbeats WHERE bridge_id = ?").bind(bridgeId).first();
+  if (!existing || String(existing.status || "") !== String(payload.status || "online") || Boolean(existing.allow_cora) !== Boolean(payload.allow_cora)) {
+    await logAudit(request, env, "bridge_status", "bridge", bridgeId, {
+      status: String(payload.status || "online"),
+      allow_cora: Boolean(payload.allow_cora),
+      poll_interval: Number(payload.poll_interval || 0)
+    }, "local-bridge");
+  }
   return json({ ok: true, bridge: normalizeBridge(row) });
 }
 
@@ -330,6 +378,20 @@ function normalizeBridge(row) {
 async function bridgeStatus(env) {
   const rows = await env.DB.prepare("SELECT * FROM bridge_heartbeats ORDER BY last_seen_at DESC LIMIT 20").all();
   return (rows.results || []).map(normalizeBridge);
+}
+
+function normalizeAuditEvent(row) {
+  if (!row) return null;
+  let metadata = {};
+  try { metadata = row.metadata_json ? JSON.parse(row.metadata_json) : {}; } catch (_err) { metadata = {}; }
+  return { ...row, metadata, metadata_json: undefined };
+}
+
+async function recentAuditEvents(env, limit = 100) {
+  const rows = await env.DB.prepare(
+    "SELECT * FROM audit_events ORDER BY created_at DESC, id DESC LIMIT ?"
+  ).bind(Math.min(Number(limit || 100), 250)).all();
+  return (rows.results || []).map(normalizeAuditEvent);
 }
 
 async function syncStatusData(env) {
@@ -410,7 +472,7 @@ async function handleDashboardData(request, env) {
 async function handleDashboardMirrorData(request, env) {
   if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   const overview = await handleDashboardData(request, env).then((response) => response.json());
-  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands] = await Promise.all([
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands, audits] = await Promise.all([
     env.DB.prepare(
       `SELECT r.id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
@@ -487,7 +549,8 @@ async function handleDashboardMirrorData(request, env) {
        ORDER BY cp.updated_at DESC, cp.id DESC
        LIMIT 150`
     ).all(),
-    env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 100").all()
+    env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 100").all(),
+    recentAuditEvents(env, 120)
   ]);
   return json({
     ...overview,
@@ -499,7 +562,8 @@ async function handleDashboardMirrorData(request, env) {
     entity_runs: entityRuns.results || [],
     entity_sets: entitySets.results || [],
     content_plans: contentPlans.results || [],
-    commands: (commands.results || []).map(normalizeCommand)
+    commands: (commands.results || []).map(normalizeCommand),
+    audit_events: audits
   });
 }
 
@@ -721,6 +785,7 @@ function cloudMirrorHtml() {
       ["targets", "Optimization Targets"],
       ["entities", "Entity Explorer"],
       ["plans", "Content Plans"],
+      ["audit", "Audit Trail"],
       ["commands", "Cloud Commands"]
     ];
     const fmtNum = (v) => Number(v || 0).toLocaleString();
@@ -812,6 +877,9 @@ function cloudMirrorHtml() {
     }
     function commandsTable(items) {
       return table(["Command", "Status", "Queued By", "Timeline", "Result", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(c.created_by || "") + '</td><td><span class="muted">Queued ' + esc(fmtDate(c.created_at)) + '<br>Claimed ' + esc(fmtDate(c.claimed_at)) + '<br>Done ' + esc(fmtDate(c.completed_at)) + '</span></td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td><td>' + (c.status === "failed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Retry</button>' : '') + (c.status === "claimed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Reset</button>' : '') + '</td></tr>'), "No cloud commands yet.");
+    }
+    function auditTable(items) {
+      return table(["When", "Actor", "Action", "Object", "Metadata"], rows(items).map((event) => '<tr><td>' + esc(fmtDate(event.created_at)) + '</td><td>' + esc(event.actor || "") + '<br><span class="muted">' + esc(event.ip_address || "") + '</span></td><td><span class="pill">' + esc(event.action || "") + '</span></td><td>' + esc(event.object_type || "") + '<br><span class="muted">' + esc(event.object_id || "") + '</span></td><td><span class="muted">' + esc(JSON.stringify(event.metadata || {})) + '</span></td></tr>'), "No audit events yet.");
     }
     function commandSummary(command_type, payload) {
       if (command_type === "create_project") return 'Create or reuse client "' + (payload.name || "") + '" for ' + (payload.site_domain || "no domain");
@@ -915,6 +983,7 @@ function cloudMirrorHtml() {
         targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
         entities: () => entitiesView(data),
         plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>',
+        audit: () => '<section><div class="head"><h3>Audit Trail</h3><span class="muted">Recent report, sync, bridge, and command events.</span></div>' + auditTable(data.audit_events || []) + '</section>',
         commands: () => commandsView(data)
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content();
@@ -964,11 +1033,22 @@ async function serveReportArtifact(request, env, token, artifactType) {
   if (artifactType === "source_xlsx") {
     const fileName = String(row.file_name || "cora-report.xlsx").replace(/"/g, "");
     headers.set("content-disposition", `attachment; filename="${fileName}"`);
+    if (request.method !== "HEAD") {
+      await logAudit(request, env, "report_download", "share_report", token, {
+        artifact_type: artifactType,
+        file_name: fileName
+      }, "public-report-viewer");
+    }
     return new Response(request.method === "HEAD" ? null : object.body, { headers });
   }
   if (request.method === "HEAD") return new Response(null, { headers });
   const sourceHtml = await object.text();
   const meta = await reportShareMetadata(env, token);
+  await logAudit(request, env, "report_view", "share_report", token, {
+    level: meta?.level || "",
+    keyword: meta?.keyword || "",
+    project_name: meta?.project_name || ""
+  }, "public-report-viewer");
   return html(reportShareShell(request, meta, sourceHtml));
 }
 

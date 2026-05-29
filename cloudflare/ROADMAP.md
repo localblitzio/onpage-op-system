@@ -5,6 +5,7 @@
 - Cloud dashboard is protected by token-based read/write access.
 - Public customer report URLs remain open by unguessable report token.
 - Cloud Commands are queued in Cloudflare and executed by the local Windows bridge.
+- Audit events are recorded for report views/downloads, sync pushes, artifact uploads, bridge status changes, and command lifecycle events.
 
 ## Report Portal
 
@@ -21,7 +22,7 @@ Planned progression:
 2. Add admin invitations and role assignment.
 3. Add roles for owner, admin, analyst, client viewer, and report-only viewer.
 4. Add client-level access rules so users only see assigned clients and reports.
-5. Add audit logs for login, report views, command creation, command resets, sync pushes, and bridge execution.
+5. Expand audit logs from token-level actors to real user/email actors after account management exists.
 6. Add account recovery and user deactivation.
 
 ## Permission Model Draft
