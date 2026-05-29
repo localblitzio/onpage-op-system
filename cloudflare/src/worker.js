@@ -2312,10 +2312,18 @@ function cloudMirrorHtml() {
     .detail-btn { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:6px 8px; cursor:pointer; font-size:12px; }
     .detail-panel { border-color:rgba(110,231,220,.45); }
     .detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:14px; }
+    .workspace-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(280px,.55fr); gap:14px; align-items:start; margin-bottom:14px; }
+    .client-vars { display:grid; gap:8px; padding:12px; }
+    .client-var { display:grid; grid-template-columns:120px minmax(0,1fr); gap:10px; border-bottom:1px solid var(--line); padding-bottom:8px; }
+    .client-var:last-child { border-bottom:0; padding-bottom:0; }
+    .tool-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:12px; }
+    .tool-card { border:1px solid var(--line); border-radius:8px; padding:11px; background:rgba(29,38,48,.45); display:grid; gap:8px; align-content:start; min-height:116px; }
+    .tool-card strong { font-size:14px; }
+    .tool-card button { justify-self:start; background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; font-size:12px; }
     .scroll-table { overflow:auto; max-height:520px; }
     .scroll-table table { min-width:860px; }
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
-    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
+    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
 <body>
@@ -2343,7 +2351,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, detail: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -2507,12 +2515,16 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Page Movement</h3></div>' + detailTable(["Status","URL","Before Traffic","After Traffic","Traffic +/-","Keyword +/-"], pageRows, "No page movement found between these snapshots.") + '</section></div>';
     }
     function rankingView(data) {
-      const snapshots = data.snapshots || [];
+      const allSnapshots = data.snapshots || [];
+      const clients = [...new Map(allSnapshots.map((snapshot) => [String(snapshot.project_id || ""), snapshot.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const snapshots = allSnapshots.filter((snapshot) => state.rankingClient === "all" || String(snapshot.project_id || "") === state.rankingClient);
       const pair = defaultSnapshotPair(snapshots);
       const baseValue = state.rankingBase || pair.base || "";
       const compareValue = state.rankingCompare || pair.compare || "";
       const options = snapshots.map((snapshot) => '<option value="' + esc(snapshot.id) + '">' + esc(snapshotOptionLabel(snapshot)) + '</option>').join("");
-      const form = '<section><div class="head"><h3>Compare Snapshots</h3><span class="muted">Compare weekly DataForSEO Labs snapshots from the same client.</span></div><div class="field-row"><select id="ranking-compare-base"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><select id="ranking-compare-to"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><button id="ranking-compare-run"' + (snapshots.length >= 2 ? "" : " disabled") + '>Compare</button></div>' + (snapshots.length < 2 ? '<div class="empty">Run or sync at least two snapshots for one client to compare movement.</div>' : '') + '</section>';
+      const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.rankingClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
+      const filters = '<div class="filters"><select id="ranking-client-filter">' + clientOptions + '</select><span class="muted">' + esc(snapshots.length) + ' of ' + esc(allSnapshots.length) + ' snapshots</span></div>';
+      const form = '<section><div class="head"><h3>Compare Snapshots</h3><span class="muted">Compare weekly DataForSEO Labs snapshots from the same client.</span></div>' + filters + '<div class="field-row" style="padding:12px;"><select id="ranking-compare-base"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><select id="ranking-compare-to"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><button id="ranking-compare-run"' + (snapshots.length >= 2 ? "" : " disabled") + '>Compare</button></div>' + (snapshots.length < 2 ? '<div class="empty">Run or sync at least two snapshots for this client to compare movement.</div>' : '') + '</section>';
       setTimeout(() => {
         const base = document.getElementById("ranking-compare-base");
         const compare = document.getElementById("ranking-compare-to");
@@ -2747,6 +2759,8 @@ function cloudMirrorHtml() {
       });
     }
     function bindRankingControls() {
+      const client = document.getElementById("ranking-client-filter");
+      if (client) client.onchange = (event) => { state.rankingClient = event.target.value || "all"; state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; render(); };
       const button = document.getElementById("ranking-compare-run");
       if (!button) return;
       button.onclick = async () => {
@@ -3042,6 +3056,11 @@ function cloudMirrorHtml() {
     }
     function clientDetail(data) {
       const client = data.client || {};
+      const projectId = String(client.id || "");
+      const target = client.site_domain || client.client || "";
+      const targetHref = target ? (/^https?:\/\//i.test(target) ? target : "https://" + target) : "";
+      const firstKeyword = (data.keywords || [])[0]?.keyword || (data.runs || [])[0]?.keyword || "";
+      const latestEntityBatch = (data.entity_batches || []).slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))[0]?.id || "";
       const keywordRows = (data.keywords || []).map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong></td><td>' + esc(k.intent || "") + '</td><td>' + esc(k.priority || "") + '</td><td>' + esc(fmtDate(k.created_at)) + '</td></tr>');
       const runRows = (data.runs || []).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const reportRows = (data.reports || []).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">' + esc(r.keyword || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '</td><td>' + esc(fmtNum(r.artifact_count || 0)) + ' files</td><td><a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a></td></tr>');
@@ -3049,12 +3068,41 @@ function cloudMirrorHtml() {
       const targetRows = (data.targets || []).map((t) => '<tr><td><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></td><td>' + esc(t.keyword || "") + '</td><td>' + esc(t.best_position || "") + '</td><td>' + esc(t.opportunity_score || "") + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>');
       const jobRows = (data.jobs || []).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>');
       const planRows = (data.content_plans || []).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>');
-      const entityRows = (data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td></tr>');
+      const entityRows = (data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(b.id) + '">Open</button></td></tr>');
       const entityRunRows = (data.entity_runs || []).map((r) => '<tr><td><strong>' + esc(r.seed_keyword || "") + '</strong></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span></td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const setRows = (data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
-      const firstKeyword = (data.keywords || [])[0]?.keyword || "";
-      const actionButtons = '<section><div class="head"><h3>Client Actions</h3><span class="muted">Pre-filled from this client.</span></div><div class="status-list"><div class="toolbar"><button class="client-command" data-client-command="ranking" data-project-id="' + esc(client.id || "") + '" data-target="' + esc(client.site_domain || "") + '">Run Ranking Snapshot</button><button class="client-command secondary" data-client-command="cora" data-project-id="' + esc(client.id || "") + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(client.site_domain || "") + '">Run Cora</button><button class="client-command secondary" data-client-command="entity" data-project-id="' + esc(client.id || "") + '" data-keyword="' + esc(firstKeyword) + '">Run Entity Explorer</button><button class="client-command secondary" data-client-command="pull" data-project-id="' + esc(client.id || "") + '">Pull Cloud Changes</button></div><div class="muted">Cora remains local-only. Ranking and Entity commands can run locally now; cloud execution for paid/API tools is staged behind provider secrets.</div></div></section>';
-      return smallCards([["Client", client.name || ""],["Main URL", client.site_domain || ""],["Cora Profile", client.profile_name || "None"],["Keywords", (data.keywords || []).length],["Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length]])
+      const nextActions = [];
+      if (!target) nextActions.push("Add the client main URL locally, then push clients/sites to cloud.");
+      if (!(data.keywords || []).length) nextActions.push("Add at least one keyword before running Cora, Ranking Snapshot, or Entity Explorer.");
+      if (!client.profile_name) nextActions.push("Attach a Cora profile before queueing Cora work.");
+      if ((data.targets || []).length) nextActions.push("Review Optimization Targets for pages that need on-page work.");
+      if ((data.content_plans || []).length) nextActions.push("Open Content Plans to move planned work through drafting, review, and publish.");
+      if (!nextActions.length) nextActions.push("Client workspace is ready. Pick a tool below to continue.");
+      const workspace = '<div class="workspace-grid">'
+        + '<section><div class="head"><h3>Client Variables</h3><span class="muted">Shared by Cora, Ranking Snapshot, Entity Explorer, reports, and plans.</span></div><div class="client-vars">'
+        + '<div class="client-var"><span class="muted">Client</span><strong>' + esc(client.name || "") + '</strong></div>'
+        + '<div class="client-var"><span class="muted">Main URL</span><strong>' + (target ? '<a href="' + esc(targetHref) + '" target="_blank">' + esc(target) + '</a>' : 'Not set') + '</strong></div>'
+        + '<div class="client-var"><span class="muted">Active Keyword</span><strong>' + esc(firstKeyword || "No keyword synced") + '</strong></div>'
+        + '<div class="client-var"><span class="muted">Cora Profile</span><strong>' + esc(client.profile_name || "No profile attached") + '</strong></div>'
+        + '</div></section>'
+        + '<section><div class="head"><h3>Next Actions</h3><span class="muted">Client-specific prompts</span></div><div class="status-list">' + nextActions.map((action) => '<div class="status-row"><span>' + esc(action) + '</span></div>').join("") + '</div></section>'
+        + '</div>';
+      const toolCards = [
+        ["Cora", "Queue or review Cora jobs using this client URL, keywords, and Cora profile.", "commands", "Prepare Cora Run", "cora-command"],
+        ["Ranking Snapshot", "Create DataForSEO ranking snapshots and open existing snapshot details.", "ranking", "Open Ranking Snapshots", ""],
+        ["Optimization Targets", "Review ranking URLs saved from snapshots and move them into Cora or plans.", "targets", "Open Targets", ""],
+        ["Entity Explorer", "Run or review entity batches tied to this client's keywords.", "entities", "Open Entity Explorer", ""],
+        ["Entity Crossover", "Inspect overlap across selected LLM/entity sources.", "entity-crossover", "Open Crossover", ""],
+        ["Entity Sets", "Review saved entity sets for content and optimization work.", "entity-sets", "Open Entity Sets", ""],
+        ["Cora Reports", "Open customer reports and source XLSX artifacts for this client.", "reports", "Open Reports", ""],
+        ["Content Plans", "Track briefs, refreshes, and optimization tasks for this client.", "plans", "Open Plans", ""],
+        ["Sync", "Pull cloud edits locally or push fresh local data to cloud.", "sync", "Open Sync Status", ""]
+      ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "cora-command" ? "client-command" : "client-open-page") + '" data-client-command="cora" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(target) + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
+      const toolLauncher = '<section><div class="head"><h3>Client Run Tools</h3><span class="muted">Open each tool already scoped to this client where filters exist.</span></div><div class="tool-grid">' + toolCards + '</div></section>';
+      const actionButtons = '<section><div class="head"><h3>Command Shortcuts</h3><span class="muted">Pre-filled from this client.</span></div><div class="status-list"><div class="toolbar"><button class="client-command" data-client-command="ranking" data-project-id="' + esc(projectId) + '" data-target="' + esc(target) + '">Prepare Ranking Snapshot</button><button class="client-command secondary" data-client-command="entity" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '">Prepare Entity Explorer</button><button class="client-command secondary" data-client-command="pull" data-project-id="' + esc(projectId) + '">Pull Cloud Changes</button></div><div class="muted">Cora remains local-only. Ranking and Entity commands can run locally now; cloud execution for paid/API tools is staged behind provider secrets.</div></div></section>';
+      return workspace
+        + smallCards([["Keywords", (data.keywords || []).length],["Cora Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length],["Entity Batches", (data.entity_batches || []).length],["Entity Sets", (data.entity_sets || []).length]])
+        + toolLauncher
         + actionButtons
         + '<section><div class="head"><h3>Keywords</h3></div>' + detailTable(["Keyword","Intent","Priority","Created"], keywordRows, "No keywords synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Cora Runs</h3></div>' + detailTable(["Keyword","Target","Imported",""], runRows, "No Cora runs synced for this client.") + '</section>'
@@ -3063,7 +3111,7 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status"], targetRows, "No optimization targets synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Jobs</h3></div>' + detailTable(["Keyword","Tool/Profile","Status","Updated"], jobRows, "No jobs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Content Plans</h3></div>' + detailTable(["Title","Keyword","Type","Status","Due"], planRows, "No content plans synced for this client.") + '</section>'
-        + '<section><div class="head"><h3>Entity Activity</h3></div>' + detailTable(["Seed","Depth","Progress","Status","Updated"], entityRows, "No entity batches synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Entity Activity</h3></div>' + detailTable(["Seed","Depth","Progress","Status","Updated",""], entityRows, "No entity batches synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Entity Model Runs</h3></div>' + detailTable(["Seed","Provider","Model","Status",""], entityRunRows, "No entity model runs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Entity Sets</h3></div>' + detailTable(["Set","Terms","Updated",""], setRows, "No entity sets synced for this client.") + '</section>';
     }
@@ -3321,6 +3369,30 @@ function cloudMirrorHtml() {
             setPage("commands");
             setPendingCommand("sync_cloud_to_local", { tables: ["projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
           }
+        };
+      });
+      document.querySelectorAll(".client-open-page").forEach((button) => {
+        button.onclick = () => {
+          const page = button.dataset.pageTarget || "clients";
+          const projectId = String(button.dataset.projectId || "all");
+          if (page === "reports") state.reportClient = projectId;
+          if (page === "ranking") {
+            state.rankingClient = projectId;
+            state.rankingBase = "";
+            state.rankingCompare = "";
+            state.rankingComparison = null;
+          }
+          if (page === "targets") {
+            state.targetClient = projectId;
+            state.targetSelection = {};
+          }
+          if (page === "plans") {
+            state.planClient = projectId;
+            state.planSelection = {};
+          }
+          if (page === "entity-sets") state.entitySetClient = projectId;
+          if (page === "entity-crossover") state.entityBatch = button.dataset.latestBatch || "all";
+          setPage(page);
         };
       });
       document.getElementById("entity-select-visible")?.addEventListener("click", () => {
