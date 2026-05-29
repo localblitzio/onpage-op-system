@@ -1330,6 +1330,7 @@ class DashboardSmokeTests(unittest.TestCase):
 
         self.assertFalse(settings["enabled"])
         self.assertFalse(settings["allow_cora"])
+        self.assertFalse(settings["allow_paid_tools"])
 
         with self.assertRaisesRegex(ValueError, "not allowed to queue Cora"):
             app.apply_cloudflare_command(
@@ -1353,6 +1354,31 @@ class DashboardSmokeTests(unittest.TestCase):
 
         self.assertEqual(result["job"]["keyword"], "cloud cora")
         self.assertEqual(app.bridge_settings()["poll_interval"], 15)
+
+    def test_bridge_settings_default_blocks_paid_tool_commands(self) -> None:
+        with self.assertRaisesRegex(ValueError, "paid/API tools"):
+            app.apply_cloudflare_command(
+                {
+                    "command_type": "create_ranking_snapshot",
+                    "payload": {"project_id": 1, "target": "example.com"},
+                }
+            )
+
+    def test_bridge_settings_allow_paid_tool_dry_runs(self) -> None:
+        result = app.apply_cloudflare_command(
+            {
+                "command_type": "create_ranking_snapshot",
+                "payload": {"project_id": 1, "target": "https://www.example.com/", "dry_run": True},
+            }
+        )
+
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["snapshot_request"]["target"], "example.com")
+
+    def test_bridge_settings_can_enable_paid_tool_commands(self) -> None:
+        settings = app.set_bridge_settings(enabled=True, allow_paid_tools=True)
+
+        self.assertTrue(settings["allow_paid_tools"])
 
 
 if __name__ == "__main__":

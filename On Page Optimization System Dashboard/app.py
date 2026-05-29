@@ -186,6 +186,7 @@ def bridge_settings() -> dict[str, Any]:
     defaults = {
         "enabled": False,
         "allow_cora": False,
+        "allow_paid_tools": False,
         "poll_interval": 30,
         "bridge_id": "local-dashboard",
         "updated_at": None,
@@ -204,13 +205,20 @@ def bridge_settings() -> dict[str, Any]:
         return {**defaults, "last_error": "Unreadable bridge settings file"}
 
 
-def set_bridge_settings(enabled: bool | None = None, allow_cora: bool | None = None, poll_interval: int | None = None) -> dict[str, Any]:
+def set_bridge_settings(
+    enabled: bool | None = None,
+    allow_cora: bool | None = None,
+    allow_paid_tools: bool | None = None,
+    poll_interval: int | None = None,
+) -> dict[str, Any]:
     ensure_dirs()
     settings = bridge_settings()
     if enabled is not None:
         settings["enabled"] = bool(enabled)
     if allow_cora is not None:
         settings["allow_cora"] = bool(allow_cora)
+    if allow_paid_tools is not None:
+        settings["allow_paid_tools"] = bool(allow_paid_tools)
     if poll_interval is not None:
         settings["poll_interval"] = max(10, min(int(poll_interval), 3600))
     settings["updated_at"] = datetime.now().isoformat(timespec="seconds")
@@ -972,6 +980,9 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
     settings = bridge_settings()
     if command_type == "run_cora" and not settings.get("allow_cora"):
         raise ValueError("Cloud bridge is not allowed to queue Cora runs. Enable Allow Cora in local bridge settings.")
+    paid_tool_commands = {"create_ranking_snapshot", "run_entity_lsi"}
+    if command_type in paid_tool_commands and not bool(payload.get("dry_run")) and not settings.get("allow_paid_tools"):
+        raise ValueError("Cloud bridge is not allowed to run paid/API tools. Enable paid tools in local bridge settings.")
     changed_tables: set[str] = set()
     artifact_report_ids: list[int] = []
     result: dict[str, Any] = {"command_type": command_type}
@@ -1072,6 +1083,45 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
             dry_run=bool(payload.get("dry_run")),
             force=bool(payload.get("force")),
         )
+    elif command_type == "create_ranking_snapshot":
+        if bool(payload.get("dry_run")):
+            result["dry_run"] = True
+            result["snapshot_request"] = {
+                "project_id": int(payload["project_id"]) if payload.get("project_id") else None,
+                "target": normalize_ranking_snapshot_target(payload.get("target")),
+                "location_code": int(payload.get("location_code") or 2840),
+                "language_code": clean_text(payload.get("language_code")) or "en",
+                "limit": max(1, min(int(payload.get("limit") or 1000), 1000)),
+                "include_subdomains": bool(payload.get("include_subdomains")),
+                "force_refresh": bool(payload.get("force_refresh")),
+            }
+        else:
+            snapshot = create_or_get_ranking_snapshot(payload)
+            result["snapshot"] = snapshot.get("snapshot")
+            result["meta"] = snapshot.get("meta")
+            changed_tables.update({"ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages"})
+    elif command_type == "run_entity_lsi":
+        targets = payload.get("targets") if isinstance(payload.get("targets"), list) else []
+        if bool(payload.get("dry_run")):
+            result["dry_run"] = True
+            result["entity_lsi_request"] = {
+                "project_id": int(payload.get("project_id") or 0),
+                "seed_keyword": clean_text(payload.get("seed_keyword")) or "",
+                "depth": clamp_entity_depth(payload.get("depth", 3)),
+                "target_count": len(targets),
+                "run_async": bool(payload.get("run_async", True)),
+            }
+        else:
+            runs = create_entity_lsi_runs(
+                int(payload.get("project_id") or 0),
+                clean_text(payload.get("seed_keyword")) or "",
+                payload.get("depth", 3),
+                targets,
+                bool(payload.get("run_async", True)),
+            )
+            result["runs"] = runs
+            result["batch_id"] = runs[0].get("batch_id") if runs else None
+            changed_tables.update({"entity_lsi_batches", "entity_lsi_runs"})
     else:
         raise ValueError(f"Unsupported cloud command type: {command_type}")
     if changed_tables and cloudflare_sync_configured():
@@ -1110,6 +1160,7 @@ def send_bridge_heartbeat(result: dict[str, Any] | None = None, status: str = "o
         "status": status,
         "version": "local-dashboard",
         "allow_cora": bool(settings.get("allow_cora")),
+        "allow_paid_tools": bool(settings.get("allow_paid_tools")),
         "poll_interval": int(settings.get("poll_interval") or 30),
         "last_poll_at": settings.get("last_poll_at"),
         "last_result": result if result is not None else settings.get("last_result"),
@@ -6137,6 +6188,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 result = set_bridge_settings(
                     enabled=bool(body.get("enabled")) if "enabled" in body else None,
                     allow_cora=bool(body.get("allow_cora")) if "allow_cora" in body else None,
+                    allow_paid_tools=bool(body.get("allow_paid_tools")) if "allow_paid_tools" in body else None,
                     poll_interval=int(body.get("poll_interval")) if body.get("poll_interval") else None,
                 )
                 ensure_bridge_worker()
@@ -6972,9 +7024,15 @@ def main(argv: list[str]) -> int:
 
     if len(argv) > 1 and argv[1] == "cloudflare-bridge-enable":
         allow_cora = "--allow-cora" in argv
+        allow_paid_tools = "--allow-paid-tools" in argv
         interval_arg = next((arg for arg in argv[2:] if arg.startswith("--interval=")), "")
         interval = int(interval_arg.removeprefix("--interval=")) if interval_arg else None
-        result = set_bridge_settings(enabled=True, allow_cora=allow_cora, poll_interval=interval)
+        result = set_bridge_settings(
+            enabled=True,
+            allow_cora=allow_cora,
+            allow_paid_tools=allow_paid_tools,
+            poll_interval=interval,
+        )
         print(json.dumps(result, indent=2, default=str))
         return 0
 

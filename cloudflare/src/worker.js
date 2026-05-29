@@ -82,7 +82,7 @@ function requireReadAuth(request, env) {
   return tokens.some((token) => header === `Bearer ${token}`);
 }
 
-const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "sync_cloud_data", "sync_report_artifacts"]);
+const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_report_artifacts"]);
 
 async function sha256Hex(value) {
   const bytes = new TextEncoder().encode(value);
@@ -261,7 +261,7 @@ async function createCommand(request, env) {
   const commandPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
   const commandKeyPayload = { ...commandPayload };
   delete commandKeyPayload.reviewed_at;
-  const commandKey = String(payload.command_key || "").trim() || await sha256Hex(`${commandType}:${stableStringify(commandKeyPayload)}`);
+  let commandKey = String(payload.command_key || "").trim() || await sha256Hex(`${commandType}:${stableStringify(commandKeyPayload)}`);
   const now = new Date().toISOString();
   const existing = await env.DB.prepare("SELECT * FROM cloud_commands WHERE command_key = ?").bind(commandKey).first();
   if (existing && !payload.force_duplicate) {
@@ -270,6 +270,9 @@ async function createCommand(request, env) {
       status: existing.status
     }, String(payload.created_by || "cloud-dashboard"));
     return json({ ok: true, duplicate: true, command: normalizeCommand(existing) }, 200);
+  }
+  if (existing && payload.force_duplicate) {
+    commandKey = await sha256Hex(`${commandKey}:${now}:${crypto.randomUUID()}`);
   }
   const result = await env.DB.prepare(
     "INSERT INTO cloud_commands (command_key, command_type, payload_json, status, created_by, created_at) VALUES (?, ?, ?, 'pending', ?, ?)"
@@ -337,12 +340,13 @@ async function bridgeHeartbeat(request, env) {
   const existing = await env.DB.prepare("SELECT * FROM bridge_heartbeats WHERE bridge_id = ?").bind(bridgeId).first();
   await env.DB.prepare(
     `INSERT INTO bridge_heartbeats
-     (bridge_id, status, version, allow_cora, poll_interval, last_poll_at, last_result_json, last_seen_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     (bridge_id, status, version, allow_cora, allow_paid_tools, poll_interval, last_poll_at, last_result_json, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(bridge_id) DO UPDATE SET
        status=excluded.status,
        version=excluded.version,
        allow_cora=excluded.allow_cora,
+       allow_paid_tools=excluded.allow_paid_tools,
        poll_interval=excluded.poll_interval,
        last_poll_at=excluded.last_poll_at,
        last_result_json=excluded.last_result_json,
@@ -352,16 +356,18 @@ async function bridgeHeartbeat(request, env) {
     String(payload.status || "online"),
     String(payload.version || ""),
     payload.allow_cora ? 1 : 0,
+    payload.allow_paid_tools ? 1 : 0,
     Number(payload.poll_interval || 0),
     payload.last_poll_at || now,
     payload.last_result ? JSON.stringify(payload.last_result) : null,
     now
   ).run();
   const row = await env.DB.prepare("SELECT * FROM bridge_heartbeats WHERE bridge_id = ?").bind(bridgeId).first();
-  if (!existing || String(existing.status || "") !== String(payload.status || "online") || Boolean(existing.allow_cora) !== Boolean(payload.allow_cora)) {
+  if (!existing || String(existing.status || "") !== String(payload.status || "online") || Boolean(existing.allow_cora) !== Boolean(payload.allow_cora) || Boolean(existing.allow_paid_tools) !== Boolean(payload.allow_paid_tools)) {
     await logAudit(request, env, "bridge_status", "bridge", bridgeId, {
       status: String(payload.status || "online"),
       allow_cora: Boolean(payload.allow_cora),
+      allow_paid_tools: Boolean(payload.allow_paid_tools),
       poll_interval: Number(payload.poll_interval || 0)
     }, "local-bridge");
   }
@@ -372,7 +378,7 @@ function normalizeBridge(row) {
   if (!row) return null;
   let lastResult = null;
   try { lastResult = row.last_result_json ? JSON.parse(row.last_result_json) : null; } catch (_err) { lastResult = row.last_result_json; }
-  return { ...row, allow_cora: Boolean(row.allow_cora), online: Date.now() - Date.parse(row.last_seen_at || 0) < 120000, last_result: lastResult, last_result_json: undefined };
+  return { ...row, allow_cora: Boolean(row.allow_cora), allow_paid_tools: Boolean(row.allow_paid_tools), online: Date.now() - Date.parse(row.last_seen_at || 0) < 120000, last_result: lastResult, last_result_json: undefined };
 }
 
 async function bridgeStatus(env) {
@@ -959,7 +965,8 @@ function cloudMirrorHtml() {
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
-    input, select { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
+    input, select, textarea { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
+    textarea { width:100%; min-height:72px; resize:vertical; font:inherit; }
     .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-bottom:14px; }
     .review { background:rgba(77,182,172,.08); border:1px solid rgba(110,231,220,.35); border-radius:8px; margin:12px; padding:12px; }
     .review pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); }
@@ -1050,7 +1057,7 @@ function cloudMirrorHtml() {
       const lastSync = (data.sync?.tables || []).map((r) => r.last_received_at).filter(Boolean).sort().pop();
       const syncRows = (data.sync?.tables || []).slice(-14).map((r) => '<div class="status-row"><span>' + esc(r.table_name) + '</span><strong>' + esc(fmtNum(r.rows_received)) + '</strong></div>').join("");
       const artifactRows = (data.artifacts || []).map((r) => '<div class="status-row"><span>' + esc(r.artifact_type) + '</span><strong>' + esc(fmtNum(r.artifact_count)) + ' / ' + esc(fmtBytes(r.total_bytes)) + '</strong></div>').join("");
-      const bridgeRows = (data.bridges || []).map((b) => '<div class="status-row"><span>' + esc(b.bridge_id) + '<br><small class="muted">' + esc(fmtDate(b.last_seen_at)) + '</small></span><strong class="' + (b.online ? 'ok' : 'warn') + '">' + esc(b.online ? 'Online' : 'Offline') + '</strong></div>').join("");
+      const bridgeRows = (data.bridges || []).map((b) => '<div class="status-row"><span>' + esc(b.bridge_id) + '<br><small class="muted">' + esc(fmtDate(b.last_seen_at)) + '</small><br><small class="muted">Cora ' + esc(b.allow_cora ? 'enabled' : 'off') + ' | Paid tools ' + esc(b.allow_paid_tools ? 'enabled' : 'off') + '</small></span><strong class="' + (b.online ? 'ok' : 'warn') + '">' + esc(b.online ? 'Online' : 'Offline') + '</strong></div>').join("");
       return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
         + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
         + '<section><div class="head"><h3>Bridge Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (bridgeRows || '<div class="muted">No local bridge heartbeat yet.</div>') + '</div><div class="head"><h3>Cloud Files</h3></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
@@ -1258,6 +1265,8 @@ function cloudMirrorHtml() {
       if (command_type === "create_content_plan") return 'Create or reuse content plan "' + (payload.title || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
       if (command_type === "run_cora") return 'Queue Cora locally for "' + (payload.keyword || "") + '" against ' + (payload.target_url || "") + '. Local bridge must allow Cora execution.';
+      if (command_type === "create_ranking_snapshot") return (payload.dry_run ? "Dry-run " : "") + 'Run Ranking Snapshot for ' + (payload.target || "") + '. Real runs require paid/API tools enabled on the local bridge.';
+      if (command_type === "run_entity_lsi") return (payload.dry_run ? "Dry-run " : "") + 'Run Entity Explorer for "' + (payload.seed_keyword || "") + '" across ' + ((payload.targets || []).length || 0) + ' model(s). Real runs require paid/API tools enabled on the local bridge.';
       if (command_type === "sync_cloud_data") return 'Ask the local bridge to push dashboard data to Cloudflare' + (payload.tables?.length ? ': ' + payload.tables.join(', ') : ' for all sync tables') + '.';
       if (command_type === "sync_report_artifacts") return 'Ask the local bridge to upload report HTML/XLSX artifacts' + (payload.force ? ' and force re-upload existing files.' : '.');
       return command_type;
@@ -1307,6 +1316,8 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Content Plan</h3></div><div class="status-list"><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div></section>'
         + '<section><div class="head"><h3>Customer Report</h3></div><div class="status-list"><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></section>'
         + '<section><div class="head"><h3>Run Cora</h3></div><div class="status-list"><div class="muted">This only queues work. The local bridge must have Cora execution explicitly enabled.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div></section>'
+        + '<section><div class="head"><h3>Ranking Snapshot</h3><span class="pill warn">Paid/API tool</span></div><div class="status-list"><div class="muted">Runs DataForSEO Labs locally. Keep dry run checked to validate the command without API spend.</div><select id="cmd-ranking-project">' + projectOptions() + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com"><div class="toolbar"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div></section>'
+        + '<section><div class="head"><h3>Entity Explorer</h3><span class="pill warn">Paid/API tool</span></div><div class="status-list"><div class="muted">Runs selected LLM targets locally. Targets use apiKeyId:model, one per line or comma-separated.</div><select id="cmd-entity-project">' + projectOptions() + '</select><input id="cmd-entity-seed" placeholder="Seed keyword"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="1:gpt-5.4&#10;2:claude-sonnet-4-6"></textarea><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></section>'
         + '</div>' + review + '<section><div class="head"><h3>Command History</h3><span class="muted">Queued, claimed, completed, and local result are tracked here.</span></div>' + commandsTable(data.commands || []) + '</section>';
       setTimeout(bindCommandForms, 0);
       return forms;
@@ -1320,11 +1331,19 @@ function cloudMirrorHtml() {
       byId("cmd-content-plan")?.addEventListener("click", () => setPendingCommand("create_content_plan", { project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }));
       byId("cmd-share-report")?.addEventListener("click", () => setPendingCommand("create_share_report", { run_id: Number(byId("cmd-report-run").value), level: byId("cmd-report-level").value, title: byId("cmd-report-title").value }));
       byId("cmd-run-cora")?.addEventListener("click", () => setPendingCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }));
+      byId("cmd-ranking-snapshot")?.addEventListener("click", () => setPendingCommand("create_ranking_snapshot", { project_id: Number(byId("cmd-ranking-project").value), target: byId("cmd-ranking-target").value, location_code: Number(byId("cmd-ranking-location").value || 2840), language_code: byId("cmd-ranking-language").value || "en", limit: Number(byId("cmd-ranking-limit").value || 1000), include_subdomains: Boolean(byId("cmd-ranking-subdomains").checked), force_refresh: Boolean(byId("cmd-ranking-force").checked), dry_run: Boolean(byId("cmd-ranking-dry").checked) }));
+      byId("cmd-entity-lsi")?.addEventListener("click", () => setPendingCommand("run_entity_lsi", { project_id: Number(byId("cmd-entity-project").value), seed_keyword: byId("cmd-entity-seed").value, depth: Number(byId("cmd-entity-depth").value || 3), targets: parseEntityTargets(byId("cmd-entity-targets").value), run_async: Boolean(byId("cmd-entity-async").checked), dry_run: Boolean(byId("cmd-entity-dry").checked) }));
       byId("cmd-sync-cloud")?.addEventListener("click", () => setPendingCommand("sync_cloud_data", { tables: (byId("cmd-sync-tables").value || "").split(",").map((v) => v.trim()).filter(Boolean), dry_run: Boolean(byId("cmd-sync-dry").checked) }));
       byId("cmd-sync-artifacts")?.addEventListener("click", () => setPendingCommand("sync_report_artifacts", { report_ids: (byId("cmd-artifact-report-ids").value || "").split(",").map((v) => Number(v.trim())).filter(Boolean), dry_run: Boolean(byId("cmd-artifact-dry").checked), force: Boolean(byId("cmd-artifact-force").checked) }));
       byId("confirm-command")?.addEventListener("click", () => sendPendingCommand().catch((e) => alert(e.message)));
       byId("cancel-command")?.addEventListener("click", () => { state.pendingWrite = null; render(); });
       document.querySelectorAll(".retry-command").forEach((button) => button.addEventListener("click", () => retryCommand(button.dataset.commandId).catch((e) => alert(e.message))));
+    }
+    function parseEntityTargets(value) {
+      return String(value || "").split(/[,\n]/).map((raw) => raw.trim()).filter(Boolean).map((raw) => {
+        const parts = raw.split(":");
+        return { api_key_id: Number(parts.shift() || 0), model: parts.join(":").trim() };
+      }).filter((target) => target.api_key_id && target.model);
     }
     function bindReportControls() {
       const client = document.getElementById("report-client-filter");
@@ -1535,39 +1554,39 @@ export default {
     try {
       if (url.pathname === "/" && request.method === "GET") return html(cloudMirrorHtml());
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
-      if (url.pathname === "/api/dashboard/data" && request.method === "GET") return handleDashboardData(request, env);
-      if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return handleDashboardMirrorData(request, env);
+      if (url.pathname === "/api/dashboard/data" && request.method === "GET") return await handleDashboardData(request, env);
+      if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return await handleDashboardMirrorData(request, env);
       const clientDetailRoute = url.pathname.match(/^\/api\/clients\/(\d+)\/detail$/);
-      if (clientDetailRoute && request.method === "GET") return handleClientDetail(request, env, Number(clientDetailRoute[1]));
+      if (clientDetailRoute && request.method === "GET") return await handleClientDetail(request, env, Number(clientDetailRoute[1]));
       const runDetailRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/detail$/);
-      if (runDetailRoute && request.method === "GET") return handleRunDetail(request, env, Number(runDetailRoute[1]));
+      if (runDetailRoute && request.method === "GET") return await handleRunDetail(request, env, Number(runDetailRoute[1]));
       const runSheetRowsRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/sheet-rows$/);
-      if (runSheetRowsRoute && request.method === "GET") return handleRunSheetRows(request, env, Number(runSheetRowsRoute[1]));
+      if (runSheetRowsRoute && request.method === "GET") return await handleRunSheetRows(request, env, Number(runSheetRowsRoute[1]));
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
-      if (rankingSnapshotDetailRoute && request.method === "GET") return handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
+      if (rankingSnapshotDetailRoute && request.method === "GET") return await handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
       const entityRunDetailRoute = url.pathname.match(/^\/api\/entity-runs\/(\d+)\/detail$/);
-      if (entityRunDetailRoute && request.method === "GET") return handleEntityRunDetail(request, env, Number(entityRunDetailRoute[1]));
+      if (entityRunDetailRoute && request.method === "GET") return await handleEntityRunDetail(request, env, Number(entityRunDetailRoute[1]));
       const entitySetDetailRoute = url.pathname.match(/^\/api\/entity-sets\/(\d+)\/detail$/);
-      if (entitySetDetailRoute && request.method === "GET") return handleEntitySetDetail(request, env, Number(entitySetDetailRoute[1]));
-      if (url.pathname === "/api/commands" && request.method === "GET") return listCommands(request, env);
-      if (url.pathname === "/api/commands" && request.method === "POST") return createCommand(request, env);
+      if (entitySetDetailRoute && request.method === "GET") return await handleEntitySetDetail(request, env, Number(entitySetDetailRoute[1]));
+      if (url.pathname === "/api/commands" && request.method === "GET") return await listCommands(request, env);
+      if (url.pathname === "/api/commands" && request.method === "POST") return await createCommand(request, env);
       const commandRoute = url.pathname.match(/^\/api\/commands\/(\d+)$/);
-      if (commandRoute && request.method === "POST") return updateCommand(request, env, Number(commandRoute[1]));
-      if (url.pathname === "/api/bridge/heartbeat" && request.method === "POST") return bridgeHeartbeat(request, env);
+      if (commandRoute && request.method === "POST") return await updateCommand(request, env, Number(commandRoute[1]));
+      if (url.pathname === "/api/bridge/heartbeat" && request.method === "POST") return await bridgeHeartbeat(request, env);
       const shareDownload = url.pathname.match(/^\/share\/report\/([^/]+)\/download$/);
-      if (shareDownload && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
+      if (shareDownload && ["GET", "HEAD"].includes(request.method)) return await serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);
-      if (shareReport && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareReport[1]), "report_html");
+      if (shareReport && ["GET", "HEAD"].includes(request.method)) return await serveReportArtifact(request, env, decodeURIComponent(shareReport[1]), "report_html");
       if (url.pathname === "/api/sync/status" && request.method === "GET") {
         if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
-        return handleStatus(env);
+        return await handleStatus(env);
       }
-      if (url.pathname === "/api/sync/push" && request.method === "POST") return handleSyncPush(request, env);
+      if (url.pathname === "/api/sync/push" && request.method === "POST") return await handleSyncPush(request, env);
       if (url.pathname === "/api/artifacts/status" && request.method === "GET") {
         if (!requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
-        return handleArtifactStatus(env);
+        return await handleArtifactStatus(env);
       }
-      if (url.pathname === "/api/artifacts/upload" && request.method === "POST") return handleArtifactUpload(request, env);
+      if (url.pathname === "/api/artifacts/upload" && request.method === "POST") return await handleArtifactUpload(request, env);
       return json({ ok: false, error: "Not found" }, 404);
     } catch (error) {
       return json({ ok: false, error: error.message || String(error) }, 500);

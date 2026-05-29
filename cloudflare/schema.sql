@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS bridge_heartbeats (
   status TEXT NOT NULL DEFAULT 'online',
   version TEXT,
   allow_cora INTEGER NOT NULL DEFAULT 0,
+  allow_paid_tools INTEGER NOT NULL DEFAULT 0,
   poll_interval INTEGER,
   last_poll_at TEXT,
   last_result_json TEXT,
