@@ -6,6 +6,7 @@
 - Public customer report URLs remain open by unguessable report token.
 - Cloud Commands are queued in Cloudflare and executed by the local Windows bridge.
 - Audit events are recorded for report views/downloads, sync pushes, artifact uploads, bridge status changes, and command lifecycle events.
+- Cloud mirror drilldowns exist for Cora runs, ranking snapshots, and entity sets.
 
 ## Report Portal
 
@@ -13,6 +14,13 @@
 - Keep public reports shareable at `/share/report/{token}`.
 - Keep source XLSX downloads available at `/share/report/{token}/download`.
 - Preserve report metadata needed for later permissions: client, project, run, report level, created date, and report token.
+
+## Data Parity
+
+- Cora run drilldowns expose recommendations, SERP rows, LSI keywords, and sheet summaries.
+- Ranking Snapshot drilldowns expose ranking keywords, ranking pages, and optimization targets.
+- Entity Set drilldowns expose selected terms and source metadata.
+- Remaining parity work: detailed Entity Explorer run payloads, workbook row exploration, richer client pages, and local UI structure matching.
 
 ## User And Admin Management
 

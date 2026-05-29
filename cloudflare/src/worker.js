@@ -567,6 +567,84 @@ async function handleDashboardMirrorData(request, env) {
   });
 }
 
+function parseJsonField(value, fallback = null) {
+  try { return value ? JSON.parse(value) : fallback; } catch (_err) { return fallback; }
+}
+
+async function handleRunDetail(request, env, id) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const run = await env.DB.prepare(
+    `SELECT r.*, p.name AS project_name
+     FROM runs r
+     LEFT JOIN projects p ON p.id = r.project_id
+     WHERE r.id = ?`
+  ).bind(id).first();
+  if (!run) return json({ ok: false, error: "Run not found" }, 404);
+  const [serp, recommendations, lsi, sheets] = await Promise.all([
+    env.DB.prepare("SELECT * FROM serp_results WHERE run_id = ? ORDER BY rank ASC, id ASC LIMIT 200").bind(id).all(),
+    env.DB.prepare("SELECT * FROM recommendations WHERE run_id = ? ORDER BY percent DESC, id ASC LIMIT 250").bind(id).all(),
+    env.DB.prepare("SELECT * FROM lsi_keywords WHERE run_id = ? ORDER BY best_of_both DESC, id ASC LIMIT 250").bind(id).all(),
+    env.DB.prepare("SELECT sheet, COUNT(*) AS row_count FROM sheet_rows WHERE run_id = ? GROUP BY sheet ORDER BY sheet LIMIT 50").bind(id).all()
+  ]);
+  await logAudit(request, env, "run_detail_view", "run", id, { keyword: run.keyword || "" }, "cloud-dashboard");
+  return json({
+    ok: true,
+    run,
+    serp_results: serp.results || [],
+    recommendations: recommendations.results || [],
+    lsi_keywords: lsi.results || [],
+    sheets: sheets.results || []
+  });
+}
+
+async function handleRankingSnapshotDetail(request, env, id) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const snapshot = await env.DB.prepare(
+    `SELECT rs.*, p.name AS project_name
+     FROM ranking_snapshots rs
+     LEFT JOIN projects p ON p.id = rs.project_id
+     WHERE rs.id = ?`
+  ).bind(id).first();
+  if (!snapshot) return json({ ok: false, error: "Ranking snapshot not found" }, 404);
+  const [keywords, pages, targets] = await Promise.all([
+    env.DB.prepare("SELECT * FROM ranking_snapshot_keywords WHERE snapshot_id = ? ORDER BY position ASC, search_volume DESC LIMIT 500").bind(id).all(),
+    env.DB.prepare("SELECT * FROM ranking_snapshot_pages WHERE snapshot_id = ? ORDER BY organic_traffic DESC, organic_keywords DESC LIMIT 250").bind(id).all(),
+    env.DB.prepare("SELECT * FROM ranking_optimization_targets WHERE snapshot_id = ? ORDER BY opportunity_score DESC, id ASC LIMIT 250").bind(id).all()
+  ]);
+  await logAudit(request, env, "ranking_snapshot_detail_view", "ranking_snapshot", id, { target: snapshot.target || "" }, "cloud-dashboard");
+  return json({
+    ok: true,
+    snapshot: {
+      ...snapshot,
+      overview: parseJsonField(snapshot.overview_json, {}),
+      errors: parseJsonField(snapshot.errors_json, [])
+    },
+    keywords: keywords.results || [],
+    pages: pages.results || [],
+    targets: targets.results || []
+  });
+}
+
+async function handleEntitySetDetail(request, env, id) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const set = await env.DB.prepare(
+    `SELECT es.*, p.name AS project_name
+     FROM entity_sets es
+     LEFT JOIN projects p ON p.id = es.project_id
+     WHERE es.id = ?`
+  ).bind(id).first();
+  if (!set) return json({ ok: false, error: "Entity set not found" }, 404);
+  const terms = await env.DB.prepare(
+    "SELECT * FROM entity_set_terms WHERE set_id = ? ORDER BY source_count DESC, type ASC, term ASC LIMIT 500"
+  ).bind(id).all();
+  await logAudit(request, env, "entity_set_detail_view", "entity_set", id, { name: set.name || "" }, "cloud-dashboard");
+  return json({
+    ok: true,
+    entity_set: set,
+    terms: (terms.results || []).map((term) => ({ ...term, sources: parseJsonField(term.sources_json, []) }))
+  });
+}
+
 function cloudDashboardHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -750,6 +828,12 @@ function cloudMirrorHtml() {
     .action-link, .copy-btn { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:6px 8px; display:inline-block; font-size:12px; cursor:pointer; text-decoration:none; }
     .copy-btn { font:inherit; font-size:12px; }
     .copy-btn:hover, .action-link:hover { border-color:var(--accent2); text-decoration:none; }
+    .detail-btn { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:6px 8px; cursor:pointer; font-size:12px; }
+    .detail-panel { border-color:rgba(110,231,220,.45); }
+    .detail-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:14px; }
+    .scroll-table { overflow:auto; max-height:520px; }
+    .scroll-table table { min-width:860px; }
+    .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
     @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2 { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
@@ -774,7 +858,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all" };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -807,6 +891,7 @@ function cloudMirrorHtml() {
     }
     function setPage(page) {
       state.page = page;
+      state.detail = null;
       document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
       render();
     }
@@ -849,13 +934,13 @@ function cloudMirrorHtml() {
       return table(["Client", "Site", "Keywords", "Runs", "Snapshots", "Targets"], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '</td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td></tr>'));
     }
     function runsTable(items) {
-      return table(["Keyword", "Client", "Target", "Imported", "Data"], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td></tr>'));
+      return table(["Keyword", "Client", "Target", "Imported", "Data", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>'));
     }
     function jobsTable(items) {
       return table(["Keyword", "Client", "Tool/Profile", "Status", "Updated"], rows(items).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.project_name || "") + '</td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span><br><span class="muted">' + esc(j.status_message || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>'));
     }
     function snapshotsTable(items) {
-      return table(["Target", "Client", "Locale", "Keywords", "Pages", "Created"], rows(items).map((s) => '<tr><td><strong>' + esc(s.target || "") + '</strong><br><span class="muted">' + esc(s.source || "") + ' / ' + esc(s.freshness || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(s.location_code || "") + ' / ' + esc(s.language_code || "") + '</td><td>' + esc(fmtNum(s.keyword_count)) + '</td><td>' + esc(fmtNum(s.page_count)) + '</td><td>' + esc(fmtDate(s.created_at)) + '</td></tr>'));
+      return table(["Target", "Client", "Locale", "Keywords", "Pages", "Created", ""], rows(items).map((s) => '<tr><td><strong>' + esc(s.target || "") + '</strong><br><span class="muted">' + esc(s.source || "") + ' / ' + esc(s.freshness || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(s.location_code || "") + ' / ' + esc(s.language_code || "") + '</td><td>' + esc(fmtNum(s.keyword_count)) + '</td><td>' + esc(fmtNum(s.page_count)) + '</td><td>' + esc(fmtDate(s.created_at)) + '</td><td><button class="detail-btn" data-detail-type="snapshot" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>'));
     }
     function targetsTable(items) {
       return table(["URL", "Client", "Keyword", "Position", "Score", "Status"], rows(items).map((t) => '<tr><td><strong>' + esc(t.url || "") + '</strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_score)) + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>'));
@@ -863,7 +948,7 @@ function cloudMirrorHtml() {
     function entitiesView(data) {
       const batches = table(["Seed", "Client", "Depth", "Progress", "Status"], rows(data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td></tr>'));
       const runs = table(["Seed", "Provider", "Model", "Status", "Completed"], rows(data.entity_runs || []).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '</td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td></tr>'));
-      const sets = table(["Set", "Client", "Terms", "Updated"], rows(data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td></tr>'));
+      const sets = table(["Set", "Client", "Terms", "Updated", ""], rows(data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>'));
       return '<div class="grid2"><section><div class="head"><h3>Entity Batches</h3></div>' + batches + '</section><section><div class="head"><h3>Entity Sets</h3></div>' + sets + '</section></div><section><div class="head"><h3>Model Runs</h3></div>' + runs + '</section>';
     }
     function plansTable(items) {
@@ -880,6 +965,72 @@ function cloudMirrorHtml() {
     }
     function auditTable(items) {
       return table(["When", "Actor", "Action", "Object", "Metadata"], rows(items).map((event) => '<tr><td>' + esc(fmtDate(event.created_at)) + '</td><td>' + esc(event.actor || "") + '<br><span class="muted">' + esc(event.ip_address || "") + '</span></td><td><span class="pill">' + esc(event.action || "") + '</span></td><td>' + esc(event.object_type || "") + '<br><span class="muted">' + esc(event.object_id || "") + '</span></td><td><span class="muted">' + esc(JSON.stringify(event.metadata || {})) + '</span></td></tr>'), "No audit events yet.");
+    }
+    async function apiGet(path) {
+      const token = readToken();
+      if (!token) throw new Error("Dashboard access token required.");
+      const response = await fetch(path, { headers: authHeaders(token) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Detail load failed");
+      return data;
+    }
+    async function openDetail(type, id) {
+      const paths = {
+        run: "/api/runs/" + encodeURIComponent(id) + "/detail",
+        snapshot: "/api/ranking-snapshots/" + encodeURIComponent(id) + "/detail",
+        "entity-set": "/api/entity-sets/" + encodeURIComponent(id) + "/detail"
+      };
+      state.detail = { type, loading: true, id };
+      render();
+      state.detail = { type, id, data: await apiGet(paths[type]) };
+      render();
+    }
+    function smallCards(items) {
+      return '<div class="detail-grid">' + items.map(([label, value]) => '<div class="card"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>').join("") + '</div>';
+    }
+    function detailTable(headers, body, empty) {
+      return '<div class="scroll-table">' + table(headers, body, empty) + '</div>';
+    }
+    function runDetail(data) {
+      const run = data.run || {};
+      const recs = data.recommendations || [];
+      const serp = data.serp_results || [];
+      const lsi = data.lsi_keywords || [];
+      const recRows = recs.map((r) => '<tr><td><strong>' + esc(r.factor || "") + '</strong><br><span class="muted">' + esc(r.factor_id || "") + '</span></td><td><span class="pill">' + esc(r.status || "") + '</span></td><td>' + esc(r.recommendation || "") + '<br><span class="muted">' + esc(r.details || "") + '</span></td><td>' + esc(r.percent || "") + '</td><td>' + esc(r.pages || "") + '</td></tr>');
+      const serpRows = serp.map((r) => '<tr><td>' + esc(r.rank || "") + '</td><td>' + esc(r.title || "") + '</td><td><a href="' + esc(r.url || "") + '" target="_blank">' + esc(r.host || r.url || "") + '</a></td><td>' + (r.is_target ? '<span class="pill ok">Target</span>' : '') + '</td></tr>');
+      const lsiRows = lsi.map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong></td><td>' + esc(r.spearman || "") + '</td><td>' + esc(r.pearson || "") + '</td><td>' + esc(r.best_of_both || "") + '</td><td>' + esc(r.deficit || "") + '</td></tr>');
+      return smallCards([["Keyword", run.keyword || ""],["Client", run.project_name || ""],["Target", run.target_domain || run.target_url || ""],["Recommendations", recs.length],["SERP Results", serp.length],["LSI Keywords", lsi.length]])
+        + '<section><div class="head"><h3>Recommendations</h3></div>' + detailTable(["Factor","Status","Recommendation","Percent","Pages"], recRows, "No recommendations synced for this run.") + '</section>'
+        + '<section><div class="head"><h3>SERP Results</h3></div>' + detailTable(["Rank","Title","URL","Target"], serpRows, "No SERP rows synced for this run.") + '</section>'
+        + '<section><div class="head"><h3>LSI Keywords</h3></div>' + detailTable(["Keyword","Spearman","Pearson","Best","Deficit"], lsiRows, "No LSI rows synced for this run.") + '</section>';
+    }
+    function snapshotDetail(data) {
+      const snapshot = data.snapshot || {};
+      const keywords = data.keywords || [];
+      const pages = data.pages || [];
+      const targets = data.targets || [];
+      const keywordRows = keywords.map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong><br><span class="muted">' + esc(k.intent || "") + '</span></td><td>' + esc(k.position || "") + '</td><td>' + esc(k.previous_position || "") + '</td><td><a href="' + esc(k.ranking_url || "") + '" target="_blank">' + esc(k.ranking_url || "") + '</a></td><td>' + esc(fmtNum(k.search_volume)) + '</td><td>' + esc(k.estimated_traffic || "") + '</td><td>' + (k.ai_overview_present ? 'AIO' : '') + (k.ai_overview_reference ? ' / Ref' : '') + '</td></tr>');
+      const pageRows = pages.map((p) => '<tr><td><a href="' + esc(p.url || "") + '" target="_blank">' + esc(p.url || "") + '</a></td><td>' + esc(fmtNum(p.organic_keywords)) + '</td><td>' + esc(p.organic_traffic || "") + '</td><td>' + esc(p.organic_traffic_cost || "") + '</td><td>' + esc(p.top3 || "") + '</td><td>' + esc(p.top10 || "") + '</td></tr>');
+      const targetRows = targets.map((t) => '<tr><td><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></td><td>' + esc(t.keyword || "") + '</td><td>' + esc(t.best_position || "") + '</td><td>' + esc(t.opportunity_score || "") + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td><td>' + esc(t.recommended_action || "") + '</td></tr>');
+      return smallCards([["Target", snapshot.target || ""],["Client", snapshot.project_name || ""],["Locale", (snapshot.location_code || "") + " / " + (snapshot.language_code || "")],["Keywords", keywords.length],["Pages", pages.length],["Targets", targets.length]])
+        + '<section><div class="head"><h3>Ranking Keywords</h3></div>' + detailTable(["Keyword","Pos","Prev","URL","Volume","Traffic","AI"], keywordRows, "No ranking keywords synced for this snapshot.") + '</section>'
+        + '<section><div class="head"><h3>Ranking Pages</h3></div>' + detailTable(["URL","Keywords","Traffic","Cost","Top 3","Top 10"], pageRows, "No ranking pages synced for this snapshot.") + '</section>'
+        + '<section><div class="head"><h3>Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status","Action"], targetRows, "No optimization targets synced for this snapshot.") + '</section>';
+    }
+    function entitySetDetail(data) {
+      const set = data.entity_set || {};
+      const terms = data.terms || [];
+      const termRows = terms.map((t) => '<tr><td><strong>' + esc(t.term || "") + '</strong><br><span class="muted">' + esc(t.normalized || "") + '</span></td><td>' + esc(t.type || "") + '</td><td>' + esc(fmtNum(t.source_count)) + '</td><td><span class="muted">' + esc(JSON.stringify(t.sources || [])) + '</span></td><td>' + esc(t.notes || "") + '</td></tr>');
+      return smallCards([["Entity Set", set.name || ""],["Client", set.project_name || ""],["Terms", terms.length],["Created", fmtDate(set.created_at)],["Updated", fmtDate(set.updated_at)],["Source Batch", set.source_batch_id || ""]])
+        + '<section><div class="head"><h3>Entity Terms</h3></div>' + detailTable(["Term","Type","Sources","Source Detail","Notes"], termRows, "No entity terms synced for this set.") + '</section>';
+    }
+    function detailPanel() {
+      const detail = state.detail;
+      if (!detail) return "";
+      if (detail.loading) return '<section class="detail-panel"><div class="head"><h3>Loading Details</h3><button class="close-detail">Close</button></div><div class="empty">Loading detail data...</div></section>';
+      const renderers = { run: runDetail, snapshot: snapshotDetail, "entity-set": entitySetDetail };
+      const title = detail.type === "run" ? "Cora Run Detail" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : "Entity Set Detail";
+      return '<section class="detail-panel"><div class="head"><h3>' + esc(title) + '</h3><button class="close-detail">Close</button></div>' + (renderers[detail.type] ? renderers[detail.type](detail.data || {}) : '<div class="empty">Unsupported detail type.</div>') + '</section>';
     }
     function commandSummary(command_type, payload) {
       if (command_type === "create_project") return 'Create or reuse client "' + (payload.name || "") + '" for ' + (payload.site_domain || "no domain");
@@ -967,6 +1118,17 @@ function cloudMirrorHtml() {
         };
       });
     }
+    function bindDetailControls() {
+      document.querySelectorAll(".detail-btn").forEach((button) => {
+        button.onclick = () => openDetail(button.dataset.detailType, button.dataset.detailId).catch((error) => {
+          state.detail = { type: button.dataset.detailType, id: button.dataset.detailId, data: null };
+          document.getElementById("app").insertAdjacentHTML("beforeend", '<div class="empty warn">' + esc(error.message || error) + '</div>');
+        });
+      });
+      document.querySelectorAll(".close-detail").forEach((button) => {
+        button.onclick = () => { state.detail = null; render(); };
+      });
+    }
     function render() {
       const data = state.data;
       if (!data) return;
@@ -986,8 +1148,9 @@ function cloudMirrorHtml() {
         audit: () => '<section><div class="head"><h3>Audit Trail</h3><span class="muted">Recent report, sync, bridge, and command events.</span></div>' + auditTable(data.audit_events || []) + '</section>',
         commands: () => commandsView(data)
       }[state.page] || (() => overview(data));
-      document.getElementById("app").innerHTML = content();
+      document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
+      setTimeout(bindDetailControls, 0);
     }
     function lockedView(message) {
       document.getElementById("page-title").textContent = "Locked";
@@ -1141,6 +1304,12 @@ export default {
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return handleDashboardData(request, env);
       if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return handleDashboardMirrorData(request, env);
+      const runDetailRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/detail$/);
+      if (runDetailRoute && request.method === "GET") return handleRunDetail(request, env, Number(runDetailRoute[1]));
+      const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
+      if (rankingSnapshotDetailRoute && request.method === "GET") return handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
+      const entitySetDetailRoute = url.pathname.match(/^\/api\/entity-sets\/(\d+)\/detail$/);
+      if (entitySetDetailRoute && request.method === "GET") return handleEntitySetDetail(request, env, Number(entitySetDetailRoute[1]));
       if (url.pathname === "/api/commands" && request.method === "GET") return listCommands(request, env);
       if (url.pathname === "/api/commands" && request.method === "POST") return createCommand(request, env);
       const commandRoute = url.pathname.match(/^\/api\/commands\/(\d+)$/);
