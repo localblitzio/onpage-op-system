@@ -1340,7 +1340,7 @@ function cloudMirrorHtml() {
       document.querySelectorAll(".retry-command").forEach((button) => button.addEventListener("click", () => retryCommand(button.dataset.commandId).catch((e) => alert(e.message))));
     }
     function parseEntityTargets(value) {
-      return String(value || "").split(/[,\n]/).map((raw) => raw.trim()).filter(Boolean).map((raw) => {
+      return String(value || "").split(/[,\\n]/).map((raw) => raw.trim()).filter(Boolean).map((raw) => {
         const parts = raw.split(":");
         return { api_key_id: Number(parts.shift() || 0), model: parts.join(":").trim() };
       }).filter((target) => target.api_key_id && target.model);
