@@ -104,7 +104,14 @@ Push structured data:
 python app.py cloudflare-sync
 ```
 
-You can also use **Push to Cloudflare** on the Overview screen.
+Push generated customer report HTML and source XLSX files to R2:
+
+```powershell
+python app.py cloudflare-artifacts-sync --dry-run
+python app.py cloudflare-artifacts-sync
+```
+
+You can also use **Push to Cloudflare** and **Push Report Files** on the Overview screen. Synced customer reports are served by the Worker at `/share/report/{token}` and source XLSX downloads at `/share/report/{token}/download`.
 
 Raw workbook rows are skipped by default because they can be large. To include them:
 

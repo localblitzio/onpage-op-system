@@ -553,6 +553,26 @@ def init_db() -> None:
                 last_error TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS cloud_report_artifacts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                share_report_id INTEGER NOT NULL REFERENCES share_reports(id) ON DELETE CASCADE,
+                run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+                token TEXT NOT NULL,
+                artifact_type TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                file_size INTEGER NOT NULL DEFAULT 0,
+                sha256 TEXT NOT NULL,
+                r2_key TEXT NOT NULL,
+                cloud_url TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                error TEXT,
+                uploaded_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(share_report_id, artifact_type)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_runs_keyword ON runs(keyword);
             CREATE INDEX IF NOT EXISTS idx_runs_target_domain ON runs(target_domain);
             CREATE INDEX IF NOT EXISTS idx_serp_run_rank ON serp_results(run_id, rank);
@@ -578,6 +598,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ranking_snapshot_pages_snapshot ON ranking_snapshot_pages(snapshot_id);
             CREATE INDEX IF NOT EXISTS idx_ranking_optimization_targets_project ON ranking_optimization_targets(project_id, status);
             CREATE INDEX IF NOT EXISTS idx_ranking_optimization_targets_snapshot ON ranking_optimization_targets(snapshot_id);
+            CREATE INDEX IF NOT EXISTS idx_cloud_report_artifacts_report ON cloud_report_artifacts(share_report_id);
+            CREATE INDEX IF NOT EXISTS idx_cloud_report_artifacts_status ON cloud_report_artifacts(status, uploaded_at);
             """
         )
         ensure_column(con, "runs", "project_id", "INTEGER")
@@ -682,6 +704,7 @@ def cloudflare_sync_state() -> dict[str, Any]:
                 counts[table] = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             except sqlite3.Error:
                 counts[table] = 0
+        artifacts = cloudflare_artifact_state(con)
     return {
         "configured": cloudflare_sync_configured(),
         "sync_url": CLOUDFLARE_SYNC_URL,
@@ -690,7 +713,45 @@ def cloudflare_sync_state() -> dict[str, Any]:
         "includes_workbook_rows": CLOUDFLARE_SYNC_WORKBOOK_ROWS,
         "counts": counts,
         "state": [row_to_dict(row) for row in rows],
+        "artifacts": artifacts,
     }
+
+
+def cloudflare_artifact_state(con: sqlite3.Connection | None = None) -> dict[str, Any]:
+    close = False
+    if con is None:
+        con = connect()
+        close = True
+    try:
+        counts = [
+            row_to_dict(r) or {}
+            for r in con.execute(
+                """
+                SELECT artifact_type, status, COUNT(*) AS count, COALESCE(SUM(file_size), 0) AS total_bytes, MAX(uploaded_at) AS last_uploaded_at
+                FROM cloud_report_artifacts
+                GROUP BY artifact_type, status
+                ORDER BY artifact_type, status
+                """
+            ).fetchall()
+        ]
+        summary = row_to_dict(
+            con.execute(
+                """
+                SELECT COUNT(*) AS total_files, COALESCE(SUM(file_size), 0) AS total_bytes, MAX(uploaded_at) AS last_uploaded_at
+                FROM cloud_report_artifacts
+                WHERE status = 'synced'
+                """
+            ).fetchone()
+        ) or {}
+        return {
+            "counts": counts,
+            "total_files": int(summary.get("total_files") or 0),
+            "total_bytes": int(summary.get("total_bytes") or 0),
+            "last_uploaded_at": summary.get("last_uploaded_at"),
+        }
+    finally:
+        if close:
+            con.close()
 
 
 def cloudflare_table_rows(con: sqlite3.Connection, table: str, limit: int, offset: int) -> list[dict[str, Any]]:
@@ -721,6 +782,237 @@ def post_cloudflare_sync_batch(payload: dict[str, Any]) -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise ValueError(f"Cloudflare sync failed HTTP {exc.code}: {detail}") from exc
+
+
+def cloudflare_request_json(path: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
+    if not cloudflare_sync_configured():
+        raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
+    body = json.dumps(payload, default=str).encode("utf-8")
+    request = urllib.request.Request(
+        f"{CLOUDFLARE_SYNC_URL}{path}",
+        data=body,
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {CLOUDFLARE_SYNC_TOKEN}",
+            "User-Agent": "OnPageOptimizationSystemDashboard/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Cloudflare request failed HTTP {exc.code}: {detail}") from exc
+
+
+def report_artifact_key(token: str, artifact_type: str, file_name: str) -> str:
+    safe_token = re.sub(r"[^A-Za-z0-9_-]+", "-", token).strip("-") or secrets.token_urlsafe(8)
+    suffix = Path(file_name).suffix.lower() or (".html" if artifact_type == "report_html" else ".bin")
+    base = "report" if artifact_type == "report_html" else "source-cora-report"
+    return f"reports/{safe_token}/{base}{suffix}"
+
+
+def collect_share_report_artifacts(report_id: int, cloud_base_url: str | None = None) -> list[dict[str, Any]]:
+    with connect() as con:
+        report = row_to_dict(
+            con.execute(
+                """
+                SELECT sr.*, r.archive_path, r.file_name, r.sha256 AS run_sha256
+                FROM share_reports sr
+                JOIN runs r ON r.id = sr.run_id
+                WHERE sr.id = ? AND sr.revoked_at IS NULL
+                """,
+                (report_id,),
+            ).fetchone()
+        )
+    if not report:
+        raise ValueError("Shared report not found")
+    token = str(report["token"])
+    base_url = (cloud_base_url or CLOUDFLARE_SYNC_URL or "").rstrip("/")
+    data = shared_report_by_token(token)
+    html_body = render_shared_report_html(data, base_url)
+    artifacts = [
+        {
+            "share_report_id": report_id,
+            "run_id": int(report["run_id"]),
+            "token": token,
+            "artifact_type": "report_html",
+            "file_name": f"{token}.html",
+            "content_type": "text/html; charset=utf-8",
+            "body": html_body,
+        }
+    ]
+    archive_path = Path(report["archive_path"] or "")
+    if archive_path.exists() and archive_path.is_file():
+        artifacts.append(
+            {
+                "share_report_id": report_id,
+                "run_id": int(report["run_id"]),
+                "token": token,
+                "artifact_type": "source_xlsx",
+                "file_name": report.get("file_name") or archive_path.name,
+                "content_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "body": archive_path.read_bytes(),
+            }
+        )
+    return artifacts
+
+
+def upsert_cloud_report_artifact(artifact: dict[str, Any], status: str = "pending", error: str | None = None, cloud_url: str | None = None) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    body = artifact["body"]
+    sha = hashlib.sha256(body).hexdigest()
+    file_name = artifact["file_name"]
+    r2_key = report_artifact_key(artifact["token"], artifact["artifact_type"], file_name)
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO cloud_report_artifacts
+            (share_report_id, run_id, token, artifact_type, file_name, content_type, file_size, sha256, r2_key, cloud_url, status, error, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(share_report_id, artifact_type) DO UPDATE SET
+              run_id=excluded.run_id,
+              token=excluded.token,
+              file_name=excluded.file_name,
+              content_type=excluded.content_type,
+              file_size=excluded.file_size,
+              sha256=excluded.sha256,
+              r2_key=excluded.r2_key,
+              cloud_url=COALESCE(excluded.cloud_url, cloud_report_artifacts.cloud_url),
+              status=excluded.status,
+              error=excluded.error,
+              updated_at=excluded.updated_at
+            """,
+            (
+                artifact["share_report_id"],
+                artifact["run_id"],
+                artifact["token"],
+                artifact["artifact_type"],
+                file_name,
+                artifact["content_type"],
+                len(body),
+                sha,
+                r2_key,
+                cloud_url,
+                status,
+                error,
+                now,
+                now,
+            ),
+        )
+        row = row_to_dict(
+            con.execute(
+                "SELECT * FROM cloud_report_artifacts WHERE share_report_id = ? AND artifact_type = ?",
+                (artifact["share_report_id"], artifact["artifact_type"]),
+            ).fetchone()
+        ) or {}
+    return row
+
+
+def mark_cloud_report_artifact_synced(local_id: int, response: dict[str, Any]) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE cloud_report_artifacts
+            SET status = 'synced',
+                error = NULL,
+                cloud_url = ?,
+                uploaded_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (response.get("public_url"), now, now, local_id),
+        )
+
+
+def mark_cloud_report_artifact_failed(local_id: int, error: str) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE cloud_report_artifacts
+            SET status = 'failed', error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (error[:1000], now, local_id),
+        )
+
+
+def sync_cloudflare_report_artifacts(report_ids: list[int] | None = None, dry_run: bool = False, force: bool = False) -> dict[str, Any]:
+    with connect() as con:
+        if report_ids:
+            placeholders = ",".join("?" for _ in report_ids)
+            rows = con.execute(
+                f"SELECT id FROM share_reports WHERE revoked_at IS NULL AND id IN ({placeholders}) ORDER BY created_at DESC, id DESC",
+                [int(value) for value in report_ids],
+            ).fetchall()
+        else:
+            rows = con.execute("SELECT id FROM share_reports WHERE revoked_at IS NULL ORDER BY created_at DESC, id DESC").fetchall()
+    selected_ids = [int(row["id"]) for row in rows]
+    if not dry_run and not cloudflare_sync_configured():
+        raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
+    started_at = datetime.now().isoformat(timespec="seconds")
+    result: dict[str, Any] = {
+        "ok": True,
+        "dry_run": dry_run,
+        "started_at": started_at,
+        "reports": len(selected_ids),
+        "artifacts": [],
+        "uploaded": 0,
+        "skipped": 0,
+        "failed": 0,
+        "total_bytes": 0,
+    }
+    for report_id in selected_ids:
+        for artifact in collect_share_report_artifacts(report_id, CLOUDFLARE_SYNC_URL):
+            body = artifact["body"]
+            artifact_sha = hashlib.sha256(body).hexdigest()
+            existing = None
+            with connect() as con:
+                existing = row_to_dict(
+                    con.execute(
+                        "SELECT * FROM cloud_report_artifacts WHERE share_report_id = ? AND artifact_type = ?",
+                        (report_id, artifact["artifact_type"]),
+                    ).fetchone()
+                )
+            if existing and existing.get("status") == "synced" and existing.get("sha256") == artifact_sha and not force:
+                result["skipped"] += 1
+                result["artifacts"].append({"id": existing["id"], "type": artifact["artifact_type"], "status": "skipped", "file_name": artifact["file_name"]})
+                continue
+            result["total_bytes"] += len(body)
+            if dry_run:
+                result["artifacts"].append({"id": (existing or {}).get("id"), "type": artifact["artifact_type"], "status": "dry_run", "file_name": artifact["file_name"], "bytes": len(body)})
+                continue
+            record = upsert_cloud_report_artifact(artifact, "pending")
+            payload = {
+                "local_id": str(record["id"]),
+                "share_report_id": record["share_report_id"],
+                "run_id": record["run_id"],
+                "token": record["token"],
+                "artifact_type": record["artifact_type"],
+                "file_name": record["file_name"],
+                "content_type": record["content_type"],
+                "file_size": record["file_size"],
+                "sha256": record["sha256"],
+                "r2_key": record["r2_key"],
+                "content_base64": base64.b64encode(body).decode("ascii"),
+            }
+            try:
+                response = cloudflare_request_json("/api/artifacts/upload", payload, timeout=180)
+                mark_cloud_report_artifact_synced(int(record["id"]), response)
+                result["uploaded"] += 1
+                result["artifacts"].append({"id": record["id"], "type": artifact["artifact_type"], "status": "synced", "file_name": artifact["file_name"], "url": response.get("public_url")})
+            except Exception as exc:
+                mark_cloud_report_artifact_failed(int(record["id"]), str(exc))
+                result["failed"] += 1
+                result["ok"] = False
+                result["artifacts"].append({"id": record["id"], "type": artifact["artifact_type"], "status": "failed", "file_name": artifact["file_name"], "error": str(exc)})
+    result["finished_at"] = datetime.now().isoformat(timespec="seconds")
+    result["state"] = cloudflare_artifact_state()
+    return result
 
 
 def update_cloudflare_sync_state(table: str, row_count: int, error: str | None = None) -> None:
@@ -5341,6 +5633,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.api_overview(query)
             elif path == "/api/cloudflare/status":
                 json_response(self, cloudflare_sync_state())
+            elif path == "/api/cloudflare/artifacts":
+                json_response(self, cloudflare_artifact_state())
             elif path == "/api/content-plans":
                 self.api_content_plans(query)
             elif path == "/api/entity-lsi/runs":
@@ -5480,6 +5774,14 @@ class AppHandler(BaseHTTPRequestHandler):
                 tables = body.get("tables") if isinstance(body.get("tables"), list) else None
                 result = push_cloudflare_sync(tables=tables, dry_run=bool(body.get("dry_run")))
                 json_response(self, result)
+            elif parsed.path == "/api/cloudflare/artifacts/sync":
+                report_ids = [int(value) for value in body.get("report_ids", []) if value] if isinstance(body.get("report_ids"), list) else None
+                result = sync_cloudflare_report_artifacts(
+                    report_ids=report_ids,
+                    dry_run=bool(body.get("dry_run")),
+                    force=bool(body.get("force")),
+                )
+                json_response(self, result, 200 if result.get("ok") else 502)
             elif parsed.path == "/api/share-reports":
                 report = create_share_report(
                     int(body.get("run_id")),
@@ -5893,7 +6195,11 @@ class AppHandler(BaseHTTPRequestHandler):
                        r.target_url,
                        r.target_domain,
                        r.imported_at,
-                       p.name AS project_name
+                       p.name AS project_name,
+                       (SELECT COUNT(*) FROM cloud_report_artifacts cra WHERE cra.share_report_id = sr.id AND cra.status = 'synced') AS cloud_synced_artifacts,
+                       (SELECT COUNT(*) FROM cloud_report_artifacts cra WHERE cra.share_report_id = sr.id) AS cloud_total_artifacts,
+                       (SELECT MAX(cra.uploaded_at) FROM cloud_report_artifacts cra WHERE cra.share_report_id = sr.id AND cra.status = 'synced') AS cloud_uploaded_at,
+                       (SELECT cra.cloud_url FROM cloud_report_artifacts cra WHERE cra.share_report_id = sr.id AND cra.artifact_type = 'report_html' AND cra.status = 'synced' ORDER BY cra.uploaded_at DESC LIMIT 1) AS cloud_url
                 FROM share_reports sr
                 JOIN runs r ON r.id = sr.run_id
                 LEFT JOIN projects p ON p.id = r.project_id
@@ -6280,6 +6586,15 @@ def main(argv: list[str]) -> int:
         table_arg = next((arg for arg in argv[2:] if arg.startswith("--tables=")), "")
         tables = [part.strip() for part in table_arg.removeprefix("--tables=").split(",") if part.strip()] if table_arg else None
         result = push_cloudflare_sync(tables=tables, dry_run=dry_run)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if len(argv) > 1 and argv[1] == "cloudflare-artifacts-sync":
+        dry_run = "--dry-run" in argv
+        force = "--force" in argv
+        report_arg = next((arg for arg in argv[2:] if arg.startswith("--report-ids=")), "")
+        report_ids = [int(part.strip()) for part in report_arg.removeprefix("--report-ids=").split(",") if part.strip()] if report_arg else None
+        result = sync_cloudflare_report_artifacts(report_ids=report_ids, dry_run=dry_run, force=force)
         print(json.dumps(result, indent=2, default=str))
         return 0
 

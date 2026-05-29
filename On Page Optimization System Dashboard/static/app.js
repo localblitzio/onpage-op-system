@@ -121,6 +121,19 @@ function fmtNum(value) {
   return Number.isFinite(num) ? num.toLocaleString(undefined, { maximumFractionDigits: 2 }) : value;
 }
 
+function fmtBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toLocaleString(undefined, { maximumFractionDigits: index ? 1 : 0 })} ${units[index]}`;
+}
+
 function fmtDelta(value, lowerIsBetter = false) {
   if (value === null || value === undefined || value === "") return "";
   const num = Number(value);
@@ -380,6 +393,10 @@ function renderOverview() {
   const cloudflare = state.cloudflareSync || {};
   const cloudflareRows = Object.values(cloudflare.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
   const cloudflareLast = (cloudflare.state || []).map((row) => row.last_success_at).filter(Boolean).sort().pop() || "";
+  const artifactState = cloudflare.artifacts || {};
+  const artifactFiles = Number(artifactState.total_files || 0);
+  const artifactBytes = Number(artifactState.total_bytes || 0);
+  const artifactLast = artifactState.last_uploaded_at || "";
   root.innerHTML = `
     <div class="overview-grid">
       <div class="overview-card"><span>${fmtNum(counts.profiles || 0)}</span><label>Profiles</label></div>
@@ -392,6 +409,7 @@ function renderOverview() {
       <div class="overview-card"><span>${fmtNum(counts.content_plans || 0)}</span><label>Content Plans</label></div>
       <div class="overview-card"><span>${fmtNum(counts.api_keys || 0)}</span><label>API Keys</label></div>
       <div class="overview-card"><span>${cloudflare.configured ? "Ready" : "Setup"}</span><label>Cloudflare Sync</label></div>
+      <div class="overview-card"><span>${fmtNum(artifactFiles)}</span><label>Cloud Files</label></div>
     </div>
     <div class="overview-sections">
       <section class="data-section">
@@ -403,6 +421,8 @@ function renderOverview() {
           <div class="row-actions">
             <button id="cloudflare-dry-run" type="button" class="secondary">Dry Run</button>
             <button id="cloudflare-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push to Cloudflare</button>
+            <button id="cloudflare-files-dry-run" type="button" class="secondary">Dry Run Files</button>
+            <button id="cloudflare-files-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push Report Files</button>
           </div>
         </div>
         <div id="cloudflare-sync-status" class="cloudflare-sync-status">
@@ -410,6 +430,9 @@ function renderOverview() {
           <div><label>Rows Prepared</label><strong>${fmtNum(cloudflareRows)}</strong></div>
           <div><label>Batch Size</label><strong>${fmtNum(cloudflare.batch_size || 0)}</strong></div>
           <div><label>Last Success</label><strong>${fmtDate(cloudflareLast) || "Never"}</strong></div>
+          <div><label>Report Files</label><strong>${fmtNum(artifactFiles)} synced</strong></div>
+          <div><label>File Bytes</label><strong>${fmtBytes(artifactBytes)}</strong></div>
+          <div><label>Last File Upload</label><strong>${fmtDate(artifactLast) || "Never"}</strong></div>
         </div>
       </section>
       <section class="data-section">
@@ -477,6 +500,8 @@ async function loadOverview() {
 function bindCloudflareSyncControls() {
   el("cloudflare-dry-run")?.addEventListener("click", () => runCloudflareSync(true).catch((err) => toast(err.message)));
   el("cloudflare-sync-now")?.addEventListener("click", () => runCloudflareSync(false).catch((err) => toast(err.message)));
+  el("cloudflare-files-dry-run")?.addEventListener("click", () => runCloudflareArtifactSync(true).catch((err) => toast(err.message)));
+  el("cloudflare-files-sync-now")?.addEventListener("click", () => runCloudflareArtifactSync(false).catch((err) => toast(err.message)));
 }
 
 async function runCloudflareSync(dryRun = false) {
@@ -489,6 +514,21 @@ async function runCloudflareSync(dryRun = false) {
   state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
   renderOverview();
   toast(dryRun ? `Dry run ready: ${fmtNum(result.total_rows)} rows.` : `Cloudflare sync pushed ${fmtNum(result.total_rows)} rows.`);
+}
+
+async function runCloudflareArtifactSync(dryRun = false, reportIds = null, force = false) {
+  const status = el("cloudflare-sync-status");
+  if (status) status.insertAdjacentHTML("afterbegin", `<div class="ai-test-result">Cloudflare report file ${dryRun ? "dry run" : "push"} started...</div>`);
+  const result = await api("/api/cloudflare/artifacts/sync", {
+    method: "POST",
+    body: JSON.stringify({ dry_run: dryRun, force, report_ids: reportIds || [] }),
+  });
+  state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
+  await loadShareReports(state.selectedClientId || state.selectedProjectId || "");
+  if (state.activeView === "overview-view") renderOverview();
+  if (state.activeView === "reports-view") renderReportGenerator();
+  const changed = dryRun ? result.artifacts?.length || 0 : result.uploaded || 0;
+  toast(dryRun ? `File dry run ready: ${fmtNum(changed)} artifacts.` : `Uploaded ${fmtNum(changed)} report files to Cloudflare.`);
 }
 
 function renderProjects() {
@@ -730,6 +770,9 @@ function renderReportGenerator() {
   root.querySelectorAll(".copy-report-link").forEach((button) => {
     button.addEventListener("click", () => copyReportUrl(button.dataset.url || ""));
   });
+  root.querySelectorAll(".sync-report-files").forEach((button) => {
+    button.addEventListener("click", () => runCloudflareArtifactSync(false, [Number(button.dataset.reportId)], true).catch((err) => toast(err.message)));
+  });
 }
 
 function renderReportTargetPicker(targets) {
@@ -752,16 +795,23 @@ function renderStoredReports() {
   if (!state.shareReports.length) {
     return `<div class="note-box">No customer reports generated yet.</div>`;
   }
-  return table(["Report", "Level", "Created", ""], state.shareReports.map((report) => {
+  return table(["Report", "Level", "Created", "Cloud", ""], state.shareReports.map((report) => {
     const url = `${window.location.origin}${report.url}`;
+    const cloudUrl = report.cloud_url || "";
+    const cloudSynced = Number(report.cloud_synced_artifacts || 0);
+    const cloudTotal = Number(report.cloud_total_artifacts || 0);
+    const cloudLabel = cloudSynced ? `${fmtNum(cloudSynced)} file${cloudSynced === 1 ? "" : "s"} synced` : "Local only";
     return `
       <tr>
         <td><strong>${htmlEscape(report.title || report.keyword || "Shared report")}</strong><br><span class="muted">${htmlEscape(report.keyword || "")}</span></td>
         <td>${htmlEscape(report.level || "medium")}</td>
         <td>${fmtDate(report.created_at)}</td>
+        <td><span class="status-pill ${cloudSynced ? "complete" : "queued"}">${htmlEscape(cloudLabel)}</span>${cloudTotal && cloudSynced < cloudTotal ? `<br><span class="muted">${fmtNum(cloudTotal - cloudSynced)} pending</span>` : ""}</td>
         <td class="row-actions">
           <a class="button-link" href="${htmlEscape(url)}" target="_blank" rel="noopener">Open</a>
           <button class="link-button copy-report-link" type="button" data-url="${htmlEscape(url)}">Copy link</button>
+          ${cloudUrl ? `<a class="button-link" href="${htmlEscape(cloudUrl)}" target="_blank" rel="noopener">Cloud</a>` : ""}
+          <button class="link-button sync-report-files" type="button" data-report-id="${report.id}">Sync files</button>
         </td>
       </tr>
     `;

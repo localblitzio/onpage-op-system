@@ -1231,6 +1231,35 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertTrue(any("Queue paused" in message for message in messages))
         self.assertTrue(any(f"Queued Cora job {job['id']}" in message for message in messages))
 
+    def test_cloudflare_report_artifacts_include_html_and_source_xlsx(self) -> None:
+        run_id = self.insert_run("artifact keyword", "example.com", "sha-artifact", "2026-05-27T10:00:00")
+        archive = app.ARCHIVE_DIR / "artifact.xlsx"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        archive.write_bytes(b"fake xlsx bytes")
+        with app.connect() as con:
+            con.execute(
+                "UPDATE runs SET archive_path = ?, file_name = ? WHERE id = ?",
+                (str(archive), "artifact.xlsx", run_id),
+            )
+
+        report = app.create_share_report(run_id, "basic")
+        artifacts = app.collect_share_report_artifacts(report["id"], "https://example.workers.dev")
+
+        self.assertEqual([item["artifact_type"] for item in artifacts], ["report_html", "source_xlsx"])
+        self.assertIn(b"https://example.workers.dev/share/report/", artifacts[0]["body"])
+        self.assertEqual(artifacts[1]["body"], b"fake xlsx bytes")
+
+    def test_cloudflare_report_artifact_dry_run_does_not_write_records(self) -> None:
+        run_id = self.insert_run("artifact keyword", "example.com", "sha-artifact", "2026-05-27T10:00:00")
+        report = app.create_share_report(run_id, "basic")
+
+        result = app.sync_cloudflare_report_artifacts([report["id"]], dry_run=True)
+
+        self.assertTrue(result["dry_run"])
+        with app.connect() as con:
+            count = con.execute("SELECT COUNT(*) FROM cloud_report_artifacts").fetchone()[0]
+        self.assertEqual(count, 0)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

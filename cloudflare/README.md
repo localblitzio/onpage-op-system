@@ -60,6 +60,15 @@ python ".\On Page Optimization System Dashboard\app.py" cloudflare-sync
 
 Or use the **Push to Cloudflare** button on the dashboard Overview page.
 
+To upload generated customer reports and source Cora XLSX files to R2:
+
+```powershell
+python ".\On Page Optimization System Dashboard\app.py" cloudflare-artifacts-sync --dry-run
+python ".\On Page Optimization System Dashboard\app.py" cloudflare-artifacts-sync
+```
+
+The Worker serves synced report pages from `/share/report/{token}` and their source XLSX downloads from `/share/report/{token}/download`.
+
 By default, raw `workbook_rows` are not pushed because they can be large. To include them:
 
 ```powershell

@@ -6,6 +6,21 @@ CREATE TABLE IF NOT EXISTS sync_batches (
   received_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS report_artifacts (
+  local_id TEXT PRIMARY KEY,
+  share_report_id INTEGER,
+  run_id INTEGER,
+  token TEXT NOT NULL,
+  artifact_type TEXT NOT NULL,
+  file_name TEXT,
+  content_type TEXT,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT,
+  r2_key TEXT NOT NULL,
+  public_url TEXT,
+  uploaded_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, profile_id INTEGER, name TEXT, client TEXT, site_domain TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, project_id INTEGER, domain TEXT, name TEXT, created_at TEXT);
@@ -245,6 +260,7 @@ CREATE TABLE IF NOT EXISTS ranking_optimization_targets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_batches_table ON sync_batches(table_name, received_at);
+CREATE INDEX IF NOT EXISTS idx_report_artifacts_token ON report_artifacts(token, artifact_type);
 CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_serp_run ON serp_results(run_id);
