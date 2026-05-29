@@ -645,6 +645,66 @@ async function handleEntitySetDetail(request, env, id) {
   });
 }
 
+async function handleClientDetail(request, env, id) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const client = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
+  if (!client) return json({ ok: false, error: "Client not found" }, 404);
+  const [keywords, runs, jobs, snapshots, targets, reports, plans, entityBatches, entityRuns, entitySets] = await Promise.all([
+    env.DB.prepare("SELECT * FROM keywords WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 250").bind(id).all(),
+    env.DB.prepare("SELECT * FROM runs WHERE project_id = ? ORDER BY imported_at DESC, id DESC LIMIT 150").bind(id).all(),
+    env.DB.prepare("SELECT * FROM managed_jobs WHERE project_id = ? ORDER BY updated_at DESC, id DESC LIMIT 150").bind(id).all(),
+    env.DB.prepare("SELECT * FROM ranking_snapshots WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 100").bind(id).all(),
+    env.DB.prepare("SELECT * FROM ranking_optimization_targets WHERE project_id = ? ORDER BY opportunity_score DESC, id DESC LIMIT 250").bind(id).all(),
+    env.DB.prepare(
+      `SELECT sr.id, sr.token, sr.level, sr.title, sr.created_at, sr.revoked_at,
+              r.keyword, r.target_url, r.target_domain,
+              a.artifact_count, a.total_bytes, a.last_uploaded_at
+       FROM share_reports sr
+       JOIN runs r ON r.id = sr.run_id
+       LEFT JOIN (
+         SELECT token, COUNT(*) AS artifact_count, SUM(file_size) AS total_bytes, MAX(uploaded_at) AS last_uploaded_at
+         FROM report_artifacts
+         GROUP BY token
+       ) a ON a.token = sr.token
+       WHERE r.project_id = ? AND sr.revoked_at IS NULL
+       ORDER BY sr.created_at DESC, sr.id DESC
+       LIMIT 150`
+    ).bind(id).all(),
+    env.DB.prepare(
+      `SELECT cp.*, k.keyword
+       FROM content_plans cp
+       LEFT JOIN keywords k ON k.id = cp.keyword_id
+       WHERE cp.project_id = ?
+       ORDER BY cp.updated_at DESC, cp.id DESC
+       LIMIT 150`
+    ).bind(id).all(),
+    env.DB.prepare("SELECT * FROM entity_lsi_batches WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 100").bind(id).all(),
+    env.DB.prepare("SELECT * FROM entity_lsi_runs WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 150").bind(id).all(),
+    env.DB.prepare(
+      `SELECT es.*, (SELECT COUNT(*) FROM entity_set_terms est WHERE est.set_id = es.id) AS term_count
+       FROM entity_sets es
+       WHERE es.project_id = ?
+       ORDER BY es.updated_at DESC, es.id DESC
+       LIMIT 100`
+    ).bind(id).all()
+  ]);
+  await logAudit(request, env, "client_detail_view", "project", id, { name: client.name || "" }, "cloud-dashboard");
+  return json({
+    ok: true,
+    client,
+    keywords: keywords.results || [],
+    runs: runs.results || [],
+    jobs: jobs.results || [],
+    snapshots: snapshots.results || [],
+    targets: targets.results || [],
+    reports: reports.results || [],
+    content_plans: plans.results || [],
+    entity_batches: entityBatches.results || [],
+    entity_runs: entityRuns.results || [],
+    entity_sets: entitySets.results || []
+  });
+}
+
 function cloudDashboardHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -931,7 +991,7 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Cora Reports</h3><span class="pill ok">Share-ready</span></div>' + filters + reportTable(filtered) + '</section>';
     }
     function clientsTable(items) {
-      return table(["Client", "Site", "Keywords", "Runs", "Snapshots", "Targets"], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '</td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td></tr>'));
+      return table(["Client", "Site", "Keywords", "Runs", "Snapshots", "Targets", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '</td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(c.id) + '">Open</button></td></tr>'));
     }
     function runsTable(items) {
       return table(["Keyword", "Client", "Target", "Imported", "Data", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>'));
@@ -976,6 +1036,7 @@ function cloudMirrorHtml() {
     }
     async function openDetail(type, id) {
       const paths = {
+        client: "/api/clients/" + encodeURIComponent(id) + "/detail",
         run: "/api/runs/" + encodeURIComponent(id) + "/detail",
         snapshot: "/api/ranking-snapshots/" + encodeURIComponent(id) + "/detail",
         "entity-set": "/api/entity-sets/" + encodeURIComponent(id) + "/detail"
@@ -1024,12 +1085,34 @@ function cloudMirrorHtml() {
       return smallCards([["Entity Set", set.name || ""],["Client", set.project_name || ""],["Terms", terms.length],["Created", fmtDate(set.created_at)],["Updated", fmtDate(set.updated_at)],["Source Batch", set.source_batch_id || ""]])
         + '<section><div class="head"><h3>Entity Terms</h3></div>' + detailTable(["Term","Type","Sources","Source Detail","Notes"], termRows, "No entity terms synced for this set.") + '</section>';
     }
+    function clientDetail(data) {
+      const client = data.client || {};
+      const keywordRows = (data.keywords || []).map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong></td><td>' + esc(k.intent || "") + '</td><td>' + esc(k.priority || "") + '</td><td>' + esc(fmtDate(k.created_at)) + '</td></tr>');
+      const runRows = (data.runs || []).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
+      const reportRows = (data.reports || []).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">' + esc(r.keyword || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '</td><td>' + esc(fmtNum(r.artifact_count || 0)) + ' files</td><td><a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a></td></tr>');
+      const snapshotRows = (data.snapshots || []).map((s) => '<tr><td><strong>' + esc(s.target || "") + '</strong></td><td>' + esc(s.location_code || "") + ' / ' + esc(s.language_code || "") + '</td><td>' + esc(fmtDate(s.created_at)) + '</td><td><button class="detail-btn" data-detail-type="snapshot" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
+      const targetRows = (data.targets || []).map((t) => '<tr><td><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></td><td>' + esc(t.keyword || "") + '</td><td>' + esc(t.best_position || "") + '</td><td>' + esc(t.opportunity_score || "") + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>');
+      const jobRows = (data.jobs || []).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>');
+      const planRows = (data.content_plans || []).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>');
+      const entityRows = (data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td></tr>');
+      const setRows = (data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
+      return smallCards([["Client", client.name || ""],["Main URL", client.site_domain || ""],["Keywords", (data.keywords || []).length],["Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length]])
+        + '<section><div class="head"><h3>Keywords</h3></div>' + detailTable(["Keyword","Intent","Priority","Created"], keywordRows, "No keywords synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Cora Runs</h3></div>' + detailTable(["Keyword","Target","Imported",""], runRows, "No Cora runs synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Reports</h3></div>' + detailTable(["Report","Level","Created","Files",""], reportRows, "No reports synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + detailTable(["Target","Locale","Created",""], snapshotRows, "No ranking snapshots synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status"], targetRows, "No optimization targets synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Jobs</h3></div>' + detailTable(["Keyword","Tool/Profile","Status","Updated"], jobRows, "No jobs synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Content Plans</h3></div>' + detailTable(["Title","Keyword","Type","Status","Due"], planRows, "No content plans synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Entity Activity</h3></div>' + detailTable(["Seed","Depth","Progress","Status","Updated"], entityRows, "No entity batches synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>Entity Sets</h3></div>' + detailTable(["Set","Terms","Updated",""], setRows, "No entity sets synced for this client.") + '</section>';
+    }
     function detailPanel() {
       const detail = state.detail;
       if (!detail) return "";
       if (detail.loading) return '<section class="detail-panel"><div class="head"><h3>Loading Details</h3><button class="close-detail">Close</button></div><div class="empty">Loading detail data...</div></section>';
-      const renderers = { run: runDetail, snapshot: snapshotDetail, "entity-set": entitySetDetail };
-      const title = detail.type === "run" ? "Cora Run Detail" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : "Entity Set Detail";
+      const renderers = { client: clientDetail, run: runDetail, snapshot: snapshotDetail, "entity-set": entitySetDetail };
+      const title = detail.type === "client" ? "Client Workspace" : detail.type === "run" ? "Cora Run Detail" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : "Entity Set Detail";
       return '<section class="detail-panel"><div class="head"><h3>' + esc(title) + '</h3><button class="close-detail">Close</button></div>' + (renderers[detail.type] ? renderers[detail.type](detail.data || {}) : '<div class="empty">Unsupported detail type.</div>') + '</section>';
     }
     function commandSummary(command_type, payload) {
@@ -1304,6 +1387,8 @@ export default {
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return handleDashboardData(request, env);
       if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return handleDashboardMirrorData(request, env);
+      const clientDetailRoute = url.pathname.match(/^\/api\/clients\/(\d+)\/detail$/);
+      if (clientDetailRoute && request.method === "GET") return handleClientDetail(request, env, Number(clientDetailRoute[1]));
       const runDetailRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/detail$/);
       if (runDetailRoute && request.method === "GET") return handleRunDetail(request, env, Number(runDetailRoute[1]));
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);

@@ -7,6 +7,7 @@
 - Cloud Commands are queued in Cloudflare and executed by the local Windows bridge.
 - Audit events are recorded for report views/downloads, sync pushes, artifact uploads, bridge status changes, and command lifecycle events.
 - Cloud mirror drilldowns exist for Cora runs, ranking snapshots, and entity sets.
+- Client workspace drilldowns tie together keywords, runs, reports, snapshots, targets, jobs, content plans, and entity activity.
 
 ## Report Portal
 
@@ -20,7 +21,8 @@
 - Cora run drilldowns expose recommendations, SERP rows, LSI keywords, and sheet summaries.
 - Ranking Snapshot drilldowns expose ranking keywords, ranking pages, and optimization targets.
 - Entity Set drilldowns expose selected terms and source metadata.
-- Remaining parity work: detailed Entity Explorer run payloads, workbook row exploration, richer client pages, and local UI structure matching.
+- Client workspaces expose each client's synced operational data in one place.
+- Remaining parity work: detailed Entity Explorer run payloads, workbook row exploration, local UI structure matching, and broader cloud actions.
 
 ## User And Admin Management
 
