@@ -2401,6 +2401,7 @@ function cloudMirrorHtml() {
     const downloadUrl = (token) => reportUrl(token) + "/download";
     const readToken = () => localStorage.getItem("opos_read_token") || localStorage.getItem("opos_admin_token") || "";
     const adminToken = () => localStorage.getItem("opos_admin_token") || "";
+    const canWrite = () => Boolean(adminToken()) || ["write", "admin", "owner"].includes(String(state.data?.user?.role || "").toLowerCase());
     const authHeaders = (token) => token ? { "authorization": "Bearer " + token } : {};
     const writeHeaders = () => {
       const headers = { "content-type": "application/json" };
@@ -3254,6 +3255,9 @@ function cloudMirrorHtml() {
     async function sendPendingCommand() {
       const pending = state.pendingWrite;
       if (!pending) return;
+      if (!canWrite()) {
+        throw new Error("Write access required. Enter the admin token under Unlock Writes, or log in with a write/admin email account, then queue again.");
+      }
       if (isPaidLiveCommand(pending.command_type, pending.payload) && !document.getElementById("confirm-paid-command")?.checked) {
         throw new Error("Confirm the paid/API run before queueing.");
       }
@@ -3264,7 +3268,10 @@ function cloudMirrorHtml() {
         body: JSON.stringify({ command_type: pending.command_type, payload: { ...pending.payload, reviewed_at: new Date().toISOString() }, created_by: operator })
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Command failed");
+      if (!response.ok) {
+        if (response.status === 401) throw new Error("Unauthorized: write access is required. Enter the admin token under Unlock Writes, or log in with a write/admin email account.");
+        throw new Error(data.error || "Command failed");
+      }
       state.pendingWrite = null;
       await load();
       if (data.duplicate) alert("Matching command already exists; not queued again.");
@@ -3365,7 +3372,9 @@ function cloudMirrorHtml() {
       const prefillProfile = prefill.cora_profile || "";
       const prefillBanner = state.commandPrefill ? '<section><div class="head"><h3>Prefilled From Client</h3><button id="clear-command-prefill" class="secondary">Clear Prefill</button></div><div class="empty">Project, target, and keyword fields were prefilled from the client workspace. Review before queueing.</div></section>' : '';
       const paidLive = pending && isPaidLiveCommand(pending.command_type, pending.payload);
-      const review = pending ? '<section><div class="head"><h3>Review Command</h3><span class="pill ' + (paidLive ? 'warn' : '') + '">' + esc(paidLive ? 'Paid/API review' : 'Not queued yet') + '</span></div><div class="review ' + (paidLive ? 'danger' : '') + '"><strong>' + esc(pending.summary) + '</strong><div class="muted">' + esc(commandRisk(pending.command_type, pending.payload)) + '</div>' + (paidLive ? '<label class="muted"><input id="confirm-paid-command" type="checkbox" style="min-width:auto"> I understand this can use paid API credits.</label>' : '') + '<pre>' + esc(JSON.stringify(pending.payload, null, 2)) + '</pre><div class="toolbar"><button id="confirm-command">Queue Reviewed Command</button><button id="cancel-command" class="secondary">Cancel</button></div></div></section>' : '';
+      const writeReady = canWrite();
+      const writeNotice = pending && !writeReady ? '<div class="empty warn">Write access required before queueing. Enter the admin token in Unlock Writes, or log in with a write/admin email account.</div>' : '';
+      const review = pending ? '<section><div class="head"><h3>Review Command</h3><span class="pill ' + (paidLive || !writeReady ? 'warn' : '') + '">' + esc(!writeReady ? 'Write locked' : paidLive ? 'Paid/API review' : 'Not queued yet') + '</span></div><div class="review ' + (paidLive || !writeReady ? 'danger' : '') + '"><strong>' + esc(pending.summary) + '</strong><div class="muted">' + esc(commandRisk(pending.command_type, pending.payload)) + '</div>' + writeNotice + (paidLive ? '<label class="muted"><input id="confirm-paid-command" type="checkbox" style="min-width:auto"> I understand this can use paid API credits.</label>' : '') + '<pre>' + esc(JSON.stringify(pending.payload, null, 2)) + '</pre><div class="toolbar"><button id="confirm-command">' + esc(writeReady ? 'Queue Reviewed Command' : 'Queue Needs Write Access') + '</button><button id="cancel-command" class="secondary">Cancel</button></div></div></section>' : '';
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
