@@ -1416,7 +1416,9 @@ async function handleDashboardData(request, env) {
   const clientScope = scopeClause(scope, "p.id");
   const clientWhere = clientScope.sql ? `WHERE ${clientScope.sql}` : "";
   const clientRows = await env.DB.prepare(
-    `SELECT p.id, p.name, p.client, p.site_domain, p.profile_id, pr.name AS profile_name,
+    `SELECT p.id, p.name, p.client,
+            COALESCE(p.site_domain, (SELECT s.domain FROM sites s WHERE s.project_id = p.id ORDER BY s.id LIMIT 1)) AS site_domain,
+            p.profile_id, pr.name AS profile_name,
             (SELECT COUNT(*) FROM keywords k WHERE k.project_id = p.id) AS keyword_count,
             (SELECT COUNT(*) FROM runs r WHERE r.project_id = p.id) AS run_count,
             (SELECT COUNT(*) FROM ranking_snapshots rs WHERE rs.project_id = p.id) AS snapshot_count,
@@ -2045,7 +2047,9 @@ async function handleClientDetail(request, env, id) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   await assertProjectAccess(request, env, id);
   const client = await env.DB.prepare(
-    `SELECT p.*, pr.name AS profile_name, pr.client AS profile_client
+    `SELECT p.*,
+            COALESCE(p.site_domain, (SELECT s.domain FROM sites s WHERE s.project_id = p.id ORDER BY s.id LIMIT 1)) AS site_domain,
+            pr.name AS profile_name, pr.client AS profile_client
      FROM projects p
      LEFT JOIN profiles pr ON pr.id = p.profile_id
      WHERE p.id = ?`
@@ -3133,6 +3137,7 @@ function cloudMirrorHtml() {
       const target = client.site_domain || client.client || "";
       const targetLower = String(target || "").toLowerCase();
       const targetHref = target ? (targetLower.startsWith("http://") || targetLower.startsWith("https://") ? target : "https://" + target) : "";
+      const coraTarget = targetHref || target;
       const firstKeyword = (data.keywords || [])[0]?.keyword || (data.runs || [])[0]?.keyword || "";
       const latestEntityBatch = (data.entity_batches || []).slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")))[0]?.id || "";
       const bridge = (state.data?.bridges || [])[0] || {};
@@ -3176,7 +3181,7 @@ function cloudMirrorHtml() {
         ["Entity Explorer", "Run entity and LSI research from this client's keywords.", "entities", "Open Entity Explorer", "page"],
         ["Cora Reports", "Open stored customer reports and source XLSX artifacts.", "reports", "Open Reports", "page"],
         ["Content Plans", "Track briefs, refreshes, and optimization tasks.", "plans", "Open Plans", "page"]
-      ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "page" ? "client-open-page" : "client-command") + '" data-client-command="' + esc(tool[4]) + '" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(target) + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
+      ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "page" ? "client-open-page" : "client-command") + '" data-client-command="' + esc(tool[4]) + '" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(coraTarget) + '" data-profile="' + esc(client.profile_name || "") + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
       const secondaryLinks = '<div class="toolbar" style="padding:0 12px 12px;"><button class="client-open-page secondary" data-page-target="runs" data-project-id="' + esc(projectId) + '">Cora Runs</button><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Cora Jobs</button><button class="client-open-page secondary" data-page-target="cora-profiles" data-project-id="' + esc(projectId) + '">Cora Profiles</button><button class="client-open-page secondary" data-page-target="targets" data-project-id="' + esc(projectId) + '">Saved Targets</button><button class="client-open-page secondary" data-page-target="entity-sets" data-project-id="' + esc(projectId) + '">Entity Sets</button><button class="client-open-page secondary" data-page-target="sync" data-project-id="' + esc(projectId) + '">Sync Status</button></div>';
       const toolLauncher = '<section><div class="head"><h3>Client Tools</h3><span class="muted">Primary workflows for this client. Technical controls are under System.</span></div><div class="tool-grid">' + toolCards + '</div>' + secondaryLinks + '</section>';
       const coraLaunchPanel = '<section><div class="head"><h3>Cora Launch Status</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Ready to queue' : 'Review only') + '</span></div><div class="status-list"><div class="status-row"><span>Next run</span><strong>' + esc(firstKeyword || "No keyword") + '</strong></div><div class="status-row"><span>Target URL</span><strong>' + esc(target || "No URL") + '</strong></div><div class="status-row"><span>Profile</span><strong>' + esc(client.profile_name || "No profile") + '</strong></div><div class="muted">Click ' + esc(coraButtonLabel) + ' to open a prefilled review. Queueing still requires confirmation so cloud cannot accidentally spend local Cora time.</div></div><div class="head"><h3>Cloud Launch Queue</h3><button class="client-open-page secondary" data-page-target="commands" data-project-id="' + esc(projectId) + '">Open Review</button></div><div class="status-list">' + (recentCommandRows || '<div class="muted">No cloud Cora launch commands for this client yet.</div>') + '</div><div class="head"><h3>Recent Cora Jobs</h3><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Open Jobs</button></div><div class="status-list">' + (recentJobRows || '<div class="muted">No Cora jobs synced for this client yet.</div>') + '</div></section>';
@@ -3230,7 +3235,13 @@ function cloudMirrorHtml() {
       if (command_type === "add_keyword" && (!(payload.project_id) || !(payload.keyword || "").trim())) return "Select a client and enter a keyword.";
       if (command_type === "create_content_plan" && (!(payload.project_id) || !(payload.title || "").trim())) return "Select a client and enter a plan title.";
       if (command_type === "create_share_report" && !payload.run_id) return "Select a Cora run for the report.";
-      if (command_type === "run_cora" && (!(payload.project_id) || !(payload.keyword || "").trim() || !(payload.target_url || "").trim())) return "Select a client, keyword, and target URL for Cora.";
+      if (command_type === "run_cora") {
+        const missing = [];
+        if (!payload.project_id) missing.push("client");
+        if (!(payload.keyword || "").trim()) missing.push("keyword");
+        if (!(payload.target_url || "").trim()) missing.push("target URL");
+        if (missing.length) return "Cora needs: " + missing.join(", ") + ". Add the missing client data, then try Run Cora Now again.";
+      }
       if (command_type === "create_ranking_snapshot" && (!(payload.project_id) || !(payload.target || "").trim())) return "Select a client and enter a target domain.";
       if (command_type === "run_entity_lsi") {
         if (!payload.project_id || !(payload.seed_keyword || "").trim()) return "Select a client and enter a seed keyword.";
@@ -3465,13 +3476,14 @@ function cloudMirrorHtml() {
           const projectId = Number(button.dataset.projectId || 0);
           const keyword = button.dataset.keyword || "";
           const target = button.dataset.target || "";
+          const profile = button.dataset.profile || "";
           if (button.dataset.clientCommand === "ranking") {
             state.commandPrefill = { project_id: projectId, keyword, target, command: "ranking" };
             setPage("commands");
           } else if (button.dataset.clientCommand === "cora") {
-            state.commandPrefill = { project_id: projectId, keyword, target, target_url: target, command: "cora" };
+            state.commandPrefill = { project_id: projectId, keyword, target, target_url: target, cora_profile: profile, command: "cora" };
             setPage("commands");
-            setPendingCommand("run_cora", { project_id: projectId, keyword, target_url: target, execution_mode: "local" });
+            setPendingCommand("run_cora", { project_id: projectId, keyword, target_url: target, cora_profile: profile, execution_mode: "local" });
           } else if (button.dataset.clientCommand === "entity") {
             state.commandPrefill = { project_id: projectId, keyword, seed_keyword: keyword, command: "entity" };
             setPage("commands");
