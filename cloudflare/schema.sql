@@ -21,6 +21,19 @@ CREATE TABLE IF NOT EXISTS report_artifacts (
   uploaded_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cloud_commands (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  command_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  result_json TEXT,
+  error TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL,
+  claimed_at TEXT,
+  completed_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, profile_id INTEGER, name TEXT, client TEXT, site_domain TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, project_id INTEGER, domain TEXT, name TEXT, created_at TEXT);
@@ -261,6 +274,7 @@ CREATE TABLE IF NOT EXISTS ranking_optimization_targets (
 
 CREATE INDEX IF NOT EXISTS idx_sync_batches_table ON sync_batches(table_name, received_at);
 CREATE INDEX IF NOT EXISTS idx_report_artifacts_token ON report_artifacts(token, artifact_type);
+CREATE INDEX IF NOT EXISTS idx_cloud_commands_status ON cloud_commands(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_serp_run ON serp_results(run_id);

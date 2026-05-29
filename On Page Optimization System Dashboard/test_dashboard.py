@@ -1260,6 +1260,28 @@ class DashboardSmokeTests(unittest.TestCase):
             count = con.execute("SELECT COUNT(*) FROM cloud_report_artifacts").fetchone()[0]
         self.assertEqual(count, 0)
 
+    def test_apply_cloudflare_create_project_command(self) -> None:
+        result = app.apply_cloudflare_command(
+            {
+                "command_type": "create_project",
+                "payload": {"name": "Cloud Client", "site_domain": "https://example.com", "notes": "from cloud"},
+            }
+        )
+
+        self.assertEqual(result["project"]["name"], "Cloud Client")
+        with app.connect() as con:
+            site = con.execute("SELECT * FROM sites WHERE project_id = ?", (result["project"]["id"],)).fetchone()
+        self.assertEqual(site["domain"], "example.com")
+
+    def test_apply_cloudflare_add_keyword_command(self) -> None:
+        project = app.create_project("Keyword Client", site_domain="https://example.com")
+
+        result = app.apply_cloudflare_command(
+            {"command_type": "add_keyword", "payload": {"project_id": project["id"], "keyword": "cloud keyword"}}
+        )
+
+        self.assertEqual(result["keyword"]["keyword"], "cloud keyword")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

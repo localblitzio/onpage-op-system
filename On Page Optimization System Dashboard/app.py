@@ -807,6 +807,138 @@ def cloudflare_request_json(path: str, payload: dict[str, Any], timeout: int = 1
         raise ValueError(f"Cloudflare request failed HTTP {exc.code}: {detail}") from exc
 
 
+def cloudflare_get_json(path: str, timeout: int = 120) -> dict[str, Any]:
+    if not cloudflare_sync_configured():
+        raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
+    request = urllib.request.Request(
+        f"{CLOUDFLARE_SYNC_URL}{path}",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {CLOUDFLARE_SYNC_TOKEN}",
+            "User-Agent": "OnPageOptimizationSystemDashboard/1.0",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"Cloudflare request failed HTTP {exc.code}: {detail}") from exc
+
+
+def update_cloudflare_command(command_id: int, status: str, result: dict[str, Any] | None = None, error: str | None = None) -> dict[str, Any]:
+    return cloudflare_request_json(
+        f"/api/commands/{command_id}",
+        {"status": status, "result": result or {}, "error": error},
+    )
+
+
+def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
+    command_type = command.get("command_type") or ""
+    payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+    changed_tables: set[str] = set()
+    artifact_report_ids: list[int] = []
+    result: dict[str, Any] = {"command_type": command_type}
+    if command_type == "create_project":
+        project = create_project(
+            clean_text(payload.get("name")) or "",
+            client=payload.get("client"),
+            site_domain=payload.get("site_domain"),
+            notes=payload.get("notes"),
+            profile_name=payload.get("profile_name"),
+        )
+        result["project"] = project
+        changed_tables.update({"profiles", "projects", "sites"})
+    elif command_type == "add_keyword":
+        keyword = create_keyword(
+            int(payload.get("project_id") or 0),
+            clean_text(payload.get("keyword")) or "",
+            int(payload["site_id"]) if payload.get("site_id") else None,
+            int(payload["page_id"]) if payload.get("page_id") else None,
+            payload.get("intent"),
+            payload.get("priority"),
+        )
+        result["keyword"] = keyword
+        changed_tables.add("keywords")
+    elif command_type == "create_content_plan":
+        plan = create_content_plan(
+            int(payload.get("project_id") or 0),
+            clean_text(payload.get("title")) or "",
+            int(payload["site_id"]) if payload.get("site_id") else None,
+            int(payload["page_id"]) if payload.get("page_id") else None,
+            int(payload["keyword_id"]) if payload.get("keyword_id") else None,
+            payload.get("content_type"),
+            payload.get("intent"),
+            payload.get("priority"),
+            payload.get("status"),
+            payload.get("due_date"),
+            payload.get("notes"),
+        )
+        result["content_plan"] = plan
+        changed_tables.add("content_plans")
+    elif command_type == "create_share_report":
+        report = create_share_report(
+            int(payload.get("run_id") or 0),
+            payload.get("level") or "medium",
+            payload.get("title"),
+            payload.get("notes"),
+            int(payload["ranking_snapshot_id"]) if payload.get("ranking_snapshot_id") else None,
+            [int(value) for value in payload.get("optimization_target_ids", []) if value] if isinstance(payload.get("optimization_target_ids"), list) else [],
+            int(payload["entity_set_id"]) if payload.get("entity_set_id") else None,
+        )
+        result["report"] = report
+        changed_tables.add("share_reports")
+        artifact_report_ids.append(int(report["id"]))
+    elif command_type == "run_cora":
+        project_id = int(payload.get("project_id") or 0) or None
+        keyword_text = clean_text(payload.get("keyword")) or ""
+        keyword_id = int(payload["keyword_id"]) if payload.get("keyword_id") else None
+        if project_id and keyword_text and not keyword_id:
+            keyword_row = create_keyword(project_id, keyword_text)
+            keyword_id = int(keyword_row["id"])
+            changed_tables.add("keywords")
+        job = create_managed_job(
+            keyword_text,
+            clean_text(payload.get("target_url")) or "",
+            payload.get("cora_profile"),
+            project_id=project_id,
+            keyword_id=keyword_id,
+            tool="cora",
+        )
+        result["job"] = job
+        changed_tables.add("managed_jobs")
+    else:
+        raise ValueError(f"Unsupported cloud command type: {command_type}")
+    if changed_tables and cloudflare_sync_configured():
+        result["sync"] = push_cloudflare_sync(tables=sorted(changed_tables), dry_run=False)
+    if artifact_report_ids and cloudflare_sync_configured():
+        result["artifacts"] = sync_cloudflare_report_artifacts(report_ids=artifact_report_ids, dry_run=False, force=True)
+    return result
+
+
+def pull_cloudflare_commands(limit: int = 25) -> dict[str, Any]:
+    data = cloudflare_get_json(f"/api/commands?status=pending&limit={int(limit)}")
+    commands = data.get("commands") if isinstance(data.get("commands"), list) else []
+    results = []
+    for command in commands:
+        command_id = int(command.get("id") or 0)
+        if not command_id:
+            continue
+        try:
+            update_cloudflare_command(command_id, "claimed")
+            applied = apply_cloudflare_command(command)
+            update_cloudflare_command(command_id, "complete", result=applied)
+            results.append({"id": command_id, "status": "complete", "result": applied})
+        except Exception as exc:
+            try:
+                update_cloudflare_command(command_id, "failed", error=str(exc))
+            except Exception:
+                pass
+            results.append({"id": command_id, "status": "failed", "error": str(exc)})
+    return {"ok": all(item["status"] == "complete" for item in results), "processed": len(results), "commands": results}
+
+
 def report_artifact_key(token: str, artifact_type: str, file_name: str) -> str:
     safe_token = re.sub(r"[^A-Za-z0-9_-]+", "-", token).strip("-") or secrets.token_urlsafe(8)
     suffix = Path(file_name).suffix.lower() or (".html" if artifact_type == "report_html" else ".bin")
@@ -5782,6 +5914,9 @@ class AppHandler(BaseHTTPRequestHandler):
                     force=bool(body.get("force")),
                 )
                 json_response(self, result, 200 if result.get("ok") else 502)
+            elif parsed.path == "/api/cloudflare/commands/pull":
+                result = pull_cloudflare_commands(int(body.get("limit") or 25))
+                json_response(self, result, 200 if result.get("ok") else 502)
             elif parsed.path == "/api/share-reports":
                 report = create_share_report(
                     int(body.get("run_id")),
@@ -6595,6 +6730,13 @@ def main(argv: list[str]) -> int:
         report_arg = next((arg for arg in argv[2:] if arg.startswith("--report-ids=")), "")
         report_ids = [int(part.strip()) for part in report_arg.removeprefix("--report-ids=").split(",") if part.strip()] if report_arg else None
         result = sync_cloudflare_report_artifacts(report_ids=report_ids, dry_run=dry_run, force=force)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if len(argv) > 1 and argv[1] == "cloudflare-commands-pull":
+        limit_arg = next((arg for arg in argv[2:] if arg.startswith("--limit=")), "")
+        limit = int(limit_arg.removeprefix("--limit=")) if limit_arg else 25
+        result = pull_cloudflare_commands(limit=limit)
         print(json.dumps(result, indent=2, default=str))
         return 0
 

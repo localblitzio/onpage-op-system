@@ -62,6 +62,14 @@ function requireSyncAuth(request, env) {
   return true;
 }
 
+function requireAdminAuth(request, env) {
+  const expected = env.ADMIN_TOKEN || env.SYNC_TOKEN || "";
+  const header = request.headers.get("authorization") || "";
+  return Boolean(expected && header === `Bearer ${expected}`);
+}
+
+const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora"]);
+
 function decodeBase64(value) {
   const binary = atob(String(value || ""));
   const bytes = new Uint8Array(binary.length);
@@ -189,6 +197,62 @@ async function handleSyncPush(request, env) {
   return json({ ok: true, ...result });
 }
 
+async function createCommand(request, env) {
+  if (!requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const payload = await request.json();
+  const commandType = String(payload.command_type || "").trim();
+  if (!COMMAND_TYPES.has(commandType)) return json({ ok: false, error: "Unsupported command type" }, 400);
+  const commandPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare(
+    "INSERT INTO cloud_commands (command_type, payload_json, status, created_by, created_at) VALUES (?, ?, 'pending', ?, ?)"
+  ).bind(commandType, JSON.stringify(commandPayload), String(payload.created_by || "cloud-dashboard"), now).run();
+  const command = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(result.meta.last_row_id).first();
+  return json({ ok: true, command: normalizeCommand(command) }, 201);
+}
+
+function normalizeCommand(row) {
+  if (!row) return null;
+  let payload = {};
+  let result = null;
+  try { payload = JSON.parse(row.payload_json || "{}"); } catch (_err) { payload = {}; }
+  try { result = row.result_json ? JSON.parse(row.result_json) : null; } catch (_err) { result = row.result_json; }
+  return { ...row, payload, result, payload_json: undefined, result_json: undefined };
+}
+
+async function listCommands(request, env) {
+  if (!requireSyncAuth(request, env) && !requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const url = new URL(request.url);
+  const status = url.searchParams.get("status") || "";
+  const limit = Math.min(Number(url.searchParams.get("limit") || 100), 250);
+  let rows;
+  if (status) {
+    rows = await env.DB.prepare("SELECT * FROM cloud_commands WHERE status = ? ORDER BY created_at ASC, id ASC LIMIT ?").bind(status, limit).all();
+  } else {
+    rows = await env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT ?").bind(limit).all();
+  }
+  return json({ ok: true, commands: (rows.results || []).map(normalizeCommand) });
+}
+
+async function updateCommand(request, env, id) {
+  if (!requireSyncAuth(request, env) && !requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const payload = await request.json();
+  const status = String(payload.status || "").trim();
+  if (!["pending", "claimed", "complete", "failed"].includes(status)) return json({ ok: false, error: "Unsupported command status" }, 400);
+  const now = new Date().toISOString();
+  if (status === "claimed") {
+    await env.DB.prepare("UPDATE cloud_commands SET status = 'claimed', claimed_at = COALESCE(claimed_at, ?) WHERE id = ?").bind(now, id).run();
+  } else if (status === "complete" || status === "failed") {
+    await env.DB.prepare(
+      "UPDATE cloud_commands SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE id = ?"
+    ).bind(status, payload.result ? JSON.stringify(payload.result) : null, payload.error ? String(payload.error).slice(0, 2000) : null, now, id).run();
+  } else {
+    await env.DB.prepare("UPDATE cloud_commands SET status = 'pending', claimed_at = NULL, completed_at = NULL, error = NULL WHERE id = ?").bind(id).run();
+  }
+  const row = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(id).first();
+  return json({ ok: true, command: normalizeCommand(row) });
+}
+
 async function syncStatusData(env) {
   const rows = await env.DB.prepare(
     "SELECT table_name, SUM(row_count) AS rows_received, MAX(received_at) AS last_received_at FROM sync_batches GROUP BY table_name ORDER BY table_name"
@@ -206,7 +270,7 @@ async function countTable(env, table) {
 }
 
 async function handleDashboardData(request, env) {
-  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, artifacts, sync] = await Promise.all([
+  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
     countTable(env, "projects"),
     countTable(env, "keywords"),
@@ -214,6 +278,7 @@ async function handleDashboardData(request, env) {
     countTable(env, "share_reports"),
     countTable(env, "ranking_snapshots"),
     countTable(env, "ranking_optimization_targets"),
+    env.DB.prepare("SELECT COUNT(*) AS count FROM cloud_commands WHERE status IN ('pending', 'claimed')").first().then((row) => Number(row?.count || 0)),
     artifactStatusData(env),
     syncStatusData(env)
   ]);
@@ -252,7 +317,7 @@ async function handleDashboardData(request, env) {
     ok: true,
     generated_at: new Date().toISOString(),
     worker_url: new URL(request.url).origin,
-    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets },
+    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, pending_commands: pendingCommands },
     artifacts,
     sync,
     reports: recentReports.results || [],
@@ -262,7 +327,7 @@ async function handleDashboardData(request, env) {
 
 async function handleDashboardMirrorData(request, env) {
   const overview = await handleDashboardData(request, env).then((response) => response.json());
-  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans] = await Promise.all([
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands] = await Promise.all([
     env.DB.prepare(
       `SELECT r.id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
@@ -338,7 +403,8 @@ async function handleDashboardMirrorData(request, env) {
        LEFT JOIN keywords k ON k.id = cp.keyword_id
        ORDER BY cp.updated_at DESC, cp.id DESC
        LIMIT 150`
-    ).all()
+    ).all(),
+    env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 100").all()
   ]);
   return json({
     ...overview,
@@ -349,7 +415,8 @@ async function handleDashboardMirrorData(request, env) {
     entity_batches: entityBatches.results || [],
     entity_runs: entityRuns.results || [],
     entity_sets: entitySets.results || [],
-    content_plans: contentPlans.results || []
+    content_plans: contentPlans.results || [],
+    commands: (commands.results || []).map(normalizeCommand)
   });
 }
 
@@ -439,7 +506,8 @@ function cloudDashboardHtml() {
         ["Cora Runs", counts.runs],
         ["Reports", counts.reports],
         ["Ranking Snapshots", counts.ranking_snapshots],
-        ["Optimization Targets", counts.ranking_optimization_targets],
+      ["Optimization Targets", counts.ranking_optimization_targets],
+        ["Pending Commands", counts.pending_commands],
         ["Cloud Files", artifactFiles],
         ["R2 Storage", fmtBytes(artifactBytes)]
       ].map(([label, value]) => '<div class="card"><strong>' + esc(typeof value === "number" ? fmtNum(value) : value) + '</strong><span>' + esc(label) + '</span></div>').join("");
@@ -553,7 +621,8 @@ function cloudMirrorHtml() {
       ["ranking", "Ranking Snapshots"],
       ["targets", "Optimization Targets"],
       ["entities", "Entity Explorer"],
-      ["plans", "Content Plans"]
+      ["plans", "Content Plans"],
+      ["commands", "Cloud Commands"]
     ];
     const fmtNum = (v) => Number(v || 0).toLocaleString();
     const fmtDate = (v) => v ? new Date(v).toLocaleString() : "";
@@ -587,7 +656,7 @@ function cloudMirrorHtml() {
       const lastSync = (data.sync?.tables || []).map((r) => r.last_received_at).filter(Boolean).sort().pop();
       const syncRows = (data.sync?.tables || []).slice(-14).map((r) => '<div class="status-row"><span>' + esc(r.table_name) + '</span><strong>' + esc(fmtNum(r.rows_received)) + '</strong></div>').join("");
       const artifactRows = (data.artifacts || []).map((r) => '<div class="status-row"><span>' + esc(r.artifact_type) + '</span><strong>' + esc(fmtNum(r.artifact_count)) + ' / ' + esc(fmtBytes(r.total_bytes)) + '</strong></div>').join("");
-      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
+      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
         + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
         + '<section><div class="head"><h3>Sync Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
     }
@@ -618,6 +687,49 @@ function cloudMirrorHtml() {
     function plansTable(items) {
       return table(["Title", "Client", "Keyword", "Type", "Status", "Due"], rows(items).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.project_name || "") + '</td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span><br><span class="muted">' + esc(p.priority || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>'));
     }
+    function projectOptions() {
+      return (state.data?.clients || []).map((p) => '<option value="' + esc(p.id) + '">' + esc(p.name || ("Client " + p.id)) + '</option>').join("");
+    }
+    function runOptions() {
+      return (state.data?.runs || []).map((r) => '<option value="' + esc(r.id) + '">' + esc((r.keyword || "Run") + " | " + (r.project_name || "")) + '</option>').join("");
+    }
+    function commandsTable(items) {
+      return table(["Command", "Status", "Created", "Result"], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(fmtDate(c.created_at)) + '</td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td></tr>'), "No cloud commands yet.");
+    }
+    async function createCommand(command_type, payload) {
+      const token = localStorage.getItem("opos_admin_token") || "";
+      if (!token) throw new Error("Unlock cloud writes first.");
+      const response = await fetch("/api/commands", {
+        method: "POST",
+        headers: { "content-type": "application/json", "authorization": "Bearer " + token },
+        body: JSON.stringify({ command_type, payload, created_by: "cloud-dashboard" })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Command failed");
+      await load();
+    }
+    function commandsView(data) {
+      const forms = '<div class="grid2">'
+        + '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Commands run locally</span></div><div class="status-list"><div class="muted">Enter the Cloudflare admin/sync token. The browser stores it locally and sends it only to this Worker.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(localStorage.getItem("opos_admin_token") || "") + '"><div class="toolbar"><button id="save-token">Save Token</button><button id="clear-token">Clear</button></div></div></section>'
+        + '<section><div class="head"><h3>Create Client</h3></div><div class="status-list"><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Queue Create Client</button></div></section>'
+        + '<section><div class="head"><h3>Add Keyword</h3></div><div class="status-list"><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Queue Keyword</button></div></section>'
+        + '<section><div class="head"><h3>Content Plan</h3></div><div class="status-list"><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Queue Content Plan</button></div></section>'
+        + '<section><div class="head"><h3>Customer Report</h3></div><div class="status-list"><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Queue Report</button></div></section>'
+        + '<section><div class="head"><h3>Run Cora</h3></div><div class="status-list"><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Queue Cora Run</button></div></section>'
+        + '</div><section><div class="head"><h3>Command History</h3></div>' + commandsTable(data.commands || []) + '</section>';
+      setTimeout(bindCommandForms, 0);
+      return forms;
+    }
+    function bindCommandForms() {
+      const byId = (id) => document.getElementById(id);
+      byId("save-token")?.addEventListener("click", () => { localStorage.setItem("opos_admin_token", byId("admin-token").value || ""); alert("Token saved."); });
+      byId("clear-token")?.addEventListener("click", () => { localStorage.removeItem("opos_admin_token"); byId("admin-token").value = ""; });
+      byId("cmd-create-client")?.addEventListener("click", () => createCommand("create_project", { name: byId("cmd-client-name").value, site_domain: byId("cmd-client-site").value, notes: byId("cmd-client-notes").value }).catch((e) => alert(e.message)));
+      byId("cmd-add-keyword")?.addEventListener("click", () => createCommand("add_keyword", { project_id: Number(byId("cmd-keyword-project").value), keyword: byId("cmd-keyword").value }).catch((e) => alert(e.message)));
+      byId("cmd-content-plan")?.addEventListener("click", () => createCommand("create_content_plan", { project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }).catch((e) => alert(e.message)));
+      byId("cmd-share-report")?.addEventListener("click", () => createCommand("create_share_report", { run_id: Number(byId("cmd-report-run").value), level: byId("cmd-report-level").value, title: byId("cmd-report-title").value }).catch((e) => alert(e.message)));
+      byId("cmd-run-cora")?.addEventListener("click", () => createCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }).catch((e) => alert(e.message)));
+    }
     function render() {
       const data = state.data;
       if (!data) return;
@@ -633,7 +745,8 @@ function cloudMirrorHtml() {
         ranking: () => '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + snapshotsTable(data.snapshots || []) + '</section>',
         targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
         entities: () => entitiesView(data),
-        plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>'
+        plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>',
+        commands: () => commandsView(data)
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content();
     }
@@ -679,6 +792,10 @@ export default {
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return handleDashboardData(request, env);
       if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return handleDashboardMirrorData(request, env);
+      if (url.pathname === "/api/commands" && request.method === "GET") return listCommands(request, env);
+      if (url.pathname === "/api/commands" && request.method === "POST") return createCommand(request, env);
+      const commandRoute = url.pathname.match(/^\/api\/commands\/(\d+)$/);
+      if (commandRoute && request.method === "POST") return updateCommand(request, env, Number(commandRoute[1]));
       const shareDownload = url.pathname.match(/^\/share\/report\/([^/]+)\/download$/);
       if (shareDownload && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);

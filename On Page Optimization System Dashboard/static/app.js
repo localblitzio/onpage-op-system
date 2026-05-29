@@ -423,6 +423,7 @@ function renderOverview() {
             <button id="cloudflare-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push to Cloudflare</button>
             <button id="cloudflare-files-dry-run" type="button" class="secondary">Dry Run Files</button>
             <button id="cloudflare-files-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push Report Files</button>
+            <button id="cloudflare-commands-pull" type="button" class="secondary" ${cloudflare.configured ? "" : "disabled"}>Pull Cloud Commands</button>
           </div>
         </div>
         <div id="cloudflare-sync-status" class="cloudflare-sync-status">
@@ -502,6 +503,7 @@ function bindCloudflareSyncControls() {
   el("cloudflare-sync-now")?.addEventListener("click", () => runCloudflareSync(false).catch((err) => toast(err.message)));
   el("cloudflare-files-dry-run")?.addEventListener("click", () => runCloudflareArtifactSync(true).catch((err) => toast(err.message)));
   el("cloudflare-files-sync-now")?.addEventListener("click", () => runCloudflareArtifactSync(false).catch((err) => toast(err.message)));
+  el("cloudflare-commands-pull")?.addEventListener("click", () => pullCloudflareCommands().catch((err) => toast(err.message)));
 }
 
 async function runCloudflareSync(dryRun = false) {
@@ -529,6 +531,21 @@ async function runCloudflareArtifactSync(dryRun = false, reportIds = null, force
   if (state.activeView === "reports-view") renderReportGenerator();
   const changed = dryRun ? result.artifacts?.length || 0 : result.uploaded || 0;
   toast(dryRun ? `File dry run ready: ${fmtNum(changed)} artifacts.` : `Uploaded ${fmtNum(changed)} report files to Cloudflare.`);
+}
+
+async function pullCloudflareCommands() {
+  const result = await api("/api/cloudflare/commands/pull", {
+    method: "POST",
+    body: JSON.stringify({ limit: 25 }),
+  });
+  state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
+  await Promise.all([
+    loadProjects().catch(() => {}),
+    loadRuns().catch(() => {}),
+    loadJobs().catch(() => {}),
+  ]);
+  if (state.activeView === "overview-view") renderOverview();
+  toast(`Processed ${fmtNum(result.processed || 0)} cloud commands.`);
 }
 
 function renderProjects() {
