@@ -23,12 +23,13 @@ const TABLE_COLUMNS = {
   ranking_optimization_targets: ["id", "snapshot_id", "project_id", "url", "keyword", "best_position", "ranking_keywords", "opportunity_count", "total_search_volume", "estimated_traffic", "page_organic_traffic", "page_organic_keywords", "top10", "priority_type", "opportunity_score", "recommended_action", "top_keywords_json", "status", "notes", "created_at", "updated_at"]
 };
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store"
+      "cache-control": "no-store",
+      ...extraHeaders
     }
   });
 }
@@ -80,6 +81,77 @@ function requireReadAuth(request, env) {
   const header = request.headers.get("authorization") || "";
   const tokens = [env.READ_TOKEN, env.ADMIN_TOKEN, env.SYNC_TOKEN].filter(Boolean);
   return tokens.some((token) => header === `Bearer ${token}`);
+}
+
+function parseCookies(request) {
+  return Object.fromEntries((request.headers.get("cookie") || "").split(";").map((part) => {
+    const [name, ...rest] = part.trim().split("=");
+    return [name, decodeURIComponent(rest.join("=") || "")];
+  }).filter(([name]) => name));
+}
+
+function sessionCookie(value, maxAge) {
+  const encoded = encodeURIComponent(value || "");
+  return `opos_session=${encoded}; Max-Age=${Number(maxAge || 0)}; Path=/; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function publicUser(row) {
+  if (!row) return null;
+  let clientIds = [];
+  try { clientIds = row.client_ids_json ? JSON.parse(row.client_ids_json) : []; } catch (_err) { clientIds = []; }
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name || "",
+    role: row.role || "read",
+    status: row.status || "active",
+    client_ids: Array.isArray(clientIds) ? clientIds : [],
+    last_login_at: row.last_login_at || null
+  };
+}
+
+async function randomToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function randomCode() {
+  const bytes = new Uint32Array(1);
+  crypto.getRandomValues(bytes);
+  return String(100000 + (bytes[0] % 900000));
+}
+
+async function currentUser(request, env) {
+  const token = parseCookies(request).opos_session || "";
+  if (!token || !env.DB) return null;
+  try {
+    const hash = await sha256Hex(token);
+    const now = new Date().toISOString();
+    const row = await env.DB.prepare(
+      `SELECT u.*
+       FROM cloud_sessions s
+       JOIN cloud_users u ON u.id = s.user_id
+       WHERE s.session_hash = ? AND s.expires_at > ? AND u.status = 'active'
+       LIMIT 1`
+    ).bind(hash, now).first();
+    if (!row) return null;
+    await env.DB.prepare("UPDATE cloud_sessions SET last_seen_at = ? WHERE session_hash = ?").bind(now, hash).run();
+    return publicUser(row);
+  } catch (_err) {
+    return null;
+  }
+}
+
+async function hasReadAccess(request, env) {
+  if (requireReadAuth(request, env) || requireSyncAuth(request, env)) return true;
+  return Boolean(await currentUser(request, env));
+}
+
+async function hasAdminAccess(request, env) {
+  if (requireAdminAuth(request, env) || requireSyncAuth(request, env)) return true;
+  const user = await currentUser(request, env);
+  return ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
 }
 
 const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
@@ -780,15 +852,8 @@ async function handleSyncExport(request, env) {
 }
 
 async function handleSecretsStatus(request, env) {
-  if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
-  const providers = {
-    dataforseo: Boolean(env.DATAFORSEO_AUTH || (env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD)),
-    openai: Boolean(env.OPENAI_API_KEY),
-    anthropic: Boolean(env.ANTHROPIC_API_KEY),
-    google: Boolean(env.GOOGLE_API_KEY),
-    xai: Boolean(env.XAI_API_KEY),
-    perplexity: Boolean(env.PERPLEXITY_API_KEY)
-  };
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const providers = secretStatusData(env);
   return json({
     ok: true,
     providers,
@@ -797,14 +862,205 @@ async function handleSecretsStatus(request, env) {
   });
 }
 
+function secretStatusData(env) {
+  return {
+    dataforseo: Boolean(env.DATAFORSEO_AUTH || (env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD)),
+    openai: Boolean(env.OPENAI_API_KEY),
+    anthropic: Boolean(env.ANTHROPIC_API_KEY),
+    google: Boolean(env.GOOGLE_API_KEY),
+    xai: Boolean(env.XAI_API_KEY),
+    perplexity: Boolean(env.PERPLEXITY_API_KEY)
+  };
+}
+
+async function sendLoginEmail(env, email, code) {
+  if (!env.RESEND_API_KEY || !env.LOGIN_EMAIL_FROM) return false;
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { "content-type": "application/json", "authorization": `Bearer ${env.RESEND_API_KEY}` },
+    body: JSON.stringify({
+      from: env.LOGIN_EMAIL_FROM,
+      to: [email],
+      subject: "On Page Optimization System login code",
+      text: `Your On Page Optimization System login code is ${code}. It expires in 10 minutes.`
+    })
+  });
+  return response.ok;
+}
+
+async function handleAuthRequest(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const email = String(payload.email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ ok: false, error: "Valid email required" }, 400);
+  const user = await env.DB.prepare("SELECT * FROM cloud_users WHERE email = ? AND status = 'active'").bind(email).first();
+  if (!user) {
+    await logAudit(request, env, "login_code_denied", "cloud_user", email, {}, "auth");
+    return json({ ok: true, email_sent: false, message: "If the account exists, a login code was sent." });
+  }
+  const code = randomCode();
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString();
+  const codeHash = await sha256Hex(`${email}:${code}`);
+  await env.DB.prepare("INSERT INTO login_codes (email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?)")
+    .bind(email, codeHash, expiresAt, now.toISOString()).run();
+  const emailSent = await sendLoginEmail(env, email, code).catch(() => false);
+  const revealCode = await hasAdminAccess(request, env);
+  await logAudit(request, env, "login_code_requested", "cloud_user", user.id, { email_sent: emailSent }, email);
+  return json({
+    ok: true,
+    email_sent: emailSent,
+    message: emailSent ? "Login code sent." : "Email delivery is not configured yet. Admin-token callers receive a setup code.",
+    dev_code: revealCode ? code : undefined
+  });
+}
+
+async function handleAuthVerify(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const email = String(payload.email || "").trim().toLowerCase();
+  const code = String(payload.code || "").trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) || !/^\d{6}$/.test(code)) return json({ ok: false, error: "Valid email and 6-digit code required" }, 400);
+  const codeHash = await sha256Hex(`${email}:${code}`);
+  const now = new Date().toISOString();
+  const login = await env.DB.prepare(
+    "SELECT * FROM login_codes WHERE email = ? AND code_hash = ? AND used_at IS NULL AND expires_at > ? ORDER BY created_at DESC LIMIT 1"
+  ).bind(email, codeHash, now).first();
+  if (!login) return json({ ok: false, error: "Invalid or expired login code" }, 401);
+  const userRow = await env.DB.prepare("SELECT * FROM cloud_users WHERE email = ? AND status = 'active'").bind(email).first();
+  if (!userRow) return json({ ok: false, error: "Account is not active" }, 403);
+  const token = await randomToken();
+  const sessionHash = await sha256Hex(token);
+  const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  await env.DB.batch([
+    env.DB.prepare("UPDATE login_codes SET used_at = ? WHERE id = ?").bind(now, login.id),
+    env.DB.prepare("INSERT INTO cloud_sessions (user_id, session_hash, expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(userRow.id, sessionHash, expiresAt, now, now),
+    env.DB.prepare("UPDATE cloud_users SET last_login_at = ?, updated_at = ? WHERE id = ?").bind(now, now, userRow.id)
+  ]);
+  await logAudit(request, env, "login_success", "cloud_user", userRow.id, {}, email);
+  return json({ ok: true, user: publicUser({ ...userRow, last_login_at: now }) }, 200, { "set-cookie": sessionCookie(token, 30 * 24 * 60 * 60) });
+}
+
+async function handleAuthMe(request, env) {
+  const user = await currentUser(request, env);
+  if (user) return json({ ok: true, user });
+  if (requireAdminAuth(request, env) || requireSyncAuth(request, env)) return json({ ok: true, user: { email: "token-admin", role: "admin", status: "active" } });
+  if (requireReadAuth(request, env)) return json({ ok: true, user: { email: "token-reader", role: "read", status: "active" } });
+  return json({ ok: false, user: null }, 401);
+}
+
+async function handleAuthLogout(request, env) {
+  const token = parseCookies(request).opos_session || "";
+  if (token) await env.DB.prepare("DELETE FROM cloud_sessions WHERE session_hash = ?").bind(await sha256Hex(token)).run();
+  return json({ ok: true }, 200, { "set-cookie": sessionCookie("", 0) });
+}
+
+function normalizeToolPolicy(row) {
+  return {
+    tool_key: row.tool_key,
+    cloud_enabled: Boolean(row.cloud_enabled),
+    daily_limit: row.daily_limit == null ? null : Number(row.daily_limit),
+    monthly_limit: row.monthly_limit == null ? null : Number(row.monthly_limit),
+    per_client_daily_limit: row.per_client_daily_limit == null ? null : Number(row.per_client_daily_limit),
+    updated_at: row.updated_at || null
+  };
+}
+
+const DEFAULT_TOOL_POLICIES = {
+  create_ranking_snapshot: { tool_key: "create_ranking_snapshot", cloud_enabled: true, daily_limit: 25, monthly_limit: 500, per_client_daily_limit: 10, updated_at: null },
+  run_entity_lsi: { tool_key: "run_entity_lsi", cloud_enabled: true, daily_limit: 25, monthly_limit: 500, per_client_daily_limit: 10, updated_at: null }
+};
+
+async function toolPolicies(env) {
+  const rows = await env.DB.prepare("SELECT * FROM tool_policies ORDER BY tool_key").all();
+  const byKey = { ...DEFAULT_TOOL_POLICIES };
+  for (const row of rows.results || []) byKey[row.tool_key] = normalizeToolPolicy(row);
+  return Object.values(byKey);
+}
+
+async function adminData(env) {
+  const [users, policies, usageToday, usageMonth] = await Promise.all([
+    env.DB.prepare("SELECT * FROM cloud_users ORDER BY created_at DESC, id DESC LIMIT 100").all(),
+    toolPolicies(env),
+    env.DB.prepare("SELECT command_type, COUNT(*) AS runs FROM tool_usage WHERE created_at >= date('now') GROUP BY command_type").all(),
+    env.DB.prepare("SELECT command_type, COUNT(*) AS runs FROM tool_usage WHERE created_at >= date('now', 'start of month') GROUP BY command_type").all()
+  ]);
+  return {
+    users: (users.results || []).map(publicUser),
+    tool_policies: policies,
+    tool_usage_today: usageToday.results || [],
+    tool_usage_month: usageMonth.results || [],
+    secret_status: secretStatusData(env)
+  };
+}
+
+async function handleAdminUsers(request, env) {
+  if (!(await hasAdminAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (request.method === "GET") return json({ ok: true, users: (await adminData(env)).users });
+  const payload = await request.json().catch(() => ({}));
+  const email = String(payload.email || "").trim().toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json({ ok: false, error: "Valid email required" }, 400);
+  const role = ["admin", "write", "read"].includes(String(payload.role || "").toLowerCase()) ? String(payload.role).toLowerCase() : "read";
+  const status = ["active", "disabled"].includes(String(payload.status || "").toLowerCase()) ? String(payload.status).toLowerCase() : "active";
+  const clientIds = Array.isArray(payload.client_ids) ? payload.client_ids.map((v) => Number(v)).filter(Boolean) : [];
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO cloud_users (email, name, role, status, client_ids_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(email) DO UPDATE SET name = excluded.name, role = excluded.role, status = excluded.status, client_ids_json = excluded.client_ids_json, updated_at = excluded.updated_at`
+  ).bind(email, String(payload.name || "").trim(), role, status, JSON.stringify(clientIds), now, now).run();
+  const user = await env.DB.prepare("SELECT * FROM cloud_users WHERE email = ?").bind(email).first();
+  await logAudit(request, env, "user_upsert", "cloud_user", user.id, { role, status }, "admin");
+  return json({ ok: true, user: publicUser(user) });
+}
+
+async function handleAdminToolPolicy(request, env) {
+  if (!(await hasAdminAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (request.method === "GET") return json({ ok: true, ...(await adminData(env)) });
+  const payload = await request.json().catch(() => ({}));
+  const toolKey = String(payload.tool_key || "").trim();
+  if (!DEFAULT_TOOL_POLICIES[toolKey]) return json({ ok: false, error: "Unsupported tool policy" }, 400);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO tool_policies (tool_key, cloud_enabled, daily_limit, monthly_limit, per_client_daily_limit, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(tool_key) DO UPDATE SET cloud_enabled = excluded.cloud_enabled, daily_limit = excluded.daily_limit, monthly_limit = excluded.monthly_limit, per_client_daily_limit = excluded.per_client_daily_limit, updated_at = excluded.updated_at`
+  ).bind(toolKey, payload.cloud_enabled === false ? 0 : 1, payload.daily_limit == null ? null : Number(payload.daily_limit), payload.monthly_limit == null ? null : Number(payload.monthly_limit), payload.per_client_daily_limit == null ? null : Number(payload.per_client_daily_limit), now).run();
+  await logAudit(request, env, "tool_policy_update", "tool_policy", toolKey, payload, "admin");
+  return json({ ok: true, ...(await adminData(env)) });
+}
+
+async function enforceToolPolicy(request, env, commandType, payload) {
+  const defaults = DEFAULT_TOOL_POLICIES[commandType];
+  if (!defaults || payload.dry_run) return;
+  const policy = (await toolPolicies(env)).find((item) => item.tool_key === commandType) || defaults;
+  const executionMode = String(payload.execution_mode || "local").toLowerCase();
+  if (executionMode === "cloud" && !policy.cloud_enabled) throw new Error(`${commandType} is disabled for Cloudflare execution.`);
+  const today = await env.DB.prepare("SELECT COUNT(*) AS count FROM tool_usage WHERE command_type = ? AND created_at >= date('now')").bind(commandType).first();
+  if (policy.daily_limit != null && Number(today?.count || 0) >= Number(policy.daily_limit)) throw new Error(`${commandType} daily limit reached.`);
+  const month = await env.DB.prepare("SELECT COUNT(*) AS count FROM tool_usage WHERE command_type = ? AND created_at >= date('now', 'start of month')").bind(commandType).first();
+  if (policy.monthly_limit != null && Number(month?.count || 0) >= Number(policy.monthly_limit)) throw new Error(`${commandType} monthly limit reached.`);
+  if (policy.per_client_daily_limit != null && payload.project_id) {
+    const clientCount = await env.DB.prepare("SELECT COUNT(*) AS count FROM tool_usage WHERE command_type = ? AND project_id = ? AND created_at >= date('now')").bind(commandType, Number(payload.project_id)).first();
+    if (Number(clientCount?.count || 0) >= Number(policy.per_client_daily_limit)) throw new Error(`${commandType} client daily limit reached.`);
+  }
+}
+
+async function recordToolUsage(request, env, commandType, payload) {
+  if (!DEFAULT_TOOL_POLICIES[commandType] || payload.dry_run) return;
+  const user = await currentUser(request, env);
+  await env.DB.prepare("INSERT INTO tool_usage (user_id, project_id, command_type, execution_mode, units, created_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .bind(user?.id || null, Number(payload.project_id || 0) || null, commandType, String(payload.execution_mode || "local"), 1, new Date().toISOString()).run();
+}
+
 async function createCommand(request, env) {
-  if (!requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasAdminAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const payload = await request.json();
   const commandType = String(payload.command_type || "").trim();
   if (!COMMAND_TYPES.has(commandType)) return json({ ok: false, error: "Unsupported command type" }, 400);
   const commandPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
   const executionMode = String(commandPayload.execution_mode || "local").trim().toLowerCase();
   if (commandType === "run_cora" && executionMode === "cloud") return json({ ok: false, error: "Cora is local-only. Use Local bridge mode." }, 400);
+  await enforceToolPolicy(request, env, commandType, commandPayload);
   const commandKeyPayload = { ...commandPayload };
   delete commandKeyPayload.reviewed_at;
   let commandKey = String(payload.command_key || "").trim() || await sha256Hex(`${commandType}:${stableStringify(commandKeyPayload)}`);
@@ -824,6 +1080,7 @@ async function createCommand(request, env) {
   const result = await env.DB.prepare(
     "INSERT INTO cloud_commands (command_key, command_type, payload_json, status, created_by, created_at, claimed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
   ).bind(commandKey, commandType, JSON.stringify(commandPayload), initialStatus, String(payload.created_by || "cloud-dashboard"), now, executionMode === "cloud" ? now : null).run();
+  await recordToolUsage(request, env, commandType, commandPayload);
   const command = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(result.meta.last_row_id).first();
   await logAudit(request, env, "command_created", "cloud_command", command?.id, {
     command_type: commandType,
@@ -883,7 +1140,7 @@ function normalizeCommand(row) {
 }
 
 async function listCommands(request, env) {
-  if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
   const limit = Math.min(Number(url.searchParams.get("limit") || 100), 250);
@@ -897,11 +1154,12 @@ async function listCommands(request, env) {
 }
 
 async function updateCommand(request, env, id) {
-  if (!requireSyncAuth(request, env) && !requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const admin = await hasAdminAccess(request, env);
+  if (!requireSyncAuth(request, env) && !admin) return json({ ok: false, error: "Unauthorized" }, 401);
   const payload = await request.json();
   const status = String(payload.status || "").trim();
   if (!["pending", "claimed", "complete", "failed"].includes(status)) return json({ ok: false, error: "Unsupported command status" }, 400);
-  if (status === "pending" && !requireAdminAuth(request, env)) return json({ ok: false, error: "Admin token required to reset commands" }, 403);
+  if (status === "pending" && !admin) return json({ ok: false, error: "Admin token required to reset commands" }, 403);
   const now = new Date().toISOString();
   if (status === "claimed") {
     await env.DB.prepare("UPDATE cloud_commands SET status = 'claimed', claimed_at = COALESCE(claimed_at, ?) WHERE id = ?").bind(now, id).run();
@@ -1005,7 +1263,8 @@ async function countTable(env, table) {
 }
 
 async function handleDashboardData(request, env) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const [user, admin] = await Promise.all([currentUser(request, env), hasAdminAccess(request, env)]);
   const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
     countTable(env, "projects"),
@@ -1050,21 +1309,25 @@ async function handleDashboardData(request, env) {
      ORDER BY p.updated_at DESC, p.id DESC
      LIMIT 50`
   ).all();
+  const adminBundle = admin ? await adminData(env) : null;
   return json({
     ok: true,
     generated_at: new Date().toISOString(),
     worker_url: new URL(request.url).origin,
+    user: user || (admin ? { email: "token-admin", role: "admin", status: "active" } : { email: "token-reader", role: "read", status: "active" }),
+    is_admin: admin,
     counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, pending_commands: pendingCommands },
     artifacts,
     sync,
     bridges,
+    admin: adminBundle,
     reports: recentReports.results || [],
     clients: clientRows.results || []
   });
 }
 
 async function handleDashboardMirrorData(request, env) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const overview = await handleDashboardData(request, env).then((response) => response.json());
   const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands, audits] = await Promise.all([
     env.DB.prepare(
@@ -1166,7 +1429,7 @@ function parseJsonField(value, fallback = null) {
 }
 
 async function handleRunDetail(request, env, id) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const run = await env.DB.prepare(
     `SELECT r.*, p.name AS project_name
      FROM runs r
@@ -1205,7 +1468,7 @@ async function handleRunDetail(request, env, id) {
 }
 
 async function handleRunSheetRows(request, env, id) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const url = new URL(request.url);
   const sheet = String(url.searchParams.get("sheet") || "").trim();
   if (!sheet) return json({ ok: false, error: "Sheet is required" }, 400);
@@ -1241,7 +1504,7 @@ async function handleRunSheetRows(request, env, id) {
 }
 
 async function handleRankingSnapshotDetail(request, env, id) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const snapshot = await env.DB.prepare(
     `SELECT rs.*, p.name AS project_name
      FROM ranking_snapshots rs
@@ -1269,7 +1532,7 @@ async function handleRankingSnapshotDetail(request, env, id) {
 }
 
 async function handleEntitySetDetail(request, env, id) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const set = await env.DB.prepare(
     `SELECT es.*, p.name AS project_name
      FROM entity_sets es
@@ -1289,7 +1552,7 @@ async function handleEntitySetDetail(request, env, id) {
 }
 
 async function handleEntityRunDetail(request, env, id) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const run = await env.DB.prepare(
     `SELECT r.*, p.name AS project_name
      FROM entity_lsi_runs r
@@ -1321,7 +1584,7 @@ async function handleEntityRunDetail(request, env, id) {
 }
 
 async function handleClientDetail(request, env, id) {
-  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const client = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
   if (!client) return json({ ok: false, error: "Client not found" }, 404);
   const [keywords, runs, jobs, snapshots, targets, reports, plans, entityBatches, entityRuns, entitySets] = await Promise.all([
@@ -1556,6 +1819,9 @@ function cloudMirrorHtml() {
     input, select, textarea { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
     textarea { width:100%; min-height:72px; resize:vertical; font:inherit; }
     .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-bottom:14px; }
+    .access input { min-width:180px; }
+    .access button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
+    .access button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
     .review { background:rgba(77,182,172,.08); border:1px solid rgba(110,231,220,.35); border-radius:8px; margin:12px; padding:12px; }
     .review pre { white-space:pre-wrap; word-break:break-word; color:var(--muted); }
     .review.danger { background:rgba(255,123,114,.08); border-color:rgba(255,123,114,.45); }
@@ -1597,6 +1863,10 @@ function cloudMirrorHtml() {
       </div>
       <div class="access">
         <span class="muted">Dashboard access</span>
+        <input id="login-email" type="email" placeholder="Email login">
+        <input id="login-code" placeholder="6-digit code">
+        <button id="request-login">Send Code</button>
+        <button id="verify-login" class="secondary">Verify</button>
         <input id="read-token" type="password" placeholder="Read/admin token">
         <button id="save-read-token">Unlock</button>
         <button id="lock-dashboard" class="secondary">Lock</button>
@@ -1617,7 +1887,8 @@ function cloudMirrorHtml() {
       ["entities", "Entity Explorer"],
       ["plans", "Content Plans"],
       ["audit", "Audit Trail"],
-      ["commands", "Cloud Commands"]
+      ["commands", "Cloud Commands"],
+      ["admin", "Admin"]
     ];
     const fmtNum = (v) => Number(v || 0).toLocaleString();
     const fmtDate = (v) => v ? new Date(v).toLocaleString() : "";
@@ -1628,6 +1899,12 @@ function cloudMirrorHtml() {
     const readToken = () => localStorage.getItem("opos_read_token") || localStorage.getItem("opos_admin_token") || "";
     const adminToken = () => localStorage.getItem("opos_admin_token") || "";
     const authHeaders = (token) => token ? { "authorization": "Bearer " + token } : {};
+    const writeHeaders = () => {
+      const headers = { "content-type": "application/json" };
+      const token = adminToken();
+      if (token) headers.authorization = "Bearer " + token;
+      return headers;
+    };
     const absoluteUrl = (path) => new URL(path, location.origin).href;
     function rows(items, predicate) {
       const q = state.q.toLowerCase();
@@ -1781,7 +2058,6 @@ function cloudMirrorHtml() {
     }
     async function apiGet(path) {
       const token = readToken();
-      if (!token) throw new Error("Dashboard access token required.");
       const response = await fetch(path, { headers: authHeaders(token) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Detail load failed");
@@ -1970,12 +2246,10 @@ function cloudMirrorHtml() {
       if (isPaidLiveCommand(pending.command_type, pending.payload) && !document.getElementById("confirm-paid-command")?.checked) {
         throw new Error("Confirm the paid/API run before queueing.");
       }
-      const token = adminToken();
-      if (!token) throw new Error("Unlock cloud writes first.");
       const operator = localStorage.getItem("opos_operator_name") || "cloud-dashboard";
       const response = await fetch("/api/commands", {
         method: "POST",
-        headers: { "content-type": "application/json", "authorization": "Bearer " + token },
+        headers: writeHeaders(),
         body: JSON.stringify({ command_type: pending.command_type, payload: { ...pending.payload, reviewed_at: new Date().toISOString() }, created_by: operator })
       });
       const data = await response.json();
@@ -1985,16 +2259,58 @@ function cloudMirrorHtml() {
       if (data.duplicate) alert("Matching command already exists; not queued again.");
     }
     async function retryCommand(id) {
-      const token = adminToken();
-      if (!token) throw new Error("Unlock cloud writes first.");
       const response = await fetch("/api/commands/" + encodeURIComponent(id), {
         method: "POST",
-        headers: { "content-type": "application/json", "authorization": "Bearer " + token },
+        headers: writeHeaders(),
         body: JSON.stringify({ status: "pending" })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Retry failed");
       await load();
+    }
+    function adminView(data) {
+      if (!data.is_admin) return '<section><div class="head"><h3>Admin</h3><span class="pill warn">Admin required</span></div><div class="empty">Use an admin session or admin/sync token to manage users and cloud tool policies.</div></section>';
+      const admin = data.admin || {};
+      const users = admin.users || [];
+      const policies = admin.tool_policies || [];
+      const secrets = admin.secret_status || {};
+      const today = Object.fromEntries((admin.tool_usage_today || []).map((row) => [row.command_type, row.runs]));
+      const month = Object.fromEntries((admin.tool_usage_month || []).map((row) => [row.command_type, row.runs]));
+      const secretRows = Object.entries(secrets).map(([name, present]) => '<div class="status-row"><span>' + esc(name) + '</span><strong class="' + (present ? 'ok' : 'warn') + '">' + esc(present ? 'Configured' : 'Missing') + '</strong></div>').join("");
+      const userRows = users.map((u) => '<tr><td><strong>' + esc(u.email || "") + '</strong><br><span class="muted">' + esc(u.name || "") + '</span></td><td><span class="pill">' + esc(u.role || "") + '</span></td><td>' + esc(u.status || "") + '</td><td>' + esc((u.client_ids || []).join(", ")) + '</td><td>' + esc(fmtDate(u.last_login_at)) + '</td></tr>');
+      const policyRows = policies.map((p) => '<tr><td><strong>' + esc(commandLabel(p.tool_key || p.tool_key)) + '</strong><br><span class="muted">' + esc(p.tool_key || "") + '</span></td><td>' + esc(p.cloud_enabled ? 'Cloud enabled' : 'Cloud disabled') + '</td><td>' + esc(p.daily_limit ?? "") + '</td><td>' + esc(p.monthly_limit ?? "") + '</td><td>' + esc(p.per_client_daily_limit ?? "") + '</td><td>' + esc(today[p.tool_key] || 0) + ' today<br><span class="muted">' + esc(month[p.tool_key] || 0) + ' this month</span></td></tr>');
+      const userForm = '<section><div class="head"><h3>Create / Update User</h3><span class="muted">Email login, roles, optional client scope.</span></div><div class="status-list"><div class="field-row"><input id="admin-user-email" type="email" placeholder="user@example.com"><input id="admin-user-name" placeholder="Name"><select id="admin-user-role"><option value="read">Read</option><option value="write">Write</option><option value="admin">Admin</option></select><select id="admin-user-status"><option value="active">Active</option><option value="disabled">Disabled</option></select></div><input id="admin-user-clients" placeholder="Optional client IDs: 1,2,3"><div class="toolbar"><button id="admin-save-user">Save User</button></div></div></section>';
+      const policyForm = '<section><div class="head"><h3>Tool Guardrails</h3><span class="muted">Controls paid cloud tool execution.</span></div><div class="status-list"><div class="field-row"><select id="policy-tool"><option value="create_ranking_snapshot">Ranking Snapshot</option><option value="run_entity_lsi">Entity Explorer</option></select><select id="policy-cloud"><option value="true">Cloud enabled</option><option value="false">Cloud disabled</option></select><input id="policy-daily" placeholder="Daily limit"><input id="policy-monthly" placeholder="Monthly limit"><input id="policy-client-daily" placeholder="Per-client daily"></div><div class="toolbar"><button id="admin-save-policy">Save Policy</button></div></div>' + table(["Tool","Cloud","Daily","Monthly","Client Daily","Usage"], policyRows, "No tool policies yet.") + '</section>';
+      return '<div class="grid2"><section><div class="head"><h3>Current Access</h3><span class="pill ok">' + esc(data.user?.role || "") + '</span></div><div class="status-list"><div class="status-row"><span>User</span><strong>' + esc(data.user?.email || "") + '</strong></div><div class="head"><h3>Provider Secrets</h3></div>' + (secretRows || '<div class="muted">No secret status available.</div>') + '</div></section>' + userForm + '</div>' + policyForm + '<section><div class="head"><h3>Users</h3></div>' + table(["Email","Role","Status","Client Scope","Last Login"], userRows, "No cloud users yet.") + '</section>';
+    }
+    function bindAdminForms() {
+      const byId = (id) => document.getElementById(id);
+      byId("admin-save-user")?.addEventListener("click", () => (async () => {
+        const payload = {
+          email: byId("admin-user-email").value,
+          name: byId("admin-user-name").value,
+          role: byId("admin-user-role").value,
+          status: byId("admin-user-status").value,
+          client_ids: (byId("admin-user-clients").value || "").split(",").map((v) => Number(v.trim())).filter(Boolean)
+        };
+        const response = await fetch("/api/admin/users", { method: "POST", headers: writeHeaders(), body: JSON.stringify(payload) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "User save failed");
+        await load();
+      })().catch((error) => alert(error.message || error)));
+      byId("admin-save-policy")?.addEventListener("click", () => (async () => {
+        const payload = {
+          tool_key: byId("policy-tool").value,
+          cloud_enabled: byId("policy-cloud").value === "true",
+          daily_limit: byId("policy-daily").value ? Number(byId("policy-daily").value) : null,
+          monthly_limit: byId("policy-monthly").value ? Number(byId("policy-monthly").value) : null,
+          per_client_daily_limit: byId("policy-client-daily").value ? Number(byId("policy-client-daily").value) : null
+        };
+        const response = await fetch("/api/admin/tool-policy", { method: "POST", headers: writeHeaders(), body: JSON.stringify(payload) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Policy save failed");
+        await load();
+      })().catch((error) => alert(error.message || error)));
     }
     function commandsView(data) {
       const pending = state.pendingWrite;
@@ -2120,36 +2436,59 @@ function cloudMirrorHtml() {
         entities: () => entitiesView(data),
         plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>',
         audit: () => '<section><div class="head"><h3>Audit Trail</h3><span class="muted">Recent report, sync, bridge, and command events.</span></div>' + auditTable(data.audit_events || []) + '</section>',
-        commands: () => commandsView(data)
+        commands: () => commandsView(data),
+        admin: () => adminView(data)
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
       setTimeout(bindDetailControls, 0);
+      if (state.page === "admin") setTimeout(bindAdminForms, 0);
     }
     function lockedView(message) {
       document.getElementById("page-title").textContent = "Locked";
-      document.getElementById("page-note").textContent = "Enter a read/admin token to view cloud dashboard data.";
-      document.getElementById("app").innerHTML = '<section><div class="head"><h3>Dashboard Locked</h3><span class="pill warn">Auth required</span></div><div class="empty">' + esc(message || "Cloud dashboard data is protected. Public customer report links still work without this token.") + '</div></section>';
+      document.getElementById("page-note").textContent = "Enter an email login code or read/admin token to view cloud dashboard data.";
+      document.getElementById("app").innerHTML = '<section><div class="head"><h3>Dashboard Locked</h3><span class="pill warn">Auth required</span></div><div class="empty">' + esc(message || "Cloud dashboard data is protected. Public customer report links still work without login.") + '</div></section>';
     }
     async function load() {
       const token = readToken();
-      if (!token) {
-        state.data = null;
-        lockedView();
-        return;
-      }
       const response = await fetch("/api/dashboard/mirror", { headers: authHeaders(token) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Mirror load failed");
       state.data = data;
       render();
     }
+    async function requestLoginCode() {
+      const email = document.getElementById("login-email").value || "";
+      const response = await fetch("/api/auth/request", { method: "POST", headers: writeHeaders(), body: JSON.stringify({ email }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Login code request failed");
+      if (data.dev_code) document.getElementById("login-code").value = data.dev_code;
+      alert(data.dev_code ? "Code generated and filled for admin setup." : data.message || "If the account exists, a login code was sent.");
+    }
+    async function verifyLoginCode() {
+      const email = document.getElementById("login-email").value || "";
+      const code = document.getElementById("login-code").value || "";
+      const response = await fetch("/api/auth/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, code }) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Login failed");
+      await load();
+    }
+    async function logoutSession() {
+      await fetch("/api/auth/logout", { method: "POST" });
+      localStorage.removeItem("opos_read_token");
+      localStorage.removeItem("opos_admin_token");
+      state.data = null;
+      document.getElementById("read-token").value = "";
+      lockedView("Dashboard locked in this browser.");
+    }
     renderNav();
     document.getElementById("refresh").onclick = () => load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
     document.getElementById("search").oninput = (event) => { state.q = event.target.value || ""; render(); };
     document.getElementById("read-token").value = readToken();
+    document.getElementById("request-login").onclick = () => requestLoginCode().catch((error) => alert(error.message || error));
+    document.getElementById("verify-login").onclick = () => verifyLoginCode().catch((error) => alert(error.message || error));
     document.getElementById("save-read-token").onclick = () => { localStorage.setItem("opos_read_token", document.getElementById("read-token").value || ""); load().catch((error) => lockedView(error.message || error)); };
-    document.getElementById("lock-dashboard").onclick = () => { localStorage.removeItem("opos_read_token"); localStorage.removeItem("opos_admin_token"); state.data = null; document.getElementById("read-token").value = ""; lockedView("Dashboard locked in this browser."); };
+    document.getElementById("lock-dashboard").onclick = () => logoutSession().catch((error) => alert(error.message || error));
     load().catch((error) => lockedView(error.message || error));
     setPage("overview");
   </script>
@@ -2276,6 +2615,12 @@ export default {
     try {
       if (url.pathname === "/" && request.method === "GET") return html(cloudMirrorHtml());
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
+      if (url.pathname === "/api/auth/request" && request.method === "POST") return await handleAuthRequest(request, env);
+      if (url.pathname === "/api/auth/verify" && request.method === "POST") return await handleAuthVerify(request, env);
+      if (url.pathname === "/api/auth/me" && request.method === "GET") return await handleAuthMe(request, env);
+      if (url.pathname === "/api/auth/logout" && request.method === "POST") return await handleAuthLogout(request, env);
+      if (url.pathname === "/api/admin/users" && ["GET", "POST"].includes(request.method)) return await handleAdminUsers(request, env);
+      if (url.pathname === "/api/admin/tool-policy" && ["GET", "POST"].includes(request.method)) return await handleAdminToolPolicy(request, env);
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return await handleDashboardData(request, env);
       if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return await handleDashboardMirrorData(request, env);
       if (url.pathname === "/api/secrets/status" && request.method === "GET") return await handleSecretsStatus(request, env);
@@ -2301,7 +2646,7 @@ export default {
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);
       if (shareReport && ["GET", "HEAD"].includes(request.method)) return await serveReportArtifact(request, env, decodeURIComponent(shareReport[1]), "report_html");
       if (url.pathname === "/api/sync/status" && request.method === "GET") {
-        if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+        if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
         return await handleStatus(env);
       }
       if (url.pathname === "/api/sync/push" && request.method === "POST") return await handleSyncPush(request, env);

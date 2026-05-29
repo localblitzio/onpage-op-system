@@ -59,6 +59,55 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cloud_users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  role TEXT NOT NULL DEFAULT 'read',
+  status TEXT NOT NULL DEFAULT 'active',
+  client_ids_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT,
+  last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS login_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cloud_sessions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  session_hash TEXT UNIQUE NOT NULL,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tool_policies (
+  tool_key TEXT PRIMARY KEY,
+  cloud_enabled INTEGER NOT NULL DEFAULT 1,
+  daily_limit INTEGER,
+  monthly_limit INTEGER,
+  per_client_daily_limit INTEGER,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tool_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER,
+  project_id INTEGER,
+  command_type TEXT NOT NULL,
+  execution_mode TEXT,
+  units INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, profile_id INTEGER, name TEXT, client TEXT, site_domain TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, project_id INTEGER, domain TEXT, name TEXT, created_at TEXT);
@@ -304,6 +353,11 @@ CREATE INDEX IF NOT EXISTS idx_cloud_commands_key ON cloud_commands(command_key)
 CREATE INDEX IF NOT EXISTS idx_bridge_heartbeats_seen ON bridge_heartbeats(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_created ON audit_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_events_object ON audit_events(object_type, object_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_cloud_users_email ON cloud_users(email);
+CREATE INDEX IF NOT EXISTS idx_login_codes_email ON login_codes(email, expires_at);
+CREATE INDEX IF NOT EXISTS idx_cloud_sessions_hash ON cloud_sessions(session_hash);
+CREATE INDEX IF NOT EXISTS idx_tool_usage_command ON tool_usage(command_type, created_at);
+CREATE INDEX IF NOT EXISTS idx_tool_usage_project ON tool_usage(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_serp_run ON serp_results(run_id);
