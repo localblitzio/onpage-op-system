@@ -260,6 +260,99 @@ async function handleDashboardData(request, env) {
   });
 }
 
+async function handleDashboardMirrorData(request, env) {
+  const overview = await handleDashboardData(request, env).then((response) => response.json());
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans] = await Promise.all([
+    env.DB.prepare(
+      `SELECT r.id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
+              p.name AS project_name,
+              (SELECT COUNT(*) FROM recommendations rec WHERE rec.run_id = r.id) AS recommendation_count,
+              (SELECT COUNT(*) FROM lsi_keywords lsi WHERE lsi.run_id = r.id) AS lsi_count,
+              (SELECT COUNT(*) FROM serp_results sr WHERE sr.run_id = r.id) AS serp_count
+       FROM runs r
+       LEFT JOIN projects p ON p.id = r.project_id
+       ORDER BY r.imported_at DESC, r.id DESC
+       LIMIT 100`
+    ).all(),
+    env.DB.prepare(
+      `SELECT j.id, j.keyword, j.target_url, j.target_domain, j.cora_profile, j.tool, j.status,
+              j.status_message, j.started_at, j.updated_at, j.completed_at, j.last_activity_at,
+              p.name AS project_name
+       FROM managed_jobs j
+       LEFT JOIN projects p ON p.id = j.project_id
+       ORDER BY j.started_at DESC, j.id DESC
+       LIMIT 100`
+    ).all(),
+    env.DB.prepare(
+      `SELECT rs.id, rs.project_id, rs.target, rs.location_code, rs.language_code, rs.limit_value,
+              rs.include_subdomains, rs.source, rs.freshness, rs.created_at,
+              p.name AS project_name,
+              (SELECT COUNT(*) FROM ranking_snapshot_keywords rsk WHERE rsk.snapshot_id = rs.id) AS keyword_count,
+              (SELECT COUNT(*) FROM ranking_snapshot_pages rsp WHERE rsp.snapshot_id = rs.id) AS page_count,
+              (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.snapshot_id = rs.id) AS target_count
+       FROM ranking_snapshots rs
+       LEFT JOIN projects p ON p.id = rs.project_id
+       ORDER BY rs.created_at DESC, rs.id DESC
+       LIMIT 100`
+    ).all(),
+    env.DB.prepare(
+      `SELECT rot.id, rot.snapshot_id, rot.project_id, rot.url, rot.keyword, rot.best_position,
+              rot.ranking_keywords, rot.opportunity_count, rot.total_search_volume, rot.estimated_traffic,
+              rot.priority_type, rot.opportunity_score, rot.recommended_action, rot.status, rot.updated_at,
+              p.name AS project_name
+       FROM ranking_optimization_targets rot
+       LEFT JOIN projects p ON p.id = rot.project_id
+       ORDER BY rot.opportunity_score DESC, rot.updated_at DESC, rot.id DESC
+       LIMIT 150`
+    ).all(),
+    env.DB.prepare(
+      `SELECT b.id, b.project_id, b.seed_keyword, b.depth, b.target_count, b.completed_count,
+              b.failed_count, b.status, b.created_at, b.updated_at, p.name AS project_name
+       FROM entity_lsi_batches b
+       LEFT JOIN projects p ON p.id = b.project_id
+       ORDER BY b.created_at DESC, b.id DESC
+       LIMIT 100`
+    ).all(),
+    env.DB.prepare(
+      `SELECT r.id, r.project_id, r.batch_id, r.seed_keyword, r.depth, r.provider, r.model,
+              r.status, r.summary, r.error, r.created_at, r.completed_at, p.name AS project_name
+       FROM entity_lsi_runs r
+       LEFT JOIN projects p ON p.id = r.project_id
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT 150`
+    ).all(),
+    env.DB.prepare(
+      `SELECT es.id, es.project_id, es.source_batch_id, es.name, es.notes, es.created_at, es.updated_at,
+              p.name AS project_name,
+              (SELECT COUNT(*) FROM entity_set_terms est WHERE est.set_id = es.id) AS term_count
+       FROM entity_sets es
+       LEFT JOIN projects p ON p.id = es.project_id
+       ORDER BY es.updated_at DESC, es.id DESC
+       LIMIT 100`
+    ).all(),
+    env.DB.prepare(
+      `SELECT cp.id, cp.project_id, cp.title, cp.content_type, cp.intent, cp.priority, cp.status,
+              cp.due_date, cp.notes, cp.created_at, cp.updated_at, p.name AS project_name, k.keyword
+       FROM content_plans cp
+       LEFT JOIN projects p ON p.id = cp.project_id
+       LEFT JOIN keywords k ON k.id = cp.keyword_id
+       ORDER BY cp.updated_at DESC, cp.id DESC
+       LIMIT 150`
+    ).all()
+  ]);
+  return json({
+    ...overview,
+    runs: runs.results || [],
+    jobs: jobs.results || [],
+    snapshots: snapshots.results || [],
+    targets: targets.results || [],
+    entity_batches: entityBatches.results || [],
+    entity_runs: entityRuns.results || [],
+    entity_sets: entitySets.results || [],
+    content_plans: contentPlans.results || []
+  });
+}
+
 function cloudDashboardHtml() {
   return `<!doctype html>
 <html lang="en">
@@ -385,6 +478,182 @@ function cloudDashboardHtml() {
 </html>`;
 }
 
+function cloudMirrorHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>On Page Optimization System Dashboard</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0d1117; --panel:#151b23; --soft:#1d2630; --line:#303b47; --text:#edf2f7; --muted:#9aa8b8; --accent:#4db6ac; --accent2:#6ee7dc; --danger:#ff7b72; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, Segoe UI, Arial, sans-serif; }
+    .shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
+    aside { border-right: 1px solid var(--line); background: #111821; padding: 16px 12px; }
+    .brand { padding: 4px 8px 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+    .brand h1 { font-size: 18px; margin: 0; line-height: 1.15; }
+    .brand p { color: var(--muted); margin: 5px 0 0; font-size: 12px; }
+    nav { display: grid; gap: 4px; }
+    nav button { width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 6px; padding: 9px 10px; cursor: pointer; }
+    nav button.active, nav button:hover { background: var(--soft); color: var(--accent2); }
+    main { min-width: 0; padding: 18px 20px 36px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
+    .topbar h2 { margin:0; font-size:22px; }
+    .muted { color: var(--muted); }
+    .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; color:var(--muted); padding:2px 7px; font-size:12px; }
+    .ok { color: var(--accent2); }
+    .warn { color: var(--danger); }
+    .cards { display:grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap:10px; margin-bottom:14px; }
+    .card, section { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .card { padding:13px; }
+    .card strong { display:block; font-size:24px; }
+    .card span { color:var(--muted); font-size:12px; }
+    .grid2 { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(300px,.75fr); gap:14px; align-items:start; }
+    section { overflow:hidden; margin-bottom:14px; }
+    .head { padding:13px 14px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    .head h3 { margin:0; font-size:16px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:9px 11px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { background:var(--soft); color:var(--muted); font-size:12px; }
+    a { color:var(--accent2); text-decoration:none; }
+    a:hover { text-decoration:underline; }
+    .empty { padding:18px; color:var(--muted); }
+    .status-list { padding:12px; display:grid; gap:8px; }
+    .status-row { display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); padding-bottom:8px; }
+    .status-row:last-child { border-bottom:0; padding-bottom:0; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
+    input { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
+    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2 { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside>
+      <div class="brand"><h1>On Page Optimization System</h1><p>Cloud mirror. Local Cora automation stays on Windows.</p></div>
+      <nav id="nav"></nav>
+    </aside>
+    <main>
+      <div class="topbar">
+        <div><h2 id="page-title">Overview</h2><div id="page-note" class="muted">Loading synced production data...</div></div>
+        <div class="toolbar"><input id="search" placeholder="Filter current page"><button id="refresh">Refresh</button></div>
+      </div>
+      <div id="app"><div class="empty">Loading cloud mirror...</div></div>
+    </main>
+  </div>
+  <script>
+    let state = { data: null, page: "overview", q: "" };
+    const pages = [
+      ["overview", "Overview"],
+      ["clients", "Clients"],
+      ["reports", "Cora Reports"],
+      ["runs", "Cora Runs"],
+      ["jobs", "Cora Jobs"],
+      ["ranking", "Ranking Snapshots"],
+      ["targets", "Optimization Targets"],
+      ["entities", "Entity Explorer"],
+      ["plans", "Content Plans"]
+    ];
+    const fmtNum = (v) => Number(v || 0).toLocaleString();
+    const fmtDate = (v) => v ? new Date(v).toLocaleString() : "";
+    const fmtBytes = (v) => { let n = Number(v || 0), u = ["B","KB","MB","GB"], i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; } return n.toLocaleString(undefined, { maximumFractionDigits: i ? 1 : 0 }) + " " + u[i]; };
+    const esc = (v) => String(v ?? "").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;");
+    const reportUrl = (token) => "/share/report/" + encodeURIComponent(token);
+    const downloadUrl = (token) => reportUrl(token) + "/download";
+    function rows(items, predicate) {
+      const q = state.q.toLowerCase();
+      return (items || []).filter((item) => !q || JSON.stringify(item).toLowerCase().includes(q)).filter(predicate || (() => true));
+    }
+    function table(headers, body, empty) {
+      return body.length ? '<table><thead><tr>' + headers.map((h) => '<th>' + esc(h) + '</th>').join("") + '</tr></thead><tbody>' + body.join("") + '</tbody></table>' : '<div class="empty">' + esc(empty || "No synced data found.") + '</div>';
+    }
+    function setPage(page) {
+      state.page = page;
+      document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("active", b.dataset.page === page));
+      render();
+    }
+    function renderNav() {
+      document.getElementById("nav").innerHTML = pages.map(([id, label]) => '<button data-page="' + id + '">' + esc(label) + '</button>').join("");
+      document.querySelectorAll("nav button").forEach((b) => b.onclick = () => setPage(b.dataset.page));
+    }
+    function cards(items) {
+      return '<div class="cards">' + items.map(([label, value]) => '<div class="card"><strong>' + esc(typeof value === "number" ? fmtNum(value) : value) + '</strong><span>' + esc(label) + '</span></div>').join("") + '</div>';
+    }
+    function overview(data) {
+      const counts = data.counts || {};
+      const artifactBytes = (data.artifacts || []).reduce((s, r) => s + Number(r.total_bytes || 0), 0);
+      const artifactFiles = (data.artifacts || []).reduce((s, r) => s + Number(r.artifact_count || 0), 0);
+      const lastSync = (data.sync?.tables || []).map((r) => r.last_received_at).filter(Boolean).sort().pop();
+      const syncRows = (data.sync?.tables || []).slice(-14).map((r) => '<div class="status-row"><span>' + esc(r.table_name) + '</span><strong>' + esc(fmtNum(r.rows_received)) + '</strong></div>').join("");
+      const artifactRows = (data.artifacts || []).map((r) => '<div class="status-row"><span>' + esc(r.artifact_type) + '</span><strong>' + esc(fmtNum(r.artifact_count)) + ' / ' + esc(fmtBytes(r.total_bytes)) + '</strong></div>').join("");
+      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
+        + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
+        + '<section><div class="head"><h3>Sync Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
+    }
+    function reportTable(items) {
+      return table(["Report", "Client", "Level", "Files", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">' + esc(r.keyword || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.level || "") + '</td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><a href="' + reportUrl(r.token) + '" target="_blank">Open</a><br><a href="' + downloadUrl(r.token) + '">XLSX</a></td></tr>'), "No cloud reports synced yet.");
+    }
+    function clientsTable(items) {
+      return table(["Client", "Site", "Keywords", "Runs", "Snapshots", "Targets"], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '</td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td></tr>'));
+    }
+    function runsTable(items) {
+      return table(["Keyword", "Client", "Target", "Imported", "Data"], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td></tr>'));
+    }
+    function jobsTable(items) {
+      return table(["Keyword", "Client", "Tool/Profile", "Status", "Updated"], rows(items).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.project_name || "") + '</td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span><br><span class="muted">' + esc(j.status_message || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>'));
+    }
+    function snapshotsTable(items) {
+      return table(["Target", "Client", "Locale", "Keywords", "Pages", "Created"], rows(items).map((s) => '<tr><td><strong>' + esc(s.target || "") + '</strong><br><span class="muted">' + esc(s.source || "") + ' / ' + esc(s.freshness || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(s.location_code || "") + ' / ' + esc(s.language_code || "") + '</td><td>' + esc(fmtNum(s.keyword_count)) + '</td><td>' + esc(fmtNum(s.page_count)) + '</td><td>' + esc(fmtDate(s.created_at)) + '</td></tr>'));
+    }
+    function targetsTable(items) {
+      return table(["URL", "Client", "Keyword", "Position", "Score", "Status"], rows(items).map((t) => '<tr><td><strong>' + esc(t.url || "") + '</strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_score)) + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>'));
+    }
+    function entitiesView(data) {
+      const batches = table(["Seed", "Client", "Depth", "Progress", "Status"], rows(data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td></tr>'));
+      const runs = table(["Seed", "Provider", "Model", "Status", "Completed"], rows(data.entity_runs || []).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '</td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td></tr>'));
+      const sets = table(["Set", "Client", "Terms", "Updated"], rows(data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td></tr>'));
+      return '<div class="grid2"><section><div class="head"><h3>Entity Batches</h3></div>' + batches + '</section><section><div class="head"><h3>Entity Sets</h3></div>' + sets + '</section></div><section><div class="head"><h3>Model Runs</h3></div>' + runs + '</section>';
+    }
+    function plansTable(items) {
+      return table(["Title", "Client", "Keyword", "Type", "Status", "Due"], rows(items).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.project_name || "") + '</td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span><br><span class="muted">' + esc(p.priority || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>'));
+    }
+    function render() {
+      const data = state.data;
+      if (!data) return;
+      const names = Object.fromEntries(pages);
+      document.getElementById("page-title").textContent = names[state.page] || "Overview";
+      document.getElementById("page-note").textContent = "Synced from local dashboard at " + fmtDate(data.generated_at);
+      const content = {
+        overview: () => overview(data),
+        clients: () => '<section><div class="head"><h3>Clients</h3></div>' + clientsTable(data.clients || []) + '</section>',
+        reports: () => '<section><div class="head"><h3>Cora Reports</h3></div>' + reportTable(data.reports || []) + '</section>',
+        runs: () => '<section><div class="head"><h3>Cora Runs</h3></div>' + runsTable(data.runs || []) + '</section>',
+        jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
+        ranking: () => '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + snapshotsTable(data.snapshots || []) + '</section>',
+        targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
+        entities: () => entitiesView(data),
+        plans: () => '<section><div class="head"><h3>Content Plans</h3></div>' + plansTable(data.content_plans || []) + '</section>'
+      }[state.page] || (() => overview(data));
+      document.getElementById("app").innerHTML = content();
+    }
+    async function load() {
+      const response = await fetch("/api/dashboard/mirror");
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Mirror load failed");
+      state.data = data;
+      render();
+    }
+    renderNav();
+    document.getElementById("refresh").onclick = () => load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
+    document.getElementById("search").oninput = (event) => { state.q = event.target.value || ""; render(); };
+    load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
+    setPage("overview");
+  </script>
+</body>
+</html>`;
+}
+
 async function serveReportArtifact(request, env, token, artifactType) {
   const row = await env.DB.prepare(
     "SELECT * FROM report_artifacts WHERE token = ? AND artifact_type = ? ORDER BY uploaded_at DESC LIMIT 1"
@@ -406,9 +675,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/" && request.method === "GET") return html(cloudDashboardHtml());
+      if (url.pathname === "/" && request.method === "GET") return html(cloudMirrorHtml());
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return handleDashboardData(request, env);
+      if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return handleDashboardMirrorData(request, env);
       const shareDownload = url.pathname.match(/^\/share\/report\/([^/]+)\/download$/);
       if (shareDownload && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);
