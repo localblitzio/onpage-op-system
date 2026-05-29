@@ -187,7 +187,8 @@ async function assertProjectAccess(request, env, projectId) {
 
 async function assertCommandAccess(request, env, commandType, payload) {
   const scope = await accessContext(request, env);
-  if (!scope.write) {
+  const singleUserWrite = await hasReadAccess(request, env);
+  if (!scope.write && !singleUserWrite) {
     const error = new Error("Unauthorized");
     error.status = 401;
     throw error;
@@ -2401,11 +2402,11 @@ function cloudMirrorHtml() {
     const downloadUrl = (token) => reportUrl(token) + "/download";
     const readToken = () => localStorage.getItem("opos_read_token") || localStorage.getItem("opos_admin_token") || "";
     const adminToken = () => localStorage.getItem("opos_admin_token") || "";
-    const canWrite = () => Boolean(adminToken()) || ["write", "admin", "owner"].includes(String(state.data?.user?.role || "").toLowerCase());
+    const canWrite = () => Boolean(readToken()) || ["read", "write", "admin", "owner"].includes(String(state.data?.user?.role || "").toLowerCase());
     const authHeaders = (token) => token ? { "authorization": "Bearer " + token } : {};
     const writeHeaders = () => {
       const headers = { "content-type": "application/json" };
-      const token = adminToken();
+      const token = adminToken() || readToken();
       if (token) headers.authorization = "Bearer " + token;
       return headers;
     };
