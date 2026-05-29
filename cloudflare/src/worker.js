@@ -154,6 +154,59 @@ async function hasAdminAccess(request, env) {
   return ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
 }
 
+async function accessContext(request, env) {
+  const user = await currentUser(request, env);
+  const admin = requireAdminAuth(request, env) || requireSyncAuth(request, env) || ["admin", "owner"].includes(String(user?.role || "").toLowerCase());
+  const write = admin || ["write"].includes(String(user?.role || "").toLowerCase());
+  const clientIds = !admin && Array.isArray(user?.client_ids) && user.client_ids.length ? user.client_ids.map((id) => Number(id)).filter(Boolean) : [];
+  return { user, admin, write, clientIds, scoped: clientIds.length > 0 };
+}
+
+function scopeClause(scope, column) {
+  if (!scope?.scoped) return { sql: "", binds: [] };
+  const placeholders = scope.clientIds.map(() => "?").join(", ");
+  return { sql: `${column} IN (${placeholders})`, binds: scope.clientIds };
+}
+
+function filterScope(rows, scope, column = "project_id") {
+  if (!scope?.scoped) return rows || [];
+  const allowed = new Set(scope.clientIds.map(String));
+  return (rows || []).filter((row) => allowed.has(String(row[column] || "")));
+}
+
+async function assertProjectAccess(request, env, projectId) {
+  const scope = await accessContext(request, env);
+  if (!scope.scoped) return scope;
+  if (!scope.clientIds.map(String).includes(String(projectId || ""))) {
+    const error = new Error("Forbidden: this user is not assigned to this client.");
+    error.status = 403;
+    throw error;
+  }
+  return scope;
+}
+
+async function assertCommandAccess(request, env, commandType, payload) {
+  const scope = await accessContext(request, env);
+  if (!scope.write) {
+    const error = new Error("Unauthorized");
+    error.status = 401;
+    throw error;
+  }
+  if (["sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"].includes(commandType) && !scope.admin) {
+    const error = new Error("Forbidden: sync commands require admin access.");
+    error.status = 403;
+    throw error;
+  }
+  if (!scope.scoped) return scope;
+  const projectId = Number(payload?.project_id || 0);
+  if (!projectId || !scope.clientIds.map(String).includes(String(projectId))) {
+    const error = new Error("Forbidden: this user can only queue commands for assigned clients.");
+    error.status = 403;
+    throw error;
+  }
+  return scope;
+}
+
 const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
 const ENTITY_DEPTH_LIMITS = {
   1: { entities: 10, lsi_terms: 15, related_keywords: 15, questions: 8, topic_clusters: 4 },
@@ -1053,11 +1106,11 @@ async function recordToolUsage(request, env, commandType, payload) {
 }
 
 async function createCommand(request, env) {
-  if (!(await hasAdminAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const payload = await request.json();
   const commandType = String(payload.command_type || "").trim();
   if (!COMMAND_TYPES.has(commandType)) return json({ ok: false, error: "Unsupported command type" }, 400);
   const commandPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
+  await assertCommandAccess(request, env, commandType, commandPayload);
   const executionMode = String(commandPayload.execution_mode || "local").trim().toLowerCase();
   if (commandType === "run_cora" && executionMode === "cloud") return json({ ok: false, error: "Cora is local-only. Use Local bridge mode." }, 400);
   await enforceToolPolicy(request, env, commandType, commandPayload);
@@ -1141,6 +1194,7 @@ function normalizeCommand(row) {
 
 async function listCommands(request, env) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
   const url = new URL(request.url);
   const status = url.searchParams.get("status") || "";
   const limit = Math.min(Number(url.searchParams.get("limit") || 100), 250);
@@ -1150,7 +1204,8 @@ async function listCommands(request, env) {
   } else {
     rows = await env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT ?").bind(limit).all();
   }
-  return json({ ok: true, commands: (rows.results || []).map(normalizeCommand) });
+  const commands = (rows.results || []).map(normalizeCommand).map((command) => ({ ...command, project_id: command.payload?.project_id || command.result?.project?.id || command.result?.snapshot?.project_id || null }));
+  return json({ ok: true, commands: filterScope(commands, scope) });
 }
 
 async function updateCommand(request, env, id) {
@@ -1262,22 +1317,44 @@ async function countTable(env, table) {
   return Number(row?.count || 0);
 }
 
+async function countProjectTable(env, table, scope, column = "project_id") {
+  if (!scope?.scoped) return await countTable(env, table);
+  const clause = scopeClause(scope, column);
+  const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${clause.sql}`).bind(...clause.binds).first();
+  return Number(row?.count || 0);
+}
+
+async function countReportRows(env, scope) {
+  if (!scope?.scoped) return await countTable(env, "share_reports");
+  const clause = scopeClause(scope, "r.project_id");
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM share_reports sr
+     LEFT JOIN runs r ON r.id = sr.run_id
+     WHERE sr.revoked_at IS NULL AND ${clause.sql}`
+  ).bind(...clause.binds).first();
+  return Number(row?.count || 0);
+}
+
 async function handleDashboardData(request, env) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
-  const [user, admin] = await Promise.all([currentUser(request, env), hasAdminAccess(request, env)]);
+  const scope = await accessContext(request, env);
+  const { user, admin } = scope;
   const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
-    countTable(env, "projects"),
-    countTable(env, "keywords"),
-    countTable(env, "runs"),
-    countTable(env, "share_reports"),
-    countTable(env, "ranking_snapshots"),
-    countTable(env, "ranking_optimization_targets"),
+    countProjectTable(env, "projects", scope, "id"),
+    countProjectTable(env, "keywords", scope),
+    countProjectTable(env, "runs", scope),
+    countReportRows(env, scope),
+    countProjectTable(env, "ranking_snapshots", scope),
+    countProjectTable(env, "ranking_optimization_targets", scope),
     env.DB.prepare("SELECT COUNT(*) AS count FROM cloud_commands WHERE status IN ('pending', 'claimed')").first().then((row) => Number(row?.count || 0)),
     bridgeStatus(env),
     artifactStatusData(env),
     syncStatusData(env)
   ]);
+  const reportScope = scopeClause(scope, "r.project_id");
+  const reportWhere = `sr.revoked_at IS NULL${reportScope.sql ? ` AND ${reportScope.sql}` : ""}`;
   const recentReports = await env.DB.prepare(
     `SELECT sr.id, sr.token, sr.run_id, sr.level, sr.title, sr.notes, sr.created_at,
             r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name,
@@ -1295,10 +1372,12 @@ async function handleDashboardData(request, env) {
        FROM report_artifacts
        GROUP BY token
      ) a ON a.token = sr.token
-     WHERE sr.revoked_at IS NULL
+     WHERE ${reportWhere}
      ORDER BY sr.created_at DESC, sr.id DESC
      LIMIT 150`
-  ).all();
+  ).bind(...reportScope.binds).all();
+  const clientScope = scopeClause(scope, "p.id");
+  const clientWhere = clientScope.sql ? `WHERE ${clientScope.sql}` : "";
   const clientRows = await env.DB.prepare(
     `SELECT p.id, p.name, p.client, p.site_domain,
             (SELECT COUNT(*) FROM keywords k WHERE k.project_id = p.id) AS keyword_count,
@@ -1306,9 +1385,10 @@ async function handleDashboardData(request, env) {
             (SELECT COUNT(*) FROM ranking_snapshots rs WHERE rs.project_id = p.id) AS snapshot_count,
             (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.project_id = p.id) AS target_count
      FROM projects p
+     ${clientWhere}
      ORDER BY p.updated_at DESC, p.id DESC
      LIMIT 50`
-  ).all();
+  ).bind(...clientScope.binds).all();
   const adminBundle = admin ? await adminData(env) : null;
   return json({
     ok: true,
@@ -1328,6 +1408,7 @@ async function handleDashboardData(request, env) {
 
 async function handleDashboardMirrorData(request, env) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
   const overview = await handleDashboardData(request, env).then((response) => response.json());
   const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands, audits] = await Promise.all([
     env.DB.prepare(
@@ -1409,18 +1490,19 @@ async function handleDashboardMirrorData(request, env) {
     env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 100").all(),
     recentAuditEvents(env, 120)
   ]);
+  const normalizedCommands = (commands.results || []).map(normalizeCommand);
   return json({
     ...overview,
-    runs: runs.results || [],
-    jobs: jobs.results || [],
-    snapshots: snapshots.results || [],
-    targets: targets.results || [],
-    entity_batches: entityBatches.results || [],
-    entity_runs: entityRuns.results || [],
-    entity_sets: entitySets.results || [],
-    content_plans: contentPlans.results || [],
-    commands: (commands.results || []).map(normalizeCommand),
-    audit_events: audits
+    runs: filterScope(runs.results || [], scope),
+    jobs: filterScope(jobs.results || [], scope),
+    snapshots: filterScope(snapshots.results || [], scope),
+    targets: filterScope(targets.results || [], scope),
+    entity_batches: filterScope(entityBatches.results || [], scope),
+    entity_runs: filterScope(entityRuns.results || [], scope),
+    entity_sets: filterScope(entitySets.results || [], scope),
+    content_plans: filterScope(contentPlans.results || [], scope),
+    commands: filterScope(normalizedCommands.map((command) => ({ ...command, project_id: command.payload?.project_id || command.result?.project?.id || command.result?.snapshot?.project_id || null })), scope),
+    audit_events: scope.scoped ? [] : audits
   });
 }
 
@@ -1437,6 +1519,7 @@ async function handleRunDetail(request, env, id) {
      WHERE r.id = ?`
   ).bind(id).first();
   if (!run) return json({ ok: false, error: "Run not found" }, 404);
+  await assertProjectAccess(request, env, run.project_id);
   const [serp, recommendations, lsi, sheets] = await Promise.all([
     env.DB.prepare("SELECT * FROM serp_results WHERE run_id = ? ORDER BY rank ASC, id ASC LIMIT 200").bind(id).all(),
     env.DB.prepare("SELECT * FROM recommendations WHERE run_id = ? ORDER BY percent DESC, id ASC LIMIT 250").bind(id).all(),
@@ -1472,8 +1555,9 @@ async function handleRunSheetRows(request, env, id) {
   const url = new URL(request.url);
   const sheet = String(url.searchParams.get("sheet") || "").trim();
   if (!sheet) return json({ ok: false, error: "Sheet is required" }, 400);
-  const run = await env.DB.prepare("SELECT id, keyword, target_domain, target_url FROM runs WHERE id = ?").bind(id).first();
+  const run = await env.DB.prepare("SELECT id, project_id, keyword, target_domain, target_url FROM runs WHERE id = ?").bind(id).first();
   if (!run) return json({ ok: false, error: "Run not found" }, 404);
+  await assertProjectAccess(request, env, run.project_id);
   const counts = await Promise.all([
     env.DB.prepare("SELECT COUNT(*) AS count FROM sheet_rows WHERE run_id = ? AND sheet = ?").bind(id, sheet).first(),
     env.DB.prepare("SELECT COUNT(*) AS count FROM workbook_rows WHERE run_id = ? AND sheet = ?").bind(id, sheet).first()
@@ -1512,6 +1596,7 @@ async function handleRankingSnapshotDetail(request, env, id) {
      WHERE rs.id = ?`
   ).bind(id).first();
   if (!snapshot) return json({ ok: false, error: "Ranking snapshot not found" }, 404);
+  await assertProjectAccess(request, env, snapshot.project_id);
   const [keywords, pages, targets] = await Promise.all([
     env.DB.prepare("SELECT * FROM ranking_snapshot_keywords WHERE snapshot_id = ? ORDER BY position ASC, search_volume DESC LIMIT 500").bind(id).all(),
     env.DB.prepare("SELECT * FROM ranking_snapshot_pages WHERE snapshot_id = ? ORDER BY organic_traffic DESC, organic_keywords DESC LIMIT 250").bind(id).all(),
@@ -1540,6 +1625,7 @@ async function handleEntitySetDetail(request, env, id) {
      WHERE es.id = ?`
   ).bind(id).first();
   if (!set) return json({ ok: false, error: "Entity set not found" }, 404);
+  await assertProjectAccess(request, env, set.project_id);
   const terms = await env.DB.prepare(
     "SELECT * FROM entity_set_terms WHERE set_id = ? ORDER BY source_count DESC, type ASC, term ASC LIMIT 500"
   ).bind(id).all();
@@ -1560,6 +1646,7 @@ async function handleEntityRunDetail(request, env, id) {
      WHERE r.id = ?`
   ).bind(id).first();
   if (!run) return json({ ok: false, error: "Entity Explorer run not found" }, 404);
+  await assertProjectAccess(request, env, run.project_id);
   await logAudit(request, env, "entity_run_detail_view", "entity_lsi_run", id, {
     seed_keyword: run.seed_keyword || "",
     provider: run.provider || "",
@@ -1585,6 +1672,7 @@ async function handleEntityRunDetail(request, env, id) {
 
 async function handleClientDetail(request, env, id) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  await assertProjectAccess(request, env, id);
   const client = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
   if (!client) return json({ ok: false, error: "Client not found" }, 404);
   const [keywords, runs, jobs, snapshots, targets, reports, plans, entityBatches, entityRuns, entitySets] = await Promise.all([
@@ -2318,7 +2406,7 @@ function cloudMirrorHtml() {
       const review = pending ? '<section><div class="head"><h3>Review Command</h3><span class="pill ' + (paidLive ? 'warn' : '') + '">' + esc(paidLive ? 'Paid/API review' : 'Not queued yet') + '</span></div><div class="review ' + (paidLive ? 'danger' : '') + '"><strong>' + esc(pending.summary) + '</strong><div class="muted">' + esc(commandRisk(pending.command_type, pending.payload)) + '</div>' + (paidLive ? '<label class="muted"><input id="confirm-paid-command" type="checkbox" style="min-width:auto"> I understand this can use paid API credits.</label>' : '') + '<pre>' + esc(JSON.stringify(pending.payload, null, 2)) + '</pre><div class="toolbar"><button id="confirm-command">Queue Reviewed Command</button><button id="cancel-command" class="secondary">Cancel</button></div></div></section>' : '';
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
-      const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes require the admin/sync token. Dashboard read access is separate and can use READ_TOKEN when configured.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
+      const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
       const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created clients, keywords, plans, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: projects,sites,keywords,content_plans,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
       const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions() + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions() + '</select><input id="cmd-entity-seed" placeholder="Seed keyword"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
@@ -2658,7 +2746,7 @@ export default {
       if (url.pathname === "/api/artifacts/upload" && request.method === "POST") return await handleArtifactUpload(request, env);
       return json({ ok: false, error: "Not found" }, 404);
     } catch (error) {
-      return json({ ok: false, error: error.message || String(error) }, 500);
+      return json({ ok: false, error: error.message || String(error) }, error.status || 500);
     }
   }
 };
