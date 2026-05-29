@@ -208,6 +208,7 @@ async function assertCommandAccess(request, env, commandType, payload) {
 }
 
 const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const RANKING_TARGET_STATUSES = new Set(["new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"]);
 const ENTITY_DEPTH_LIMITS = {
   1: { entities: 10, lsi_terms: 15, related_keywords: 15, questions: 8, topic_clusters: 4 },
   2: { entities: 18, lsi_terms: 25, related_keywords: 25, questions: 12, topic_clusters: 6 },
@@ -1897,6 +1898,37 @@ async function handleRankingSnapshotCompare(request, env) {
   });
 }
 
+async function handleOptimizationTargetStatus(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const ids = Array.isArray(payload.target_ids) ? payload.target_ids.map((id) => Number(id)).filter(Boolean).slice(0, 250) : [];
+  const status = cleanText(payload.status) || "";
+  const projectId = Number(payload.project_id || 0) || null;
+  if (!ids.length) return json({ ok: false, error: "Select at least one optimization target" }, 400);
+  if (!RANKING_TARGET_STATUSES.has(status)) return json({ ok: false, error: "Invalid optimization target status" }, 400);
+  await requireProjectWriteAccess(request, env, projectId);
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = await env.DB.prepare(
+    `SELECT id, project_id FROM ranking_optimization_targets WHERE id IN (${placeholders})`
+  ).bind(...ids).all();
+  const found = rows.results || [];
+  if (found.length !== ids.length) return json({ ok: false, error: "One or more optimization targets were not found" }, 404);
+  const wrongProject = found.some((row) => String(row.project_id || "") !== String(projectId || ""));
+  if (wrongProject) return json({ ok: false, error: "Optimization targets must belong to the selected client" }, 400);
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE ranking_optimization_targets SET status = ?, updated_at = ? WHERE id IN (${placeholders})`
+  ).bind(status, now, ...ids).run();
+  const updated = await env.DB.prepare(
+    `SELECT rot.*, p.name AS project_name
+     FROM ranking_optimization_targets rot
+     LEFT JOIN projects p ON p.id = rot.project_id
+     WHERE rot.id IN (${placeholders})
+     ORDER BY rot.opportunity_score DESC, rot.updated_at DESC`
+  ).bind(...ids).all();
+  await logAudit(request, env, "optimization_target_status", "ranking_optimization_target", ids[0], { count: ids.length, status, project_id: projectId }, "cloud-dashboard");
+  return json({ ok: true, targets: updated.results || [], updated: ids.length });
+}
+
 async function handleEntitySetDetail(request, env, id) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const set = await env.DB.prepare(
@@ -2253,7 +2285,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", rankingComparison: null, detail: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -2399,6 +2431,38 @@ function cloudMirrorHtml() {
     }
     function targetsTable(items) {
       return table(["URL", "Client", "Keyword", "Position", "Score", "Status"], rows(items).map((t) => '<tr><td><strong>' + esc(t.url || "") + '</strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_score)) + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>'));
+    }
+    function targetActionPayload(target, type) {
+      const projectId = Number(target.project_id || 0);
+      if (type === "cora") return { project_id: projectId, keyword: target.keyword || "", target_url: target.url || "", execution_mode: "local" };
+      return {
+        execution_mode: "cloud",
+        project_id: projectId,
+        title: "Optimize ranking page for " + (target.keyword || target.url || "ranking target"),
+        content_type: "Page Update",
+        intent: "SEO Optimization",
+        priority: "High",
+        status: "planned",
+        notes: ["Ranking URL: " + (target.url || ""), "Current position: " + (target.best_position || ""), "Recommended action: " + (target.recommended_action || "")].filter(Boolean).join("\\n")
+      };
+    }
+    function targetsView(data) {
+      const targets = data.targets || [];
+      const clients = [...new Map(targets.map((target) => [String(target.project_id || ""), target.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const filtered = targets.filter((target) => (state.targetClient === "all" || String(target.project_id || "") === state.targetClient) && (state.targetStatus === "all" || String(target.status || "new") === state.targetStatus));
+      const selectedCount = filtered.filter((target) => state.targetSelection[String(target.id)]).length;
+      const statuses = ["all", "new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"];
+      const statusOptions = statuses.map((status) => '<option value="' + esc(status) + '"' + (state.targetStatus === status ? ' selected' : '') + '>' + esc(status === "all" ? "All statuses" : status.replaceAll("_", " ")) + '</option>').join("");
+      const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.targetClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
+      const rowsHtml = filtered.map((t) => '<tr><td><input class="target-check" type="checkbox" data-target-id="' + esc(t.id) + '" ' + (state.targetSelection[String(t.id)] ? "checked" : "") + '></td><td><strong><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_count)) + '</td><td>' + esc(fmtNum(t.total_search_volume)) + '</td><td><span class="pill">' + esc(fmtNum(t.opportunity_score)) + '</span><br><span class="muted">' + esc(t.priority_type || "") + '</span></td><td><span class="pill">' + esc(t.status || "new") + '</span></td><td><button class="target-action mini-btn" data-target-id="' + esc(t.id) + '" data-action="cora">Review Cora</button><button class="target-action mini-btn" data-target-id="' + esc(t.id) + '" data-action="plan">Review Plan</button></td></tr>');
+      const selectedProjectIds = [...new Set(filtered.filter((target) => state.targetSelection[String(target.id)]).map((target) => String(target.project_id || "")).filter(Boolean))];
+      const canBulkStatus = selectedCount > 0 && selectedProjectIds.length === 1;
+      const toolbar = '<div class="filters"><select id="target-client-filter">' + clientOptions + '</select><select id="target-status-filter">' + statusOptions + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(targets.length) + ' targets</span></div>'
+        + '<div class="toolbar"><button id="target-select-visible" class="secondary">Select Visible</button><button id="target-clear-selected" class="secondary">Clear</button><select id="target-bulk-status"><option value="selected">Selected</option><option value="in_cora">In Cora</option><option value="in_entity_explorer">In Entity Explorer</option><option value="content_plan_created">Content Plan Created</option><option value="optimized">Optimized</option><option value="archived">Archived</option></select><button id="target-update-status" ' + (canBulkStatus ? "" : "disabled") + '>Update Status</button></div>'
+        + (selectedCount && selectedProjectIds.length > 1 ? '<div class="empty warn">Select targets from one client at a time before updating status.</div>' : '');
+      setTimeout(bindTargetControls, 0);
+      return cards([["Optimization Targets", targets.length],["Visible", filtered.length],["Selected", selectedCount],["Clients", clients.length]])
+        + '<section><div class="head"><h3>Optimization Targets</h3><span class="muted">Saved ranking pages that need optimization work.</span></div>' + toolbar + detailTable(["","URL","Client","Keyword","Best Pos","Opps","Volume","Score","Status","Actions"], rowsHtml, "No optimization targets match the current filters.") + '</section>';
     }
     function entityBatchStatusClass(status) {
       return status === "complete" ? "ok" : status === "failed" || status === "partial" ? "warn" : "";
@@ -2569,6 +2633,55 @@ function cloudMirrorHtml() {
           button.textContent = "Compare";
         }
       };
+    }
+    function selectedTargets() {
+      const selected = state.targetSelection || {};
+      return (state.data?.targets || []).filter((target) => selected[String(target.id)]);
+    }
+    function bindTargetControls() {
+      const client = document.getElementById("target-client-filter");
+      const status = document.getElementById("target-status-filter");
+      if (client) client.onchange = (event) => { state.targetClient = event.target.value || "all"; state.targetSelection = {}; render(); };
+      if (status) status.onchange = (event) => { state.targetStatus = event.target.value || "all"; state.targetSelection = {}; render(); };
+      document.querySelectorAll(".target-check").forEach((box) => {
+        box.onchange = () => {
+          state.targetSelection[String(box.dataset.targetId)] = box.checked;
+          render();
+        };
+      });
+      document.getElementById("target-select-visible")?.addEventListener("click", () => {
+        (state.data?.targets || []).filter((target) => (state.targetClient === "all" || String(target.project_id || "") === state.targetClient) && (state.targetStatus === "all" || String(target.status || "new") === state.targetStatus)).forEach((target) => { state.targetSelection[String(target.id)] = true; });
+        render();
+      });
+      document.getElementById("target-clear-selected")?.addEventListener("click", () => { state.targetSelection = {}; render(); });
+      document.getElementById("target-update-status")?.addEventListener("click", () => updateTargetStatus().catch((error) => alert(error.message || error)));
+      document.querySelectorAll(".target-action").forEach((button) => {
+        button.onclick = () => {
+          const target = (state.data?.targets || []).find((item) => String(item.id) === String(button.dataset.targetId));
+          if (!target) return;
+          if (button.dataset.action === "cora") {
+            setPage("commands");
+            setPendingCommand("run_cora", targetActionPayload(target, "cora"));
+          } else {
+            setPage("commands");
+            setPendingCommand("create_content_plan", targetActionPayload(target, "plan"));
+          }
+        };
+      });
+    }
+    async function updateTargetStatus() {
+      const targets = selectedTargets();
+      if (!targets.length) throw new Error("Select at least one optimization target.");
+      const projectIds = [...new Set(targets.map((target) => String(target.project_id || "")).filter(Boolean))];
+      if (projectIds.length !== 1) throw new Error("Select targets from one client at a time.");
+      const response = await fetch("/api/optimization-targets/status", {
+        method: "POST",
+        headers: writeHeaders(),
+        body: JSON.stringify({ target_ids: targets.map((target) => target.id), project_id: Number(projectIds[0]), status: document.getElementById("target-bulk-status")?.value || "selected" })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Target status update failed");
+      await load();
     }
     function bindEntityPageControls() {
       document.querySelectorAll(".entity-page-link").forEach((button) => {
@@ -3047,7 +3160,7 @@ function cloudMirrorHtml() {
         jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
         "cora-profiles": () => coraProfilesView(data),
         ranking: () => rankingView(data),
-        targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
+        targets: () => targetsView(data),
         entities: () => entityExplorerView(data),
         "entity-crossover": () => entityCrossoverView(data),
         "entity-sets": () => entitySetsView(data),
@@ -3060,6 +3173,7 @@ function cloudMirrorHtml() {
       setTimeout(bindReportControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);
+      if (state.page === "targets") setTimeout(bindTargetControls, 0);
       if (state.page === "audit") setTimeout(bindAuditFilters, 0);
       if (state.page === "admin") setTimeout(bindAdminForms, 0);
     }
@@ -3250,6 +3364,7 @@ export default {
       const runSheetRowsRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/sheet-rows$/);
       if (runSheetRowsRoute && request.method === "GET") return await handleRunSheetRows(request, env, Number(runSheetRowsRoute[1]));
       if (url.pathname === "/api/ranking-snapshots/compare" && request.method === "GET") return await handleRankingSnapshotCompare(request, env);
+      if (url.pathname === "/api/optimization-targets/status" && request.method === "POST") return await handleOptimizationTargetStatus(request, env);
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
       if (rankingSnapshotDetailRoute && request.method === "GET") return await handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
       const entityBatchDetailRoute = url.pathname.match(/^\/api\/entity-batches\/(\d+)\/detail$/);
