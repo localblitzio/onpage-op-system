@@ -584,7 +584,20 @@ async function handleRunDetail(request, env, id) {
     env.DB.prepare("SELECT * FROM serp_results WHERE run_id = ? ORDER BY rank ASC, id ASC LIMIT 200").bind(id).all(),
     env.DB.prepare("SELECT * FROM recommendations WHERE run_id = ? ORDER BY percent DESC, id ASC LIMIT 250").bind(id).all(),
     env.DB.prepare("SELECT * FROM lsi_keywords WHERE run_id = ? ORDER BY best_of_both DESC, id ASC LIMIT 250").bind(id).all(),
-    env.DB.prepare("SELECT sheet, COUNT(*) AS row_count FROM sheet_rows WHERE run_id = ? GROUP BY sheet ORDER BY sheet LIMIT 50").bind(id).all()
+    env.DB.prepare(
+      `SELECT sheet,
+              SUM(sheet_count) AS sheet_rows,
+              SUM(workbook_count) AS workbook_rows,
+              SUM(sheet_count + workbook_count) AS row_count
+       FROM (
+         SELECT sheet, COUNT(*) AS sheet_count, 0 AS workbook_count FROM sheet_rows WHERE run_id = ? GROUP BY sheet
+         UNION ALL
+         SELECT sheet, 0 AS sheet_count, COUNT(*) AS workbook_count FROM workbook_rows WHERE run_id = ? GROUP BY sheet
+       )
+       GROUP BY sheet
+       ORDER BY sheet
+       LIMIT 80`
+    ).bind(id, id).all()
   ]);
   await logAudit(request, env, "run_detail_view", "run", id, { keyword: run.keyword || "" }, "cloud-dashboard");
   return json({
@@ -594,6 +607,42 @@ async function handleRunDetail(request, env, id) {
     recommendations: recommendations.results || [],
     lsi_keywords: lsi.results || [],
     sheets: sheets.results || []
+  });
+}
+
+async function handleRunSheetRows(request, env, id) {
+  if (!requireReadAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const url = new URL(request.url);
+  const sheet = String(url.searchParams.get("sheet") || "").trim();
+  if (!sheet) return json({ ok: false, error: "Sheet is required" }, 400);
+  const run = await env.DB.prepare("SELECT id, keyword, target_domain, target_url FROM runs WHERE id = ?").bind(id).first();
+  if (!run) return json({ ok: false, error: "Run not found" }, 404);
+  const counts = await Promise.all([
+    env.DB.prepare("SELECT COUNT(*) AS count FROM sheet_rows WHERE run_id = ? AND sheet = ?").bind(id, sheet).first(),
+    env.DB.prepare("SELECT COUNT(*) AS count FROM workbook_rows WHERE run_id = ? AND sheet = ?").bind(id, sheet).first()
+  ]);
+  const requestedSource = String(url.searchParams.get("source") || "").trim();
+  const sheetCount = Number(counts[0]?.count || 0);
+  const workbookCount = Number(counts[1]?.count || 0);
+  const source = requestedSource === "workbook_rows" || requestedSource === "sheet_rows"
+    ? requestedSource
+    : sheetCount ? "sheet_rows" : "workbook_rows";
+  const table = source === "workbook_rows" ? "workbook_rows" : "sheet_rows";
+  const limit = Math.min(Math.max(Number(url.searchParams.get("limit") || 250), 1), 500);
+  const offset = Math.max(Number(url.searchParams.get("offset") || 0), 0);
+  const rows = await env.DB.prepare(
+    `SELECT id, row_index, row_json FROM ${table} WHERE run_id = ? AND sheet = ? ORDER BY row_index ASC, id ASC LIMIT ? OFFSET ?`
+  ).bind(id, sheet, limit, offset).all();
+  await logAudit(request, env, "run_sheet_view", "run", id, { sheet, source }, "cloud-dashboard");
+  return json({
+    ok: true,
+    run,
+    sheet,
+    source,
+    counts: { sheet_rows: sheetCount, workbook_rows: workbookCount },
+    limit,
+    offset,
+    rows: (rows.results || []).map((row) => ({ ...row, values: parseJsonField(row.row_json, row.row_json), row_json: undefined }))
   });
 }
 
@@ -1079,6 +1128,13 @@ function cloudMirrorHtml() {
       state.detail = { type, id, data: await apiGet(paths[type]) };
       render();
     }
+    async function openSheetDetail(runId, sheet, source) {
+      state.detail = { type: "sheet", loading: true, id: runId + ":" + sheet };
+      render();
+      const query = "?sheet=" + encodeURIComponent(sheet) + (source ? "&source=" + encodeURIComponent(source) : "");
+      state.detail = { type: "sheet", id: runId + ":" + sheet, data: await apiGet("/api/runs/" + encodeURIComponent(runId) + "/sheet-rows" + query) };
+      render();
+    }
     function smallCards(items) {
       return '<div class="detail-grid">' + items.map(([label, value]) => '<div class="card"><strong>' + esc(value) + '</strong><span>' + esc(label) + '</span></div>').join("") + '</div>';
     }
@@ -1090,10 +1146,13 @@ function cloudMirrorHtml() {
       const recs = data.recommendations || [];
       const serp = data.serp_results || [];
       const lsi = data.lsi_keywords || [];
+      const sheets = data.sheets || [];
       const recRows = recs.map((r) => '<tr><td><strong>' + esc(r.factor || "") + '</strong><br><span class="muted">' + esc(r.factor_id || "") + '</span></td><td><span class="pill">' + esc(r.status || "") + '</span></td><td>' + esc(r.recommendation || "") + '<br><span class="muted">' + esc(r.details || "") + '</span></td><td>' + esc(r.percent || "") + '</td><td>' + esc(r.pages || "") + '</td></tr>');
       const serpRows = serp.map((r) => '<tr><td>' + esc(r.rank || "") + '</td><td>' + esc(r.title || "") + '</td><td><a href="' + esc(r.url || "") + '" target="_blank">' + esc(r.host || r.url || "") + '</a></td><td>' + (r.is_target ? '<span class="pill ok">Target</span>' : '') + '</td></tr>');
       const lsiRows = lsi.map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong></td><td>' + esc(r.spearman || "") + '</td><td>' + esc(r.pearson || "") + '</td><td>' + esc(r.best_of_both || "") + '</td><td>' + esc(r.deficit || "") + '</td></tr>');
+      const sheetRows = sheets.map((s) => '<tr><td><strong>' + esc(s.sheet || "") + '</strong></td><td>' + esc(fmtNum(s.sheet_rows || 0)) + '</td><td>' + esc(fmtNum(s.workbook_rows || 0)) + '</td><td>' + esc(fmtNum(s.row_count || 0)) + '</td><td><button class="detail-btn sheet-btn" data-run-id="' + esc(run.id) + '" data-sheet="' + esc(s.sheet || "") + '">Open Rows</button></td></tr>');
       return smallCards([["Keyword", run.keyword || ""],["Client", run.project_name || ""],["Target", run.target_domain || run.target_url || ""],["Recommendations", recs.length],["SERP Results", serp.length],["LSI Keywords", lsi.length]])
+        + '<section><div class="head"><h3>Worksheet Rows</h3><span class="muted">Uses synced sheet rows; raw workbook rows appear when enabled.</span></div>' + detailTable(["Sheet","Sheet Rows","Workbook Rows","Total",""], sheetRows, "No worksheet rows synced for this run.") + '</section>'
         + '<section><div class="head"><h3>Recommendations</h3></div>' + detailTable(["Factor","Status","Recommendation","Percent","Pages"], recRows, "No recommendations synced for this run.") + '</section>'
         + '<section><div class="head"><h3>SERP Results</h3></div>' + detailTable(["Rank","Title","URL","Target"], serpRows, "No SERP rows synced for this run.") + '</section>'
         + '<section><div class="head"><h3>LSI Keywords</h3></div>' + detailTable(["Keyword","Spearman","Pearson","Best","Deficit"], lsiRows, "No LSI rows synced for this run.") + '</section>';
@@ -1143,6 +1202,24 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Topics</h3></div>' + listItemsTable(run.topics, "topics") + '</section>'
         + '<section><div class="head"><h3>Raw Response Preview</h3></div><div class="empty"><pre>' + esc(rawPreview || "No raw response synced.") + '</pre></div></section>';
     }
+    function sheetDetail(data) {
+      const rowsData = data.rows || [];
+      const objectRows = rowsData.map((row) => row.values).filter((value) => value && typeof value === "object" && !Array.isArray(value));
+      const columns = objectRows.length ? [...new Set(objectRows.flatMap((value) => Object.keys(value)))].slice(0, 12) : [];
+      const body = rowsData.map((row) => {
+        const values = row.values;
+        if (columns.length && values && typeof values === "object" && !Array.isArray(values)) {
+          return '<tr><td>' + esc(row.row_index) + '</td>' + columns.map((key) => '<td>' + esc(values[key] ?? "") + '</td>').join("") + '<td><span class="muted">' + esc(JSON.stringify(values)) + '</span></td></tr>';
+        }
+        if (Array.isArray(values)) {
+          return '<tr><td>' + esc(row.row_index) + '</td><td colspan="' + Math.max(columns.length, 1) + '">' + esc(values.join(" | ")) + '</td><td><span class="muted">' + esc(JSON.stringify(values)) + '</span></td></tr>';
+        }
+        return '<tr><td>' + esc(row.row_index) + '</td><td colspan="' + Math.max(columns.length, 1) + '">' + esc(values) + '</td><td><span class="muted">' + esc(JSON.stringify(values)) + '</span></td></tr>';
+      });
+      const headers = ["Row"].concat(columns.length ? columns : ["Value"]).concat(["Raw"]);
+      return smallCards([["Run", data.run?.keyword || data.run?.id || ""],["Sheet", data.sheet || ""],["Source", data.source || ""],["Sheet Rows", fmtNum(data.counts?.sheet_rows || 0)],["Workbook Rows", fmtNum(data.counts?.workbook_rows || 0)],["Displayed", rowsData.length]])
+        + '<section><div class="head"><h3>Worksheet Rows</h3><span class="muted">Showing up to ' + esc(data.limit || "") + ' rows.</span></div>' + detailTable(headers, body, "No rows found for this worksheet.") + '</section>';
+    }
     function clientDetail(data) {
       const client = data.client || {};
       const keywordRows = (data.keywords || []).map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong></td><td>' + esc(k.intent || "") + '</td><td>' + esc(k.priority || "") + '</td><td>' + esc(fmtDate(k.created_at)) + '</td></tr>');
@@ -1171,8 +1248,8 @@ function cloudMirrorHtml() {
       const detail = state.detail;
       if (!detail) return "";
       if (detail.loading) return '<section class="detail-panel"><div class="head"><h3>Loading Details</h3><button class="close-detail">Close</button></div><div class="empty">Loading detail data...</div></section>';
-      const renderers = { client: clientDetail, run: runDetail, snapshot: snapshotDetail, "entity-run": entityRunDetail, "entity-set": entitySetDetail };
-      const title = detail.type === "client" ? "Client Workspace" : detail.type === "run" ? "Cora Run Detail" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : detail.type === "entity-run" ? "Entity Explorer Run Detail" : "Entity Set Detail";
+      const renderers = { client: clientDetail, run: runDetail, sheet: sheetDetail, snapshot: snapshotDetail, "entity-run": entityRunDetail, "entity-set": entitySetDetail };
+      const title = detail.type === "client" ? "Client Workspace" : detail.type === "run" ? "Cora Run Detail" : detail.type === "sheet" ? "Worksheet Rows" : detail.type === "snapshot" ? "Ranking Snapshot Detail" : detail.type === "entity-run" ? "Entity Explorer Run Detail" : "Entity Set Detail";
       return '<section class="detail-panel"><div class="head"><h3>' + esc(title) + '</h3><button class="close-detail">Close</button></div>' + (renderers[detail.type] ? renderers[detail.type](detail.data || {}) : '<div class="empty">Unsupported detail type.</div>') + '</section>';
     }
     function commandSummary(command_type, payload) {
@@ -1263,8 +1340,15 @@ function cloudMirrorHtml() {
     }
     function bindDetailControls() {
       document.querySelectorAll(".detail-btn").forEach((button) => {
+        if (button.classList.contains("sheet-btn")) return;
         button.onclick = () => openDetail(button.dataset.detailType, button.dataset.detailId).catch((error) => {
           state.detail = { type: button.dataset.detailType, id: button.dataset.detailId, data: null };
+          document.getElementById("app").insertAdjacentHTML("beforeend", '<div class="empty warn">' + esc(error.message || error) + '</div>');
+        });
+      });
+      document.querySelectorAll(".sheet-btn").forEach((button) => {
+        button.onclick = () => openSheetDetail(button.dataset.runId, button.dataset.sheet, button.dataset.source || "").catch((error) => {
+          state.detail = { type: "sheet", id: button.dataset.runId + ":" + button.dataset.sheet, data: null };
           document.getElementById("app").insertAdjacentHTML("beforeend", '<div class="empty warn">' + esc(error.message || error) + '</div>');
         });
       });
@@ -1451,6 +1535,8 @@ export default {
       if (clientDetailRoute && request.method === "GET") return handleClientDetail(request, env, Number(clientDetailRoute[1]));
       const runDetailRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/detail$/);
       if (runDetailRoute && request.method === "GET") return handleRunDetail(request, env, Number(runDetailRoute[1]));
+      const runSheetRowsRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/sheet-rows$/);
+      if (runSheetRowsRoute && request.method === "GET") return handleRunSheetRows(request, env, Number(runSheetRowsRoute[1]));
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
       if (rankingSnapshotDetailRoute && request.method === "GET") return handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
       const entityRunDetailRoute = url.pathname.match(/^\/api\/entity-runs\/(\d+)\/detail$/);

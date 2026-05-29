@@ -9,6 +9,7 @@
 - Cloud mirror drilldowns exist for Cora runs, ranking snapshots, and entity sets.
 - Client workspace drilldowns tie together keywords, runs, reports, snapshots, targets, jobs, content plans, and entity activity.
 - Entity Explorer run drilldowns expose parsed entities, LSI keywords, related keywords, questions, topics, summary, errors, and raw response preview.
+- Cora run drilldowns include worksheet row exploration for synced `sheet_rows` and optional `workbook_rows`.
 
 ## Report Portal
 
@@ -24,7 +25,8 @@
 - Entity Set drilldowns expose selected terms and source metadata.
 - Entity Explorer run drilldowns expose each model's parsed extraction payload.
 - Client workspaces expose each client's synced operational data in one place.
-- Remaining parity work: workbook row exploration, local UI structure matching, and broader cloud actions.
+- Worksheet row exploration exposes synced Cora sheet data from run drilldowns.
+- Remaining parity work: local UI structure matching and broader cloud actions.
 
 ## User And Admin Management
 
