@@ -886,6 +886,86 @@ def update_cloudflare_command(command_id: int, status: str, result: dict[str, An
     )
 
 
+def find_existing_project(name: str, site_domain: str | None = None) -> dict[str, Any] | None:
+    domain = domain_from_url(site_domain or "") if site_domain else None
+    with connect() as con:
+        row = con.execute("SELECT * FROM projects WHERE lower(name) = lower(?) ORDER BY id LIMIT 1", (name.strip(),)).fetchone()
+        if row:
+            return row_to_dict(row)
+        if domain:
+            row = con.execute(
+                """
+                SELECT p.*
+                FROM projects p
+                JOIN sites s ON s.project_id = p.id
+                WHERE lower(s.domain) = lower(?)
+                ORDER BY p.id
+                LIMIT 1
+                """,
+                (domain,),
+            ).fetchone()
+            return row_to_dict(row)
+    return None
+
+
+def find_existing_keyword(project_id: int, keyword: str) -> dict[str, Any] | None:
+    with connect() as con:
+        return row_to_dict(
+            con.execute(
+                "SELECT * FROM keywords WHERE project_id = ? AND lower(keyword) = lower(?) ORDER BY id LIMIT 1",
+                (project_id, keyword.strip()),
+            ).fetchone()
+        )
+
+
+def find_existing_content_plan(project_id: int, title: str) -> dict[str, Any] | None:
+    with connect() as con:
+        return row_to_dict(
+            con.execute(
+                "SELECT * FROM content_plans WHERE project_id = ? AND lower(title) = lower(?) ORDER BY id LIMIT 1",
+                (project_id, title.strip()),
+            ).fetchone()
+        )
+
+
+def find_existing_share_report(run_id: int, level: str, title: str | None = None) -> dict[str, Any] | None:
+    with connect() as con:
+        if clean_text(title):
+            row = con.execute(
+                """
+                SELECT * FROM share_reports
+                WHERE run_id = ? AND level = ? AND lower(COALESCE(title, '')) = lower(?)
+                  AND revoked_at IS NULL
+                ORDER BY id LIMIT 1
+                """,
+                (run_id, level, clean_text(title)),
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT * FROM share_reports WHERE run_id = ? AND level = ? AND revoked_at IS NULL ORDER BY id LIMIT 1",
+                (run_id, level),
+            ).fetchone()
+        return row_to_dict(row)
+
+
+def find_existing_pending_job(project_id: int | None, keyword: str, target_url: str) -> dict[str, Any] | None:
+    target_domain = domain_from_url(target_url)
+    with connect() as con:
+        return row_to_dict(
+            con.execute(
+                """
+                SELECT * FROM managed_jobs
+                WHERE COALESCE(project_id, 0) = COALESCE(?, 0)
+                  AND lower(keyword) = lower(?)
+                  AND lower(target_domain) = lower(?)
+                  AND status IN ('queued', 'running', 'waiting', 'submitted')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (project_id, keyword.strip(), target_domain or ""),
+            ).fetchone()
+        )
+
+
 def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
     command_type = command.get("command_type") or ""
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
@@ -896,30 +976,40 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
     artifact_report_ids: list[int] = []
     result: dict[str, Any] = {"command_type": command_type}
     if command_type == "create_project":
-        project = create_project(
-            clean_text(payload.get("name")) or "",
+        name = clean_text(payload.get("name")) or ""
+        existing = find_existing_project(name, payload.get("site_domain"))
+        project = existing or create_project(
+            name,
             client=payload.get("client"),
             site_domain=payload.get("site_domain"),
             notes=payload.get("notes"),
             profile_name=payload.get("profile_name"),
         )
+        result["duplicate"] = bool(existing)
         result["project"] = project
         changed_tables.update({"profiles", "projects", "sites"})
     elif command_type == "add_keyword":
-        keyword = create_keyword(
-            int(payload.get("project_id") or 0),
-            clean_text(payload.get("keyword")) or "",
+        project_id = int(payload.get("project_id") or 0)
+        keyword_text = clean_text(payload.get("keyword")) or ""
+        existing = find_existing_keyword(project_id, keyword_text)
+        keyword = existing or create_keyword(
+            project_id,
+            keyword_text,
             int(payload["site_id"]) if payload.get("site_id") else None,
             int(payload["page_id"]) if payload.get("page_id") else None,
             payload.get("intent"),
             payload.get("priority"),
         )
+        result["duplicate"] = bool(existing)
         result["keyword"] = keyword
         changed_tables.add("keywords")
     elif command_type == "create_content_plan":
-        plan = create_content_plan(
-            int(payload.get("project_id") or 0),
-            clean_text(payload.get("title")) or "",
+        project_id = int(payload.get("project_id") or 0)
+        title = clean_text(payload.get("title")) or ""
+        existing = find_existing_content_plan(project_id, title)
+        plan = existing or create_content_plan(
+            project_id,
+            title,
             int(payload["site_id"]) if payload.get("site_id") else None,
             int(payload["page_id"]) if payload.get("page_id") else None,
             int(payload["keyword_id"]) if payload.get("keyword_id") else None,
@@ -930,18 +1020,23 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
             payload.get("due_date"),
             payload.get("notes"),
         )
+        result["duplicate"] = bool(existing)
         result["content_plan"] = plan
         changed_tables.add("content_plans")
     elif command_type == "create_share_report":
-        report = create_share_report(
-            int(payload.get("run_id") or 0),
-            payload.get("level") or "medium",
+        run_id = int(payload.get("run_id") or 0)
+        level = payload.get("level") or "medium"
+        existing = find_existing_share_report(run_id, level, payload.get("title"))
+        report = existing or create_share_report(
+            run_id,
+            level,
             payload.get("title"),
             payload.get("notes"),
             int(payload["ranking_snapshot_id"]) if payload.get("ranking_snapshot_id") else None,
             [int(value) for value in payload.get("optimization_target_ids", []) if value] if isinstance(payload.get("optimization_target_ids"), list) else [],
             int(payload["entity_set_id"]) if payload.get("entity_set_id") else None,
         )
+        result["duplicate"] = bool(existing)
         result["report"] = report
         changed_tables.add("share_reports")
         artifact_report_ids.append(int(report["id"]))
@@ -950,10 +1045,11 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         keyword_text = clean_text(payload.get("keyword")) or ""
         keyword_id = int(payload["keyword_id"]) if payload.get("keyword_id") else None
         if project_id and keyword_text and not keyword_id:
-            keyword_row = create_keyword(project_id, keyword_text)
+            keyword_row = find_existing_keyword(project_id, keyword_text) or create_keyword(project_id, keyword_text)
             keyword_id = int(keyword_row["id"])
             changed_tables.add("keywords")
-        job = create_managed_job(
+        existing = find_existing_pending_job(project_id, keyword_text, clean_text(payload.get("target_url")) or "")
+        job = existing or create_managed_job(
             keyword_text,
             clean_text(payload.get("target_url")) or "",
             payload.get("cora_profile"),
@@ -961,6 +1057,7 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
             keyword_id=keyword_id,
             tool="cora",
         )
+        result["duplicate"] = bool(existing)
         result["job"] = job
         changed_tables.add("managed_jobs")
     else:

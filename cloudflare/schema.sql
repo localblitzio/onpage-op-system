@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS report_artifacts (
 
 CREATE TABLE IF NOT EXISTS cloud_commands (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  command_key TEXT UNIQUE,
   command_type TEXT NOT NULL,
   payload_json TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',
@@ -286,6 +287,7 @@ CREATE TABLE IF NOT EXISTS ranking_optimization_targets (
 CREATE INDEX IF NOT EXISTS idx_sync_batches_table ON sync_batches(table_name, received_at);
 CREATE INDEX IF NOT EXISTS idx_report_artifacts_token ON report_artifacts(token, artifact_type);
 CREATE INDEX IF NOT EXISTS idx_cloud_commands_status ON cloud_commands(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_cloud_commands_key ON cloud_commands(command_key);
 CREATE INDEX IF NOT EXISTS idx_bridge_heartbeats_seen ON bridge_heartbeats(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);

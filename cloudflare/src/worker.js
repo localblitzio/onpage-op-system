@@ -70,6 +70,20 @@ function requireAdminAuth(request, env) {
 
 const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora"]);
 
+async function sha256Hex(value) {
+  const bytes = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function decodeBase64(value) {
   const binary = atob(String(value || ""));
   const bytes = new Uint8Array(binary.length);
@@ -203,10 +217,15 @@ async function createCommand(request, env) {
   const commandType = String(payload.command_type || "").trim();
   if (!COMMAND_TYPES.has(commandType)) return json({ ok: false, error: "Unsupported command type" }, 400);
   const commandPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : {};
+  const commandKey = String(payload.command_key || "").trim() || await sha256Hex(`${commandType}:${stableStringify(commandPayload)}`);
   const now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT * FROM cloud_commands WHERE command_key = ?").bind(commandKey).first();
+  if (existing && !payload.force_duplicate) {
+    return json({ ok: true, duplicate: true, command: normalizeCommand(existing) }, 200);
+  }
   const result = await env.DB.prepare(
-    "INSERT INTO cloud_commands (command_type, payload_json, status, created_by, created_at) VALUES (?, ?, 'pending', ?, ?)"
-  ).bind(commandType, JSON.stringify(commandPayload), String(payload.created_by || "cloud-dashboard"), now).run();
+    "INSERT INTO cloud_commands (command_key, command_type, payload_json, status, created_by, created_at) VALUES (?, ?, ?, 'pending', ?, ?)"
+  ).bind(commandKey, commandType, JSON.stringify(commandPayload), String(payload.created_by || "cloud-dashboard"), now).run();
   const command = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(result.meta.last_row_id).first();
   return json({ ok: true, command: normalizeCommand(command) }, 201);
 }
@@ -242,12 +261,12 @@ async function updateCommand(request, env, id) {
   const now = new Date().toISOString();
   if (status === "claimed") {
     await env.DB.prepare("UPDATE cloud_commands SET status = 'claimed', claimed_at = COALESCE(claimed_at, ?) WHERE id = ?").bind(now, id).run();
+  } else if (status === "pending") {
+    await env.DB.prepare("UPDATE cloud_commands SET status = 'pending', claimed_at = NULL, completed_at = NULL, result_json = NULL, error = NULL WHERE id = ?").bind(id).run();
   } else if (status === "complete" || status === "failed") {
     await env.DB.prepare(
       "UPDATE cloud_commands SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE id = ?"
     ).bind(status, payload.result ? JSON.stringify(payload.result) : null, payload.error ? String(payload.error).slice(0, 2000) : null, now, id).run();
-  } else {
-    await env.DB.prepare("UPDATE cloud_commands SET status = 'pending', claimed_at = NULL, completed_at = NULL, error = NULL WHERE id = ?").bind(id).run();
   }
   const row = await env.DB.prepare("SELECT * FROM cloud_commands WHERE id = ?").bind(id).first();
   return json({ ok: true, command: normalizeCommand(row) });
@@ -740,7 +759,7 @@ function cloudMirrorHtml() {
       return (state.data?.runs || []).map((r) => '<option value="' + esc(r.id) + '">' + esc((r.keyword || "Run") + " | " + (r.project_name || "")) + '</option>').join("");
     }
     function commandsTable(items) {
-      return table(["Command", "Status", "Created", "Result"], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(fmtDate(c.created_at)) + '</td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td></tr>'), "No cloud commands yet.");
+      return table(["Command", "Status", "Created", "Result", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.command_type || "") + '</strong><br><span class="muted">' + esc(JSON.stringify(c.payload || {})) + '</span></td><td><span class="pill">' + esc(c.status || "") + '</span><br><span class="muted">' + esc(c.error || "") + '</span></td><td>' + esc(fmtDate(c.created_at)) + '</td><td><span class="muted">' + esc(c.result ? JSON.stringify(c.result) : "") + '</span></td><td>' + (c.status === "failed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Retry</button>' : '') + (c.status === "claimed" ? '<button class="retry-command" data-command-id="' + esc(c.id) + '">Reset</button>' : '') + '</td></tr>'), "No cloud commands yet.");
     }
     async function createCommand(command_type, payload) {
       const token = localStorage.getItem("opos_admin_token") || "";
@@ -752,6 +771,19 @@ function cloudMirrorHtml() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Command failed");
+      await load();
+      if (data.duplicate) alert("Matching command already exists; not queued again.");
+    }
+    async function retryCommand(id) {
+      const token = localStorage.getItem("opos_admin_token") || "";
+      if (!token) throw new Error("Unlock cloud writes first.");
+      const response = await fetch("/api/commands/" + encodeURIComponent(id), {
+        method: "POST",
+        headers: { "content-type": "application/json", "authorization": "Bearer " + token },
+        body: JSON.stringify({ status: "pending" })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Retry failed");
       await load();
     }
     function commandsView(data) {
@@ -775,6 +807,7 @@ function cloudMirrorHtml() {
       byId("cmd-content-plan")?.addEventListener("click", () => createCommand("create_content_plan", { project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }).catch((e) => alert(e.message)));
       byId("cmd-share-report")?.addEventListener("click", () => createCommand("create_share_report", { run_id: Number(byId("cmd-report-run").value), level: byId("cmd-report-level").value, title: byId("cmd-report-title").value }).catch((e) => alert(e.message)));
       byId("cmd-run-cora")?.addEventListener("click", () => createCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }).catch((e) => alert(e.message)));
+      document.querySelectorAll(".retry-command").forEach((button) => button.addEventListener("click", () => retryCommand(button.dataset.commandId).catch((e) => alert(e.message))));
     }
     function render() {
       const data = state.data;

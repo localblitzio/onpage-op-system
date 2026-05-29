@@ -1283,6 +1283,29 @@ class DashboardSmokeTests(unittest.TestCase):
 
         self.assertEqual(result["keyword"]["keyword"], "cloud keyword")
 
+    def test_apply_cloudflare_duplicate_keyword_reuses_existing(self) -> None:
+        project = app.create_project("Keyword Client", site_domain="https://example.com")
+        first = app.apply_cloudflare_command(
+            {"command_type": "add_keyword", "payload": {"project_id": project["id"], "keyword": "cloud keyword"}}
+        )
+        second = app.apply_cloudflare_command(
+            {"command_type": "add_keyword", "payload": {"project_id": project["id"], "keyword": "cloud keyword"}}
+        )
+
+        self.assertEqual(first["keyword"]["id"], second["keyword"]["id"])
+        self.assertTrue(second["duplicate"])
+
+    def test_apply_cloudflare_duplicate_client_reuses_existing(self) -> None:
+        first = app.apply_cloudflare_command(
+            {"command_type": "create_project", "payload": {"name": "Cloud Client", "site_domain": "https://example.com"}}
+        )
+        second = app.apply_cloudflare_command(
+            {"command_type": "create_project", "payload": {"name": "Cloud Client", "site_domain": "https://example.com"}}
+        )
+
+        self.assertEqual(first["project"]["id"], second["project"]["id"])
+        self.assertTrue(second["duplicate"])
+
     def test_bridge_settings_default_blocks_cora_commands(self) -> None:
         settings = app.bridge_settings()
 
