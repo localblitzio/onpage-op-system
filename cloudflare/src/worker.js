@@ -2252,6 +2252,10 @@ function cloudMirrorHtml() {
     nav { display: grid; gap: 4px; }
     nav button { width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 6px; padding: 9px 10px; cursor: pointer; }
     nav button.active, nav button:hover { background: var(--soft); color: var(--accent2); }
+    .nav-group { display:grid; gap:4px; margin:10px 0 12px; }
+    .nav-label { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; padding:8px 10px 2px; }
+    nav button.subnav { padding-left:22px; color:var(--muted); }
+    nav button.subnav.active, nav button.subnav:hover { color:var(--accent2); }
     main { min-width: 0; padding: 18px 20px 36px; }
     .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
     .topbar h2 { margin:0; font-size:22px; }
@@ -2334,7 +2338,7 @@ function cloudMirrorHtml() {
     </aside>
     <main>
       <div class="topbar">
-        <div><h2 id="page-title">Overview</h2><div id="page-note" class="muted">Loading synced production data...</div></div>
+        <div><h2 id="page-title">Client Dashboard</h2><div id="page-note" class="muted">Loading synced production data...</div></div>
         <div class="toolbar"><input id="search" placeholder="Filter current page"><button id="refresh">Refresh</button></div>
       </div>
       <div class="access">
@@ -2351,10 +2355,9 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     const pages = [
-      ["overview", "Overview"],
-      ["clients", "Clients"],
+      ["clients", "Client Dashboard"],
       ["reports", "Cora Reports"],
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
@@ -2365,10 +2368,19 @@ function cloudMirrorHtml() {
       ["entity-crossover", "Entity Crossover"],
       ["entity-sets", "Entity Sets"],
       ["plans", "Content Plans"],
+      ["overview", "Cloud Overview"],
       ["sync", "Sync Status"],
       ["audit", "Audit Trail"],
-      ["commands", "Cloud Commands"],
+      ["commands", "Command Review"],
       ["admin", "Admin"]
+    ];
+    const navGroups = [
+      ["Clients", [["clients", "Client Dashboard"]]],
+      ["Cora", [["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
+      ["Entity Explorer", [["entities", "Entity Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
+      ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
+      ["Planning", [["plans", "Content Plans"]]],
+      ["System", [["overview", "Cloud Overview"],["sync", "Sync Status"],["commands", "Command Review"],["audit", "Audit Trail"],["admin", "Admin"]]]
     ];
     const fmtNum = (v) => Number(v || 0).toLocaleString();
     const fmtDate = (v) => v ? new Date(v).toLocaleString() : "";
@@ -2400,7 +2412,7 @@ function cloudMirrorHtml() {
       render();
     }
     function renderNav() {
-      document.getElementById("nav").innerHTML = pages.map(([id, label]) => '<button data-page="' + id + '">' + esc(label) + '</button>').join("");
+      document.getElementById("nav").innerHTML = navGroups.map(([group, items]) => '<div class="nav-group"><div class="nav-label">' + esc(group) + '</div>' + items.map(([id, label], index) => '<button class="' + (index ? 'subnav' : '') + '" data-page="' + esc(id) + '">' + esc(label) + '</button>').join("") + '</div>').join("");
       document.querySelectorAll("nav button").forEach((b) => b.onclick = () => setPage(b.dataset.page));
     }
     function cards(items) {
@@ -2472,6 +2484,19 @@ function cloudMirrorHtml() {
     }
     function clientsTable(items) {
       return table(["Client", "Site / Profile", "Keywords", "Runs", "Snapshots", "Targets", "Plans", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '<br><span class="muted">' + esc(c.profile_name ? "Cora profile: " + c.profile_name : "No Cora profile") + '</span></td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td><td>' + esc(fmtNum(c.plan_count)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(c.id) + '">Open</button></td></tr>'));
+    }
+    function clientsView(data) {
+      const clients = data.clients || [];
+      const totals = clients.reduce((acc, client) => {
+        acc.keywords += Number(client.keyword_count || 0);
+        acc.runs += Number(client.run_count || 0);
+        acc.snapshots += Number(client.snapshot_count || 0);
+        acc.targets += Number(client.target_count || 0);
+        acc.plans += Number(client.plan_count || 0);
+        return acc;
+      }, { keywords: 0, runs: 0, snapshots: 0, targets: 0, plans: 0 });
+      return cards([["Clients", clients.length],["Keywords", totals.keywords],["Cora Runs", totals.runs],["Ranking Snapshots", totals.snapshots],["Saved Targets", totals.targets],["Content Plans", totals.plans]])
+        + '<section><div class="head"><h3>Client Dashboard</h3><span class="muted">Open a client first, then launch Cora, Ranking Snapshot, Entity Explorer, reports, and plans from that workspace.</span></div>' + clientsTable(clients) + '</section>';
     }
     function profilesTable(items) {
       return table(["Profile", "Clients", "Attached Clients", "Updated"], rows(items).map((p) => '<tr><td><strong>' + esc(p.name || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(fmtNum(p.client_count || 0)) + '</td><td>' + esc(p.client_names || p.client || "") + '</td><td>' + esc(fmtDate(p.updated_at || p.created_at)) + '</td></tr>'), "No Cora profiles synced yet.");
@@ -3481,7 +3506,7 @@ function cloudMirrorHtml() {
       document.getElementById("page-note").textContent = "Synced from local dashboard at " + fmtDate(data.generated_at);
       const content = {
         overview: () => overview(data),
-        clients: () => '<section><div class="head"><h3>Clients</h3></div>' + clientsTable(data.clients || []) + '</section>',
+        clients: () => clientsView(data),
         reports: () => reportPortal(data),
         runs: () => coraRunsView(data),
         jobs: () => coraJobsView(data),
