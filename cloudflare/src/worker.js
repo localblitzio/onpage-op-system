@@ -307,9 +307,18 @@ function numberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function numericValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function domainFromUrl(value) {
   const raw = cleanText(value).replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/.*$/, "");
   return raw.toLowerCase();
+}
+
+function comparableUrl(value) {
+  return cleanText(value).replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/[?#].*$/, "").replace(/\/+$/, "").toLowerCase();
 }
 
 function deepGet(object, ...paths) {
@@ -1771,6 +1780,123 @@ async function handleRankingSnapshotDetail(request, env, id) {
   });
 }
 
+async function rankingSnapshotBundle(request, env, id) {
+  const snapshot = await env.DB.prepare(
+    `SELECT rs.*, p.name AS project_name
+     FROM ranking_snapshots rs
+     LEFT JOIN projects p ON p.id = rs.project_id
+     WHERE rs.id = ?`
+  ).bind(id).first();
+  if (!snapshot) {
+    const error = new Error("Ranking snapshot not found");
+    error.status = 404;
+    throw error;
+  }
+  await assertProjectAccess(request, env, snapshot.project_id);
+  const [keywords, pages] = await Promise.all([
+    env.DB.prepare("SELECT * FROM ranking_snapshot_keywords WHERE snapshot_id = ? LIMIT 5000").bind(id).all(),
+    env.DB.prepare("SELECT * FROM ranking_snapshot_pages WHERE snapshot_id = ? LIMIT 2000").bind(id).all()
+  ]);
+  return { snapshot, keywords: keywords.results || [], pages: pages.results || [] };
+}
+
+async function handleRankingSnapshotCompare(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const url = new URL(request.url);
+  const baseId = Number(url.searchParams.get("base_id") || 0);
+  const compareId = Number(url.searchParams.get("compare_id") || 0);
+  if (!baseId || !compareId) return json({ ok: false, error: "base_id and compare_id are required" }, 400);
+  if (baseId === compareId) return json({ ok: false, error: "Choose two different snapshots to compare" }, 400);
+  const [base, compare] = await Promise.all([
+    rankingSnapshotBundle(request, env, baseId),
+    rankingSnapshotBundle(request, env, compareId)
+  ]);
+  if (base.snapshot.project_id && compare.snapshot.project_id && Number(base.snapshot.project_id) !== Number(compare.snapshot.project_id)) {
+    return json({ ok: false, error: "Snapshots must belong to the same client" }, 400);
+  }
+  const baseKeywords = new Map(base.keywords.map((row) => [cleanText(row.keyword).toLowerCase(), row]).filter(([key]) => key));
+  const compareKeywords = new Map(compare.keywords.map((row) => [cleanText(row.keyword).toLowerCase(), row]).filter(([key]) => key));
+  const keywordRows = [];
+  const newKeywords = [];
+  const lostKeywords = [];
+  const improvedKeywords = [];
+  const declinedKeywords = [];
+  for (const key of [...new Set([...baseKeywords.keys(), ...compareKeywords.keys()])].sort()) {
+    const before = baseKeywords.get(key);
+    const after = compareKeywords.get(key);
+    if (before && !after) {
+      const row = { keyword: before.keyword, rankingUrl: before.ranking_url, basePosition: numericValue(before.position), comparePosition: null, positionDelta: null, searchVolume: numericValue(before.search_volume), estimatedTrafficDelta: -(numericValue(before.estimated_traffic) || 0), status: "lost" };
+      lostKeywords.push(row);
+      keywordRows.push(row);
+      continue;
+    }
+    if (after && !before) {
+      const row = { keyword: after.keyword, rankingUrl: after.ranking_url, basePosition: null, comparePosition: numericValue(after.position), positionDelta: null, searchVolume: numericValue(after.search_volume), estimatedTrafficDelta: numericValue(after.estimated_traffic) || 0, status: "new" };
+      newKeywords.push(row);
+      keywordRows.push(row);
+      continue;
+    }
+    if (!before || !after) continue;
+    const basePosition = numericValue(before.position);
+    const comparePosition = numericValue(after.position);
+    const positionDelta = basePosition !== null && comparePosition !== null ? comparePosition - basePosition : null;
+    const estimatedTrafficDelta = (numericValue(after.estimated_traffic) || 0) - (numericValue(before.estimated_traffic) || 0);
+    let status = "unchanged";
+    if (positionDelta !== null && positionDelta < 0) status = "improved";
+    if (positionDelta !== null && positionDelta > 0) status = "declined";
+    const row = { keyword: after.keyword || before.keyword, rankingUrl: after.ranking_url || before.ranking_url, basePosition, comparePosition, positionDelta, searchVolume: numericValue(after.search_volume ?? before.search_volume), estimatedTrafficDelta, status };
+    keywordRows.push(row);
+    if (status === "improved") improvedKeywords.push(row);
+    if (status === "declined") declinedKeywords.push(row);
+  }
+  const basePages = new Map(base.pages.map((row) => [comparableUrl(row.url), row]).filter(([key]) => key));
+  const comparePages = new Map(compare.pages.map((row) => [comparableUrl(row.url), row]).filter(([key]) => key));
+  const pageRows = [];
+  for (const key of [...new Set([...basePages.keys(), ...comparePages.keys()])].sort()) {
+    const before = basePages.get(key);
+    const after = comparePages.get(key);
+    const source = after || before || {};
+    const baseOrganicTraffic = before ? numericValue(before.organic_traffic) : null;
+    const compareOrganicTraffic = after ? numericValue(after.organic_traffic) : null;
+    const baseOrganicKeywords = before ? numericValue(before.organic_keywords) : null;
+    const compareOrganicKeywords = after ? numericValue(after.organic_keywords) : null;
+    const organicTrafficDelta = (compareOrganicTraffic || 0) - (baseOrganicTraffic || 0);
+    const organicKeywordDelta = (compareOrganicKeywords || 0) - (baseOrganicKeywords || 0);
+    let status = "unchanged";
+    if (before && !after) status = "lost";
+    else if (after && !before) status = "new";
+    else if (organicTrafficDelta > 0) status = "gained";
+    else if (organicTrafficDelta < 0) status = "lost_traffic";
+    pageRows.push({ url: source.url, baseOrganicTraffic, compareOrganicTraffic, organicTrafficDelta, baseOrganicKeywords, compareOrganicKeywords, organicKeywordDelta, status });
+  }
+  pageRows.sort((a, b) => Math.abs(b.organicTrafficDelta || 0) - Math.abs(a.organicTrafficDelta || 0));
+  keywordRows.sort((a, b) => {
+    const aPriority = ["improved", "declined", "new", "lost"].includes(a.status) ? 0 : 1;
+    const bPriority = ["improved", "declined", "new", "lost"].includes(b.status) ? 0 : 1;
+    return aPriority - bPriority || Math.abs(b.positionDelta || 0) - Math.abs(a.positionDelta || 0);
+  });
+  await logAudit(request, env, "ranking_snapshot_compare", "ranking_snapshot", compareId, { base_id: baseId, compare_id: compareId }, "cloud-dashboard");
+  return json({
+    ok: true,
+    base: base.snapshot,
+    compare: compare.snapshot,
+    summary: {
+      newKeywords: newKeywords.length,
+      lostKeywords: lostKeywords.length,
+      improvedKeywords: improvedKeywords.length,
+      declinedKeywords: declinedKeywords.length,
+      pageGains: pageRows.filter((row) => ["new", "gained"].includes(row.status)).length,
+      pageLosses: pageRows.filter((row) => ["lost", "lost_traffic"].includes(row.status)).length
+    },
+    keywords: keywordRows,
+    newKeywords,
+    lostKeywords,
+    improvedKeywords,
+    declinedKeywords,
+    pages: pageRows
+  });
+}
+
 async function handleEntitySetDetail(request, env, id) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const set = await env.DB.prepare(
@@ -2127,7 +2253,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", detail: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entitySetClient: "all", rankingComparison: null, detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -2229,6 +2355,47 @@ function cloudMirrorHtml() {
     }
     function snapshotsTable(items) {
       return table(["Target", "Client", "Locale", "Keywords", "Pages", "Created", ""], rows(items).map((s) => '<tr><td><strong>' + esc(s.target || "") + '</strong><br><span class="muted">' + esc(s.source || "") + ' / ' + esc(s.freshness || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(s.location_code || "") + ' / ' + esc(s.language_code || "") + '</td><td>' + esc(fmtNum(s.keyword_count)) + '</td><td>' + esc(fmtNum(s.page_count)) + '</td><td>' + esc(fmtDate(s.created_at)) + '</td><td><button class="detail-btn" data-detail-type="snapshot" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>'));
+    }
+    function snapshotOptionLabel(snapshot) {
+      return (snapshot.target || "Snapshot") + " | " + (snapshot.project_name || "No client") + " | " + fmtDate(snapshot.created_at) + " | " + fmtNum(snapshot.keyword_count || 0) + " keywords";
+    }
+    function defaultSnapshotPair(snapshots) {
+      for (const snapshot of snapshots) {
+        const pair = snapshots.filter((item) => String(item.project_id || "") === String(snapshot.project_id || "") && String(item.id) !== String(snapshot.id));
+        if (pair.length) return { base: pair[0].id, compare: snapshot.id };
+      }
+      return { base: snapshots[1]?.id || "", compare: snapshots[0]?.id || "" };
+    }
+    function movementClass(value, lowerIsBetter) {
+      const num = Number(value || 0);
+      if (!num) return "";
+      return (lowerIsBetter ? num < 0 : num > 0) ? "ok" : "warn";
+    }
+    function rankingComparisonResults(data) {
+      const summary = data.summary || {};
+      const keywordRows = (data.keywords || []).filter((row) => row.status !== "unchanged").slice(0, 80).map((row) => '<tr><td><span class="pill ' + (row.status === "improved" || row.status === "new" ? "ok" : row.status === "declined" || row.status === "lost" ? "warn" : "") + '">' + esc(String(row.status || "").replaceAll("_", " ")) + '</span></td><td><strong>' + esc(row.keyword || "") + '</strong><br><span class="muted">' + esc(row.rankingUrl || "") + '</span></td><td>' + esc(row.basePosition ?? "") + '</td><td>' + esc(row.comparePosition ?? "") + '</td><td><span class="' + movementClass(row.positionDelta, true) + '">' + esc(row.positionDelta ?? "") + '</span></td><td>' + esc(fmtNum(row.searchVolume || 0)) + '</td><td>' + esc(fmtNum(row.estimatedTrafficDelta || 0)) + '</td></tr>');
+      const pageRows = (data.pages || []).filter((row) => row.status !== "unchanged").slice(0, 80).map((row) => '<tr><td><span class="pill ' + (row.status === "gained" || row.status === "new" ? "ok" : row.status === "lost" || row.status === "lost_traffic" ? "warn" : "") + '">' + esc(String(row.status || "").replaceAll("_", " ")) + '</span></td><td><a href="' + esc(row.url || "") + '" target="_blank">' + esc(row.url || "") + '</a></td><td>' + esc(fmtNum(row.baseOrganicTraffic || 0)) + '</td><td>' + esc(fmtNum(row.compareOrganicTraffic || 0)) + '</td><td><span class="' + movementClass(row.organicTrafficDelta, false) + '">' + esc(fmtNum(row.organicTrafficDelta || 0)) + '</span></td><td>' + esc(fmtNum(row.organicKeywordDelta || 0)) + '</td></tr>');
+      return cards([["New Keywords", summary.newKeywords || 0],["Lost Keywords", summary.lostKeywords || 0],["Improved", summary.improvedKeywords || 0],["Declined", summary.declinedKeywords || 0],["Page Gains", summary.pageGains || 0],["Page Losses", summary.pageLosses || 0]])
+        + '<div class="grid2"><section><div class="head"><h3>Keyword Movement</h3><span class="muted">' + esc(data.base?.target || "") + ' to ' + esc(data.compare?.target || "") + '</span></div>' + detailTable(["Status","Keyword","Before","After","Change","Volume","Traffic +/-"], keywordRows, "No keyword movement found between these snapshots.") + '</section>'
+        + '<section><div class="head"><h3>Page Movement</h3></div>' + detailTable(["Status","URL","Before Traffic","After Traffic","Traffic +/-","Keyword +/-"], pageRows, "No page movement found between these snapshots.") + '</section></div>';
+    }
+    function rankingView(data) {
+      const snapshots = data.snapshots || [];
+      const pair = defaultSnapshotPair(snapshots);
+      const baseValue = state.rankingBase || pair.base || "";
+      const compareValue = state.rankingCompare || pair.compare || "";
+      const options = snapshots.map((snapshot) => '<option value="' + esc(snapshot.id) + '">' + esc(snapshotOptionLabel(snapshot)) + '</option>').join("");
+      const form = '<section><div class="head"><h3>Compare Snapshots</h3><span class="muted">Compare weekly DataForSEO Labs snapshots from the same client.</span></div><div class="field-row"><select id="ranking-compare-base"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><select id="ranking-compare-to"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><button id="ranking-compare-run"' + (snapshots.length >= 2 ? "" : " disabled") + '>Compare</button></div>' + (snapshots.length < 2 ? '<div class="empty">Run or sync at least two snapshots for one client to compare movement.</div>' : '') + '</section>';
+      setTimeout(() => {
+        const base = document.getElementById("ranking-compare-base");
+        const compare = document.getElementById("ranking-compare-to");
+        if (base && baseValue) base.value = String(baseValue);
+        if (compare && compareValue) compare.value = String(compareValue);
+        bindRankingControls();
+      }, 0);
+      return form
+        + (state.rankingComparison ? rankingComparisonResults(state.rankingComparison) : "")
+        + '<section><div class="head"><h3>Ranking Snapshots</h3><span class="muted">Open a snapshot for keywords, pages, and saved optimization targets.</span></div>' + snapshotsTable(snapshots) + '</section>';
     }
     function targetsTable(items) {
       return table(["URL", "Client", "Keyword", "Position", "Score", "Status"], rows(items).map((t) => '<tr><td><strong>' + esc(t.url || "") + '</strong><br><span class="muted">' + esc(t.recommended_action || "") + '</span></td><td>' + esc(t.project_name || "") + '</td><td>' + esc(t.keyword || "") + '</td><td>' + esc(fmtNum(t.best_position)) + '</td><td>' + esc(fmtNum(t.opportunity_score)) + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>'));
@@ -2381,6 +2548,27 @@ function cloudMirrorHtml() {
       if (actor) actor.onchange = (event) => { state.auditActor = event.target.value || "all"; render(); };
       if (action) action.onchange = (event) => { state.auditAction = event.target.value || "all"; render(); };
       if (object) object.onchange = (event) => { state.auditObject = event.target.value || "all"; render(); };
+    }
+    function bindRankingControls() {
+      const button = document.getElementById("ranking-compare-run");
+      if (!button) return;
+      button.onclick = async () => {
+        const baseId = document.getElementById("ranking-compare-base")?.value || "";
+        const compareId = document.getElementById("ranking-compare-to")?.value || "";
+        if (!baseId || !compareId || baseId === compareId) return alert("Choose two different snapshots.");
+        state.rankingBase = baseId;
+        state.rankingCompare = compareId;
+        button.disabled = true;
+        button.textContent = "Comparing...";
+        try {
+          state.rankingComparison = await apiGet("/api/ranking-snapshots/compare?base_id=" + encodeURIComponent(baseId) + "&compare_id=" + encodeURIComponent(compareId));
+          render();
+        } catch (error) {
+          alert(error.message || error);
+          button.disabled = false;
+          button.textContent = "Compare";
+        }
+      };
     }
     function bindEntityPageControls() {
       document.querySelectorAll(".entity-page-link").forEach((button) => {
@@ -2858,7 +3046,7 @@ function cloudMirrorHtml() {
         runs: () => '<section><div class="head"><h3>Cora Runs</h3></div>' + runsTable(data.runs || []) + '</section>',
         jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
         "cora-profiles": () => coraProfilesView(data),
-        ranking: () => '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + snapshotsTable(data.snapshots || []) + '</section>',
+        ranking: () => rankingView(data),
         targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
         entities: () => entityExplorerView(data),
         "entity-crossover": () => entityCrossoverView(data),
@@ -3061,6 +3249,7 @@ export default {
       if (runDetailRoute && request.method === "GET") return await handleRunDetail(request, env, Number(runDetailRoute[1]));
       const runSheetRowsRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/sheet-rows$/);
       if (runSheetRowsRoute && request.method === "GET") return await handleRunSheetRows(request, env, Number(runSheetRowsRoute[1]));
+      if (url.pathname === "/api/ranking-snapshots/compare" && request.method === "GET") return await handleRankingSnapshotCompare(request, env);
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
       if (rankingSnapshotDetailRoute && request.method === "GET") return await handleRankingSnapshotDetail(request, env, Number(rankingSnapshotDetailRoute[1]));
       const entityBatchDetailRoute = url.pathname.match(/^\/api\/entity-batches\/(\d+)\/detail$/);
