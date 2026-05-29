@@ -83,6 +83,13 @@ function requireReadAuth(request, env) {
 }
 
 const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const ENTITY_DEPTH_LIMITS = {
+  1: { entities: 10, lsi_terms: 15, related_keywords: 15, questions: 8, topic_clusters: 4 },
+  2: { entities: 18, lsi_terms: 25, related_keywords: 25, questions: 12, topic_clusters: 6 },
+  3: { entities: 30, lsi_terms: 40, related_keywords: 40, questions: 20, topic_clusters: 8 },
+  4: { entities: 45, lsi_terms: 60, related_keywords: 60, questions: 30, topic_clusters: 12 },
+  5: { entities: 60, lsi_terms: 80, related_keywords: 80, questions: 40, topic_clusters: 16 }
+};
 
 async function sha256Hex(value) {
   const bytes = new TextEncoder().encode(value);
@@ -170,9 +177,355 @@ function cleanText(value) {
   return String(value ?? "").trim();
 }
 
+function numberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function domainFromUrl(value) {
   const raw = cleanText(value).replace(/^https?:\/\//i, "").replace(/^www\./i, "").replace(/\/.*$/, "");
   return raw.toLowerCase();
+}
+
+function deepGet(object, ...paths) {
+  for (const path of paths) {
+    let current = object;
+    for (const part of String(path).split(".")) {
+      if (!current || typeof current !== "object" || !(part in current)) {
+        current = undefined;
+        break;
+      }
+      current = current[part];
+    }
+    if (current !== undefined && current !== null && current !== "") return current;
+  }
+  return null;
+}
+
+function normalizeRankingTarget(value) {
+  const target = domainFromUrl(value);
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(target)) throw new Error("Invalid ranking snapshot target domain.");
+  return target;
+}
+
+function rankingPayload(target, locationCode, languageCode, limit, includeSubdomains, orderBy) {
+  const item = { target, location_code: Number(locationCode || 2840), language_code: cleanText(languageCode) || "en" };
+  if (limit) item.limit = Math.max(1, Math.min(Number(limit || 1000), 1000));
+  if (includeSubdomains) item.include_subdomains = true;
+  if (orderBy) item.order_by = orderBy;
+  return [item];
+}
+
+async function dataForSeoPost(path, payload, env) {
+  const login = env.DATAFORSEO_LOGIN || "";
+  const password = env.DATAFORSEO_PASSWORD || "";
+  const auth = env.DATAFORSEO_AUTH || (login && password ? btoa(`${login}:${password}`) : "");
+  if (!auth) throw new Error("Missing Cloudflare secret DATAFORSEO_AUTH or DATAFORSEO_LOGIN/DATAFORSEO_PASSWORD.");
+  const response = await fetch(`https://api.dataforseo.com${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "authorization": `Basic ${auth}` },
+    body: JSON.stringify(payload)
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`DataForSEO HTTP ${response.status}: ${data.status_message || response.statusText}`);
+  if (data.status_code && ![20000, 20100].includes(Number(data.status_code))) throw new Error(`DataForSEO error: ${data.status_message || "Request failed"}`);
+  return data;
+}
+
+function dataForSeoItems(data) {
+  const task = Array.isArray(data.tasks) ? data.tasks[0] || {} : {};
+  if (task.status_code && ![20000, 20100].includes(Number(task.status_code))) throw new Error(task.status_message || "DataForSEO task failed");
+  const result = Array.isArray(task.result) ? task.result : task.result ? [task.result] : [];
+  if (!result.length) return [];
+  const first = result[0] || {};
+  if (Array.isArray(first.items)) return first.items.filter((item) => item && typeof item === "object");
+  return result.filter((item) => item && typeof item === "object");
+}
+
+function normalizeSerpFeatures(value) {
+  if (!value) return [];
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.map((item) => typeof item === "string" ? item : item?.type || item?.name || item?.feature).filter(Boolean).map(String))].sort();
+}
+
+function normalizeKeywordItem(item) {
+  const features = normalizeSerpFeatures(deepGet(item, "keyword_data.serp_info.serp_item_types", "serp_info.serp_item_types", "serp_features", "serp_item_types"));
+  const featureText = features.join(" ").toLowerCase();
+  const rankItem = deepGet(item, "ranked_serp_element.serp_item") || {};
+  return {
+    keyword: cleanText(deepGet(item, "keyword_data.keyword", "keyword", "keyword_data.keyword_info.keyword")),
+    rankingUrl: cleanText(deepGet(item, "ranked_serp_element.serp_item.url", "ranked_serp_element.url", "url", "ranking_url")),
+    position: numberOrNull(deepGet(item, "ranked_serp_element.serp_item.rank_absolute", "ranked_serp_element.serp_item.rank_group", "rank_absolute", "position")),
+    previousPosition: numberOrNull(deepGet(item, "ranked_serp_element.serp_item.previous_rank_absolute", "rank_changes.previous_rank_absolute", "previous_position")),
+    searchVolume: numberOrNull(deepGet(item, "keyword_data.keyword_info.search_volume", "keyword_info.search_volume", "search_volume")),
+    cpc: numberOrNull(deepGet(item, "keyword_data.keyword_info.cpc", "keyword_info.cpc", "cpc")),
+    competition: numberOrNull(deepGet(item, "keyword_data.keyword_info.competition", "keyword_info.competition", "competition")),
+    competitionLevel: cleanText(deepGet(item, "keyword_data.keyword_info.competition_level", "keyword_info.competition_level", "competition_level")),
+    keywordDifficulty: numberOrNull(deepGet(item, "keyword_data.keyword_properties.keyword_difficulty", "keyword_properties.keyword_difficulty", "keyword_difficulty")),
+    estimatedTraffic: numberOrNull(deepGet(item, "ranked_serp_element.serp_item.etv", "ranked_serp_element.etv", "metrics.organic.etv", "etv")),
+    trafficCost: numberOrNull(deepGet(item, "ranked_serp_element.serp_item.estimated_paid_traffic_cost", "traffic_cost", "estimated_paid_traffic_cost")),
+    serpFeatures: features,
+    aiOverviewPresent: featureText.includes("ai_overview") || featureText.includes("ai overview"),
+    aiOverviewReference: Boolean(deepGet(item, "ranked_serp_element.serp_item.ai_overview_reference", "ai_overview_reference")) || String(rankItem.type || "").toLowerCase() === "ai_overview",
+    intent: cleanText(deepGet(item, "keyword_data.search_intent_info.main_intent", "search_intent_info.main_intent", "intent")),
+    lastUpdated: cleanText(deepGet(item, "keyword_data.keyword_info.last_updated_time", "last_updated_time", "last_updated"))
+  };
+}
+
+function normalizePageItem(item) {
+  const organic = deepGet(item, "metrics.organic") || {};
+  const paid = deepGet(item, "metrics.paid") || {};
+  const dist = deepGet(item, "metrics.organic.pos_distribution", "ranking_distribution.organic", "metrics.organic.ranking_distribution") || {};
+  return {
+    url: cleanText(item.page_address || item.url || item.target),
+    organicKeywords: numberOrNull(organic.count || item.organic_keywords),
+    organicTraffic: numberOrNull(organic.etv || item.organic_traffic),
+    organicTrafficCost: numberOrNull(organic.estimated_paid_traffic_cost || item.organic_traffic_cost),
+    top1: numberOrNull(dist.pos_1 || dist.top1 || item.top1),
+    top3: numberOrNull(dist.pos_2_3 || dist.top3 || item.top3),
+    top10: numberOrNull(dist.pos_4_10 || dist.top10 || item.top10),
+    top20: numberOrNull(dist.pos_11_20 || dist.top20 || item.top20),
+    top100: numberOrNull(dist.pos_21_100 || dist.top100 || item.top100),
+    paidKeywords: numberOrNull(paid.count || item.paid_keywords),
+    paidTraffic: numberOrNull(paid.etv || item.paid_traffic)
+  };
+}
+
+function normalizeOverviewItem(item, target, locationCode, languageCode) {
+  const organic = deepGet(item, "metrics.organic") || deepGet(item, "organic") || {};
+  const paid = deepGet(item, "metrics.paid") || deepGet(item, "paid") || {};
+  const dist = deepGet(item, "metrics.organic.pos_distribution", "ranking_distribution.organic", "organic.pos_distribution") || {};
+  return {
+    target, locationCode, languageCode,
+    organicKeywords: numberOrNull(organic.count || item.organic_keywords),
+    organicTraffic: numberOrNull(organic.etv || item.organic_traffic),
+    organicTrafficCost: numberOrNull(organic.estimated_paid_traffic_cost || item.organic_traffic_cost),
+    paidKeywords: numberOrNull(paid.count || item.paid_keywords),
+    paidTraffic: numberOrNull(paid.etv || item.paid_traffic),
+    rankingDistribution: {
+      top1: numberOrNull(dist.pos_1 || dist.top1),
+      top3: numberOrNull(dist.pos_2_3 || dist.top3),
+      top10: numberOrNull(dist.pos_4_10 || dist.top10),
+      top20: numberOrNull(dist.pos_11_20 || dist.top20),
+      top100: numberOrNull(dist.pos_21_100 || dist.top100)
+    },
+    dataSource: "DataForSEO Labs",
+    dataFreshnessNote: "DataForSEO Labs ranking data is updated weekly and should be treated as a ranking snapshot, not live rank tracking."
+  };
+}
+
+async function createCloudRankingSnapshot(payload, env) {
+  const target = normalizeRankingTarget(payload.target);
+  const projectId = Number(payload.project_id || 0) || null;
+  const locationCode = Number(payload.location_code || 2840);
+  const languageCode = cleanText(payload.language_code) || "en";
+  const limit = Math.max(1, Math.min(Number(payload.limit || 1000), 1000));
+  const includeSubdomains = Boolean(payload.include_subdomains);
+  const now = new Date().toISOString();
+  const errors = {};
+  let overview = normalizeOverviewItem({}, target, locationCode, languageCode);
+  let keywords = [];
+  let pages = [];
+  try {
+    const data = await dataForSeoPost("/v3/dataforseo_labs/google/domain_rank_overview/live", rankingPayload(target, locationCode, languageCode, null, includeSubdomains), env);
+    overview = normalizeOverviewItem(dataForSeoItems(data)[0] || {}, target, locationCode, languageCode);
+  } catch (error) { errors.overview = error.message || String(error); }
+  try {
+    const data = await dataForSeoPost("/v3/dataforseo_labs/google/ranked_keywords/live", rankingPayload(target, locationCode, languageCode, limit, includeSubdomains, ["keyword_data.keyword_info.search_volume,desc"]), env);
+    keywords = dataForSeoItems(data).map(normalizeKeywordItem).filter((row) => row.keyword);
+  } catch (error) { errors.keywords = error.message || String(error); }
+  try {
+    const data = await dataForSeoPost("/v3/dataforseo_labs/google/relevant_pages/live", rankingPayload(target, locationCode, languageCode, limit, includeSubdomains, ["metrics.organic.etv,desc"]), env);
+    pages = dataForSeoItems(data).map(normalizePageItem).filter((row) => row.url);
+  } catch (error) { errors.pages = error.message || String(error); }
+  if (!keywords.length && !pages.length && Object.keys(errors).length) throw new Error(`Ranking snapshot failed: ${Object.values(errors).join("; ")}`);
+  const inserted = await env.DB.prepare(
+    `INSERT INTO ranking_snapshots
+     (project_id, target, location_code, language_code, limit_value, include_subdomains, overview_json, errors_json, source, freshness, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(projectId, target, locationCode, languageCode, limit, includeSubdomains ? 1 : 0, JSON.stringify(overview), JSON.stringify(errors), "DataForSEO Labs", "weekly", now).run();
+  const snapshotId = inserted.meta.last_row_id;
+  const keywordSql = `INSERT INTO ranking_snapshot_keywords
+    (snapshot_id, keyword, ranking_url, position, previous_position, search_volume, cpc, competition, competition_level, keyword_difficulty, estimated_traffic, traffic_cost, serp_features_json, ai_overview_present, ai_overview_reference, intent, last_updated, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const pageSql = `INSERT INTO ranking_snapshot_pages
+    (snapshot_id, url, organic_keywords, organic_traffic, organic_traffic_cost, top1, top3, top10, top20, top100, paid_keywords, paid_traffic, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+  const statements = [];
+  for (const row of keywords) statements.push(env.DB.prepare(keywordSql).bind(snapshotId, row.keyword, row.rankingUrl, row.position, row.previousPosition, row.searchVolume, row.cpc, row.competition, row.competitionLevel, row.keywordDifficulty, row.estimatedTraffic, row.trafficCost, JSON.stringify(row.serpFeatures || []), row.aiOverviewPresent ? 1 : 0, row.aiOverviewReference ? 1 : 0, row.intent, row.lastUpdated, now));
+  for (const row of pages) statements.push(env.DB.prepare(pageSql).bind(snapshotId, row.url, row.organicKeywords, row.organicTraffic, row.organicTrafficCost, row.top1, row.top3, row.top10, row.top20, row.top100, row.paidKeywords, row.paidTraffic, now));
+  for (let i = 0; i < statements.length; i += 50) await env.DB.batch(statements.slice(i, i + 50));
+  const snapshot = await env.DB.prepare("SELECT * FROM ranking_snapshots WHERE id = ?").bind(snapshotId).first();
+  return { snapshot, meta: { keyword_count: keywords.length, page_count: pages.length, errors } };
+}
+
+function normalizeProvider(value) {
+  const key = cleanText(value).toLowerCase();
+  const aliases = { "open ai": "openai", "chatgpt": "openai", "claude": "anthropic", "gemini": "google", "google ai": "google", "google gemini": "google", "grok": "xai", "x.ai": "xai", "xai / grok": "xai", "pplx": "perplexity", "perplexity ai": "perplexity" };
+  return aliases[key] || key;
+}
+
+function providerSecret(provider, env) {
+  const key = normalizeProvider(provider);
+  const secrets = {
+    openai: env.OPENAI_API_KEY,
+    anthropic: env.ANTHROPIC_API_KEY,
+    google: env.GOOGLE_API_KEY,
+    xai: env.XAI_API_KEY,
+    perplexity: env.PERPLEXITY_API_KEY
+  };
+  if (!secrets[key]) throw new Error(`Missing Cloudflare secret for ${provider}.`);
+  return { provider: key, secret: secrets[key] };
+}
+
+function clampDepth(value) {
+  return Math.max(1, Math.min(Number(value || 3), 5));
+}
+
+function entityPrompt(project, seedKeyword, depth, mainUrl, keywords) {
+  const limits = ENTITY_DEPTH_LIMITS[depth] || ENTITY_DEPTH_LIMITS[3];
+  const keywordContext = keywords.length ? keywords.slice(0, 40).join(", ") : "No other client keywords provided.";
+  return `You are building an SEO Entity and LSI exploration artifact.
+
+Return only valid JSON with these exact keys:
+summary: string
+entities: array of objects with name, type, relevance_score, suggested_usage
+lsi_terms: array of objects with term, relevance_score, intent
+related_keywords: array of objects with keyword, intent, funnel_stage
+questions: array of objects with question, intent, content_opportunity
+topic_clusters: array of objects with cluster, terms, content_angle
+warnings: array of strings
+
+Client: ${project?.name || ""}
+Client main URL: ${mainUrl || "Not provided"}
+Seed keyword: ${seedKeyword}
+Other client keywords: ${keywordContext}
+
+Depth: ${depth}
+Target approximate counts:
+entities: ${limits.entities}
+lsi_terms: ${limits.lsi_terms}
+related_keywords: ${limits.related_keywords}
+questions: ${limits.questions}
+topic_clusters: ${limits.topic_clusters}
+
+Favor terms that are useful for on-page optimization, content briefs, headings, schema/entity coverage, and topical completeness. Do not include invented metrics. Use relevance_score from 1 to 100.`;
+}
+
+function extractJsonText(text) {
+  const clean = cleanText(text).replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim();
+  if (!clean) return {};
+  try { return JSON.parse(clean); } catch (_err) {}
+  const start = clean.indexOf("{");
+  const end = clean.lastIndexOf("}");
+  if (start >= 0 && end > start) return JSON.parse(clean.slice(start, end + 1));
+  return {};
+}
+
+function listFrom(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeEntityResult(parsed) {
+  return {
+    summary: cleanText(parsed.summary),
+    entities: listFrom(parsed.entities),
+    lsi_keywords: listFrom(parsed.lsi_terms || parsed.lsi_keywords),
+    related_keywords: listFrom(parsed.related_keywords),
+    questions: listFrom(parsed.questions),
+    topics: listFrom(parsed.topic_clusters || parsed.topics),
+    warnings: listFrom(parsed.warnings)
+  };
+}
+
+async function callCloudLlm(provider, model, prompt, env) {
+  const { provider: key, secret } = providerSecret(provider, env);
+  if (key === "anthropic") {
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": secret, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({ model, max_tokens: 5000, messages: [{ role: "user", content: prompt }] })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || `Anthropic HTTP ${response.status}`);
+    return (data.content || []).map((part) => part.text || "").join("\n");
+  }
+  if (key === "google") {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(secret)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: prompt }] }], generationConfig: { temperature: 0.2, responseMimeType: "application/json" } })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || `Google HTTP ${response.status}`);
+    return (data.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("\n");
+  }
+  if (key === "perplexity" && String(model || "").startsWith("perplexity/sonar")) {
+    const response = await fetch("https://api.perplexity.ai/v1/sonar", {
+      method: "POST",
+      headers: { "content-type": "application/json", "authorization": `Bearer ${secret}` },
+      body: JSON.stringify({ model: String(model).split("/", 2)[1] || "sonar", messages: [{ role: "system", content: "Return only valid JSON. No markdown." }, { role: "user", content: prompt }] })
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error?.message || `Perplexity HTTP ${response.status}`);
+    return data.choices?.[0]?.message?.content || "";
+  }
+  const base = key === "xai" ? "https://api.x.ai" : key === "perplexity" ? "https://api.perplexity.ai" : "https://api.openai.com";
+  const response = await fetch(`${base}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "authorization": `Bearer ${secret}` },
+    body: JSON.stringify({ model, messages: [{ role: "system", content: "Return only valid JSON. No markdown." }, { role: "user", content: prompt }] })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error?.message || `${key} HTTP ${response.status}`);
+  return data.choices?.[0]?.message?.content || "";
+}
+
+async function createCloudEntityRuns(payload, env) {
+  const projectId = Number(payload.project_id || 0);
+  const seed = cleanText(payload.seed_keyword);
+  const depth = clampDepth(payload.depth);
+  const targets = Array.isArray(payload.targets) ? payload.targets : [];
+  if (!projectId || !seed) throw new Error("Project and seed keyword are required.");
+  if (!targets.length) throw new Error("At least one cloud provider:model target is required.");
+  const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(projectId).first();
+  if (!project) throw new Error("Client project not found.");
+  const site = await env.DB.prepare("SELECT * FROM sites WHERE project_id = ? ORDER BY id LIMIT 1").bind(projectId).first();
+  const kwRows = await env.DB.prepare("SELECT keyword FROM keywords WHERE project_id = ? ORDER BY id LIMIT 40").bind(projectId).all();
+  const prompt = entityPrompt(project, seed, depth, site?.domain || project.site_domain || "", (kwRows.results || []).map((row) => row.keyword).filter(Boolean));
+  const now = new Date().toISOString();
+  const batchInsert = await env.DB.prepare(
+    "INSERT INTO entity_lsi_batches (project_id, seed_keyword, depth, target_count, completed_count, failed_count, status, created_at, updated_at) VALUES (?, ?, ?, ?, 0, 0, 'running', ?, ?)"
+  ).bind(projectId, seed, depth, targets.length, now, now).run();
+  const batchId = batchInsert.meta.last_row_id;
+  const runs = [];
+  let completed = 0;
+  let failed = 0;
+  for (const target of targets) {
+    const provider = normalizeProvider(target.provider || target.provider_key || "");
+    const model = cleanText(target.model);
+    if (!provider || !model) throw new Error("Cloud Entity targets must use provider:model.");
+    const runInsert = await env.DB.prepare(
+      "INSERT INTO entity_lsi_runs (project_id, batch_id, seed_keyword, depth, api_key_id, provider, model, status, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, 'running', ?)"
+    ).bind(projectId, batchId, seed, depth, provider, model, now).run();
+    const runId = runInsert.meta.last_row_id;
+    try {
+      const raw = await callCloudLlm(provider, model, prompt, env);
+      const parsed = normalizeEntityResult(extractJsonText(raw));
+      await env.DB.prepare(
+        "UPDATE entity_lsi_runs SET status = 'complete', summary = ?, entities_json = ?, lsi_keywords_json = ?, related_keywords_json = ?, questions_json = ?, topics_json = ?, raw_response = ?, error = NULL, completed_at = ? WHERE id = ?"
+      ).bind(parsed.summary, JSON.stringify(parsed.entities), JSON.stringify(parsed.lsi_keywords), JSON.stringify(parsed.related_keywords), JSON.stringify(parsed.questions), JSON.stringify(parsed.topics), raw.slice(0, 200000), new Date().toISOString(), runId).run();
+      completed += 1;
+    } catch (error) {
+      await env.DB.prepare("UPDATE entity_lsi_runs SET status = 'failed', error = ?, completed_at = ? WHERE id = ?").bind(error.message || String(error), new Date().toISOString(), runId).run();
+      failed += 1;
+    }
+    runs.push(await env.DB.prepare("SELECT * FROM entity_lsi_runs WHERE id = ?").bind(runId).first());
+  }
+  const status = failed && completed ? "partial" : failed ? "failed" : "complete";
+  await env.DB.prepare("UPDATE entity_lsi_batches SET completed_count = ?, failed_count = ?, status = ?, updated_at = ? WHERE id = ?").bind(completed, failed, status, new Date().toISOString(), batchId).run();
+  const batch = await env.DB.prepare("SELECT * FROM entity_lsi_batches WHERE id = ?").bind(batchId).first();
+  return { batch, runs };
 }
 
 async function findCloudProject(env, name, siteDomain = "") {
@@ -276,8 +629,45 @@ async function executeCloudCommand(commandType, payload, env) {
     changedTables.push("share_reports");
     return result;
   }
-  if (["create_ranking_snapshot", "run_entity_lsi"].includes(commandType)) {
-    throw new Error("Cloud execution for this paid/API tool needs provider secrets in the Cloudflare vault. Use Local bridge mode for now.");
+  if (commandType === "create_ranking_snapshot") {
+    if (payload.dry_run) {
+      result.dry_run = true;
+      result.snapshot_request = {
+        project_id: Number(payload.project_id || 0) || null,
+        target: normalizeRankingTarget(payload.target),
+        location_code: Number(payload.location_code || 2840),
+        language_code: cleanText(payload.language_code) || "en",
+        limit: Math.max(1, Math.min(Number(payload.limit || 1000), 1000)),
+        include_subdomains: Boolean(payload.include_subdomains),
+        execution_mode: "cloud"
+      };
+      return result;
+    }
+    const snapshot = await createCloudRankingSnapshot(payload, env);
+    result.snapshot = snapshot.snapshot;
+    result.meta = snapshot.meta;
+    changedTables.push("ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages");
+    return result;
+  }
+  if (commandType === "run_entity_lsi") {
+    if (payload.dry_run) {
+      const targets = Array.isArray(payload.targets) ? payload.targets : [];
+      result.dry_run = true;
+      result.entity_lsi_request = {
+        project_id: Number(payload.project_id || 0),
+        seed_keyword: cleanText(payload.seed_keyword),
+        depth: clampDepth(payload.depth),
+        target_count: targets.length,
+        execution_mode: "cloud"
+      };
+      return result;
+    }
+    const entity = await createCloudEntityRuns(payload, env);
+    result.batch = entity.batch;
+    result.runs = entity.runs;
+    result.batch_id = entity.batch?.id;
+    changedTables.push("entity_lsi_batches", "entity_lsi_runs");
+    return result;
   }
   throw new Error(`Cloud execution is not supported for ${commandType}.`);
 }
@@ -389,6 +779,24 @@ async function handleSyncExport(request, env) {
   return json({ ok: true, tables: exported, generated_at: new Date().toISOString() });
 }
 
+async function handleSecretsStatus(request, env) {
+  if (!requireReadAuth(request, env) && !requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const providers = {
+    dataforseo: Boolean(env.DATAFORSEO_AUTH || (env.DATAFORSEO_LOGIN && env.DATAFORSEO_PASSWORD)),
+    openai: Boolean(env.OPENAI_API_KEY),
+    anthropic: Boolean(env.ANTHROPIC_API_KEY),
+    google: Boolean(env.GOOGLE_API_KEY),
+    xai: Boolean(env.XAI_API_KEY),
+    perplexity: Boolean(env.PERPLEXITY_API_KEY)
+  };
+  return json({
+    ok: true,
+    providers,
+    missing: Object.entries(providers).filter(([, present]) => !present).map(([provider]) => provider),
+    note: "Secrets are checked by presence only; values are never returned."
+  });
+}
+
 async function createCommand(request, env) {
   if (!requireAdminAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
   const payload = await request.json();
@@ -451,6 +859,26 @@ function normalizeCommand(row) {
   let result = null;
   try { payload = JSON.parse(row.payload_json || "{}"); } catch (_err) { payload = {}; }
   try { result = row.result_json ? JSON.parse(row.result_json) : null; } catch (_err) { result = row.result_json; }
+  if (result && typeof result === "object") {
+    if (Array.isArray(result.runs)) {
+      result.runs = result.runs.map((run) => ({
+        id: run.id,
+        project_id: run.project_id,
+        batch_id: run.batch_id,
+        provider: run.provider,
+        model: run.model,
+        status: run.status,
+        summary: run.summary,
+        error: run.error,
+        created_at: run.created_at,
+        completed_at: run.completed_at
+      }));
+    }
+    if (result.snapshot && typeof result.snapshot === "object") {
+      const { overview_json, errors_json, ...snapshot } = result.snapshot;
+      result.snapshot = snapshot;
+    }
+  }
   return { ...row, payload, result, payload_json: undefined, result_json: undefined };
 }
 
@@ -1324,6 +1752,7 @@ function cloudMirrorHtml() {
       if (reportToken) actions.push('<a class="action-link" href="' + reportUrl(reportToken) + '" target="_blank">Open Report</a>');
       if (snapshotId) actions.push('<button class="detail-btn" data-detail-type="snapshot" data-detail-id="' + esc(snapshotId) + '">Open Snapshot</button>');
       if (entityRunId) actions.push('<button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(entityRunId) + '">Open Entity Run</button>');
+      if (result.batch_id) actions.push('<button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(c.payload?.project_id || "") + '">Open Client</button>');
       return actions.join("");
     }
     function commandResultSummary(c) {
@@ -1335,7 +1764,7 @@ function cloudMirrorHtml() {
       if (result.content_plan) return (result.duplicate ? 'Reused ' : 'Created ') + 'content plan #' + esc(result.content_plan.id || "");
       if (result.report) return (result.duplicate ? 'Reused ' : 'Created ') + 'report #' + esc(result.report.id || "");
       if (result.snapshot) return 'Created ranking snapshot #' + esc(result.snapshot.id || "");
-      if (result.runs) return 'Queued ' + esc(fmtNum(result.runs.length || 0)) + ' Entity Explorer model runs.';
+      if (result.runs) return 'Completed ' + esc(fmtNum(result.runs.filter((run) => run.status === "complete").length || 0)) + ' of ' + esc(fmtNum(result.runs.length || 0)) + ' Entity Explorer model runs.';
       if (result.dry_run) return 'Dry run complete.';
       return 'Completed.';
     }
@@ -1505,7 +1934,7 @@ function cloudMirrorHtml() {
       if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
       if (command_type === "run_cora") return 'Queue Cora locally for "' + (payload.keyword || "") + '" against ' + (payload.target_url || "") + '. Local bridge must allow Cora execution.';
       if (command_type === "create_ranking_snapshot") return (payload.dry_run ? "Dry-run " : "") + 'Run Ranking Snapshot for ' + (payload.target || "") + '. Real runs require paid/API tools enabled on the local bridge.';
-      if (command_type === "run_entity_lsi") return (payload.dry_run ? "Dry-run " : "") + 'Run Entity Explorer for "' + (payload.seed_keyword || "") + '" across ' + ((payload.targets || []).length || 0) + ' model(s). Real runs require paid/API tools enabled on the local bridge.';
+      if (command_type === "run_entity_lsi") return (payload.dry_run ? "Dry-run " : "") + 'Run Entity Explorer for "' + (payload.seed_keyword || "") + '" across ' + ((payload.targets || []).length || 0) + ' model(s)' + (payload.execution_mode === "cloud" ? ' in Cloudflare.' : '. Real local runs require paid/API tools enabled on the local bridge.');
       if (command_type === "sync_cloud_data") return 'Ask the local bridge to push dashboard data to Cloudflare' + (payload.tables?.length ? ': ' + payload.tables.join(', ') : ' for all sync tables') + '.';
       if (command_type === "sync_cloud_to_local") return 'Ask the local bridge to pull Cloudflare changes into the local dashboard' + (payload.tables?.length ? ': ' + payload.tables.join(', ') : '.') ;
       if (command_type === "sync_report_artifacts") return 'Ask the local bridge to upload report HTML/XLSX artifacts' + (payload.force ? ' and force re-upload existing files.' : '.');
@@ -1529,7 +1958,9 @@ function cloudMirrorHtml() {
       if (command_type === "create_ranking_snapshot" && (!(payload.project_id) || !(payload.target || "").trim())) return "Select a client and enter a target domain.";
       if (command_type === "run_entity_lsi") {
         if (!payload.project_id || !(payload.seed_keyword || "").trim()) return "Select a client and enter a seed keyword.";
-        if (!Array.isArray(payload.targets) || !payload.targets.length) return "Add at least one Entity Explorer model target as apiKeyId:model.";
+        if (!Array.isArray(payload.targets) || !payload.targets.length) return "Add at least one Entity Explorer model target.";
+        if (payload.execution_mode === "cloud" && payload.targets.some((target) => !target.provider || !target.model)) return "Cloud Entity Explorer targets must use provider:model, for example openai:gpt-5.5.";
+        if (payload.execution_mode !== "cloud" && payload.targets.some((target) => !target.api_key_id || !target.model)) return "Local Entity Explorer targets must use apiKeyId:model.";
       }
       return "";
     }
@@ -1574,7 +2005,7 @@ function cloudMirrorHtml() {
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes require the admin/sync token. Dashboard read access is separate and can use READ_TOKEN when configured.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
       const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created clients, keywords, plans, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: projects,sites,keywords,content_plans,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions() + '</select><input id="cmd-keyword" placeholder="Keyword"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions() + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
-      const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge required</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs locally. Dry run is checked by default.</div><select id="cmd-ranking-project">' + projectOptions() + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Runs selected LLM targets locally. Use apiKeyId:model, one per line or comma-separated.</div><select id="cmd-entity-project">' + projectOptions() + '</select><input id="cmd-entity-seed" placeholder="Seed keyword"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="1:gpt-5.4&#10;2:claude-sonnet-4-6"></textarea><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
+      const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions() + '</select><input id="cmd-cora-keyword" placeholder="Keyword"><input id="cmd-cora-url" placeholder="Target URL"><input id="cmd-cora-profile" placeholder="Optional Cora profile"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions() + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions() + '</select><input id="cmd-entity-seed" placeholder="Seed keyword"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
       const commandTypes = [...new Set((data.commands || []).map((c) => c.command_type).filter(Boolean))];
       const filteredCommands = (data.commands || []).filter((c) => (state.commandStatus === "all" || c.status === state.commandStatus) && (state.commandType === "all" || c.command_type === state.commandType));
       const commandFilters = '<div class="filters"><select id="command-status-filter"><option value="all">All statuses</option>' + ["pending", "claimed", "complete", "failed"].map((status) => '<option value="' + status + '"' + (state.commandStatus === status ? ' selected' : '') + '>' + esc(commandStatusLabel(status)) + '</option>').join("") + '</select><select id="command-type-filter"><option value="all">All command types</option>' + commandTypes.map((type) => '<option value="' + esc(type) + '"' + (state.commandType === type ? ' selected' : '') + '>' + esc(commandLabel(type)) + '</option>').join("") + '</select></div>';
@@ -1596,8 +2027,8 @@ function cloudMirrorHtml() {
       byId("cmd-content-plan")?.addEventListener("click", () => setPendingCommand("create_content_plan", { execution_mode: "cloud", project_id: Number(byId("cmd-plan-project").value), title: byId("cmd-plan-title").value, keyword_id: Number(byId("cmd-plan-keyword").value || 0) || null, notes: byId("cmd-plan-notes").value }));
       byId("cmd-share-report")?.addEventListener("click", () => setPendingCommand("create_share_report", { execution_mode: "cloud", run_id: Number(byId("cmd-report-run").value), level: byId("cmd-report-level").value, title: byId("cmd-report-title").value }));
       byId("cmd-run-cora")?.addEventListener("click", () => setPendingCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }));
-      byId("cmd-ranking-snapshot")?.addEventListener("click", () => setPendingCommand("create_ranking_snapshot", { project_id: Number(byId("cmd-ranking-project").value), target: byId("cmd-ranking-target").value, location_code: Number(byId("cmd-ranking-location").value || 2840), language_code: byId("cmd-ranking-language").value || "en", limit: Number(byId("cmd-ranking-limit").value || 1000), include_subdomains: Boolean(byId("cmd-ranking-subdomains").checked), force_refresh: Boolean(byId("cmd-ranking-force").checked), dry_run: Boolean(byId("cmd-ranking-dry").checked) }));
-      byId("cmd-entity-lsi")?.addEventListener("click", () => setPendingCommand("run_entity_lsi", { project_id: Number(byId("cmd-entity-project").value), seed_keyword: byId("cmd-entity-seed").value, depth: Number(byId("cmd-entity-depth").value || 3), targets: parseEntityTargets(byId("cmd-entity-targets").value), run_async: Boolean(byId("cmd-entity-async").checked), dry_run: Boolean(byId("cmd-entity-dry").checked) }));
+      byId("cmd-ranking-snapshot")?.addEventListener("click", () => setPendingCommand("create_ranking_snapshot", { execution_mode: Boolean(byId("cmd-ranking-cloud").checked) ? "cloud" : "local", project_id: Number(byId("cmd-ranking-project").value), target: byId("cmd-ranking-target").value, location_code: Number(byId("cmd-ranking-location").value || 2840), language_code: byId("cmd-ranking-language").value || "en", limit: Number(byId("cmd-ranking-limit").value || 1000), include_subdomains: Boolean(byId("cmd-ranking-subdomains").checked), force_refresh: Boolean(byId("cmd-ranking-force").checked), dry_run: Boolean(byId("cmd-ranking-dry").checked) }));
+      byId("cmd-entity-lsi")?.addEventListener("click", () => setPendingCommand("run_entity_lsi", { execution_mode: Boolean(byId("cmd-entity-cloud").checked) ? "cloud" : "local", project_id: Number(byId("cmd-entity-project").value), seed_keyword: byId("cmd-entity-seed").value, depth: Number(byId("cmd-entity-depth").value || 3), targets: parseEntityTargets(byId("cmd-entity-targets").value), run_async: Boolean(byId("cmd-entity-async").checked), dry_run: Boolean(byId("cmd-entity-dry").checked) }));
       byId("cmd-sync-cloud")?.addEventListener("click", () => setPendingCommand("sync_cloud_data", { tables: (byId("cmd-sync-tables").value || "").split(",").map((v) => v.trim()).filter(Boolean), dry_run: Boolean(byId("cmd-sync-dry").checked) }));
       byId("cmd-pull-cloud")?.addEventListener("click", () => setPendingCommand("sync_cloud_to_local", { tables: (byId("cmd-pull-tables").value || "").split(",").map((v) => v.trim()).filter(Boolean), dry_run: Boolean(byId("cmd-pull-dry").checked) }));
       byId("cmd-sync-artifacts")?.addEventListener("click", () => setPendingCommand("sync_report_artifacts", { report_ids: (byId("cmd-artifact-report-ids").value || "").split(",").map((v) => Number(v.trim())).filter(Boolean), dry_run: Boolean(byId("cmd-artifact-dry").checked), force: Boolean(byId("cmd-artifact-force").checked) }));
@@ -1610,8 +2041,11 @@ function cloudMirrorHtml() {
     function parseEntityTargets(value) {
       return String(value || "").split(/[,\\n]/).map((raw) => raw.trim()).filter(Boolean).map((raw) => {
         const parts = raw.split(":");
-        return { api_key_id: Number(parts.shift() || 0), model: parts.join(":").trim() };
-      }).filter((target) => target.api_key_id && target.model);
+        const first = parts.shift() || "";
+        const model = parts.join(":").trim();
+        const apiKeyId = Number(first);
+        return Number.isFinite(apiKeyId) && apiKeyId > 0 ? { api_key_id: apiKeyId, model } : { provider: first.trim(), model };
+      }).filter((target) => (target.api_key_id || target.provider) && target.model);
     }
     function bindReportControls() {
       const client = document.getElementById("report-client-filter");
@@ -1844,6 +2278,7 @@ export default {
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return await handleDashboardData(request, env);
       if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return await handleDashboardMirrorData(request, env);
+      if (url.pathname === "/api/secrets/status" && request.method === "GET") return await handleSecretsStatus(request, env);
       const clientDetailRoute = url.pathname.match(/^\/api\/clients\/(\d+)\/detail$/);
       if (clientDetailRoute && request.method === "GET") return await handleClientDetail(request, env, Number(clientDetailRoute[1]));
       const runDetailRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/detail$/);

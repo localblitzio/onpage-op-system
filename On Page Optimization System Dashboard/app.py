@@ -830,17 +830,57 @@ def upsert_local_rows(con: sqlite3.Connection, table: str, rows: list[dict[str, 
         raise ValueError(f"Unsupported Cloudflare sync table: {table}")
     if not rows:
         return 0
-    columns = [column for column in local_table_columns(con, table) if column in rows[0]]
+    prepared_rows = [prepare_cloudflare_row_for_local(table, row) for row in rows]
+    columns = [column for column in local_table_columns(con, table) if column in prepared_rows[0]]
     if "id" not in columns:
         return 0
     placeholders = ", ".join("?" for _ in columns)
     updates = ", ".join(f"{column}=excluded.{column}" for column in columns if column != "id")
     sql = f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {updates}"
     count = 0
-    for row in rows:
+    for row in prepared_rows:
         con.execute(sql, [row.get(column) for column in columns])
         count += 1
     return count
+
+
+def prepare_cloudflare_row_for_local(table: str, row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    if table == "entity_lsi_batches":
+        if "completed_count" in item and "complete_count" not in item:
+            item["complete_count"] = item.get("completed_count")
+        item["complete_count"] = int(item.get("complete_count") or 0)
+        item["failed_count"] = int(item.get("failed_count") or 0)
+    elif table == "entity_lsi_runs":
+        if item.get("provider") and not item.get("provider_key"):
+            item["provider_key"] = normalize_ai_provider(item.get("provider")) or clean_text(item.get("provider"))
+        if item.get("completed_at") and not item.get("updated_at"):
+            item["updated_at"] = item.get("completed_at")
+        if not item.get("updated_at"):
+            item["updated_at"] = item.get("created_at") or datetime.now().isoformat(timespec="seconds")
+        item["prompt_version"] = item.get("prompt_version") or "cloud-v1"
+        item["prompt"] = item.get("prompt") or ""
+        item["main_url"] = item.get("main_url") or ""
+        item["status"] = item.get("status") or "complete"
+        if not item.get("result_json"):
+            def parse_json_field(name: str) -> list[Any]:
+                try:
+                    value = json.loads(item.get(name) or "[]")
+                    return value if isinstance(value, list) else []
+                except json.JSONDecodeError:
+                    return []
+
+            result = {
+                "summary": item.get("summary") or "",
+                "entities": parse_json_field("entities_json"),
+                "lsi_keywords": parse_json_field("lsi_keywords_json"),
+                "related_keywords": parse_json_field("related_keywords_json"),
+                "questions": parse_json_field("questions_json"),
+                "topics": parse_json_field("topics_json"),
+                "warnings": [],
+            }
+            item["result_json"] = json.dumps(result)
+    return item
 
 
 def pull_cloudflare_sync(tables: list[str] | None = None, limit: int = 5000) -> dict[str, Any]:
