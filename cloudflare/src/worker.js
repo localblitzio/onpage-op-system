@@ -1340,7 +1340,7 @@ async function handleDashboardData(request, env) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const scope = await accessContext(request, env);
   const { user, admin } = scope;
-  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
+  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, contentPlans, entitySets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
     countProjectTable(env, "projects", scope, "id"),
     countProjectTable(env, "keywords", scope),
@@ -1348,6 +1348,8 @@ async function handleDashboardData(request, env) {
     countReportRows(env, scope),
     countProjectTable(env, "ranking_snapshots", scope),
     countProjectTable(env, "ranking_optimization_targets", scope),
+    countProjectTable(env, "content_plans", scope),
+    countProjectTable(env, "entity_sets", scope),
     env.DB.prepare("SELECT COUNT(*) AS count FROM cloud_commands WHERE status IN ('pending', 'claimed')").first().then((row) => Number(row?.count || 0)),
     bridgeStatus(env),
     artifactStatusData(env),
@@ -1379,12 +1381,14 @@ async function handleDashboardData(request, env) {
   const clientScope = scopeClause(scope, "p.id");
   const clientWhere = clientScope.sql ? `WHERE ${clientScope.sql}` : "";
   const clientRows = await env.DB.prepare(
-    `SELECT p.id, p.name, p.client, p.site_domain,
+    `SELECT p.id, p.name, p.client, p.site_domain, p.profile_id, pr.name AS profile_name,
             (SELECT COUNT(*) FROM keywords k WHERE k.project_id = p.id) AS keyword_count,
             (SELECT COUNT(*) FROM runs r WHERE r.project_id = p.id) AS run_count,
             (SELECT COUNT(*) FROM ranking_snapshots rs WHERE rs.project_id = p.id) AS snapshot_count,
-            (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.project_id = p.id) AS target_count
+            (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.project_id = p.id) AS target_count,
+            (SELECT COUNT(*) FROM content_plans cp WHERE cp.project_id = p.id) AS plan_count
      FROM projects p
+     LEFT JOIN profiles pr ON pr.id = p.profile_id
      ${clientWhere}
      ORDER BY p.updated_at DESC, p.id DESC
      LIMIT 50`
@@ -1396,7 +1400,7 @@ async function handleDashboardData(request, env) {
     worker_url: new URL(request.url).origin,
     user: user || (admin ? { email: "token-admin", role: "admin", status: "active" } : { email: "token-reader", role: "read", status: "active" }),
     is_admin: admin,
-    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, pending_commands: pendingCommands },
+    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, content_plans: contentPlans, entity_sets: entitySets, pending_commands: pendingCommands },
     artifacts,
     sync,
     bridges,
@@ -1410,7 +1414,9 @@ async function handleDashboardMirrorData(request, env) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const scope = await accessContext(request, env);
   const overview = await handleDashboardData(request, env).then((response) => response.json());
-  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, commands, audits] = await Promise.all([
+  const profileScope = scopeClause(scope, "p.id");
+  const profileWhere = scope.scoped && profileScope.sql ? `WHERE ${profileScope.sql}` : "";
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, commands, audits] = await Promise.all([
     env.DB.prepare(
       `SELECT r.id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
@@ -1487,6 +1493,17 @@ async function handleDashboardMirrorData(request, env) {
        ORDER BY cp.updated_at DESC, cp.id DESC
        LIMIT 150`
     ).all(),
+    env.DB.prepare(
+      `SELECT pr.id, pr.name, pr.client, pr.notes, pr.created_at, pr.updated_at,
+              COUNT(p.id) AS client_count,
+              GROUP_CONCAT(p.name, ', ') AS client_names
+       FROM profiles pr
+       LEFT JOIN projects p ON p.profile_id = pr.id
+       ${profileWhere}
+       GROUP BY pr.id
+       ORDER BY pr.updated_at DESC, pr.id DESC
+       LIMIT 150`
+    ).bind(...profileScope.binds).all(),
     env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 100").all(),
     recentAuditEvents(env, 120)
   ]);
@@ -1501,6 +1518,7 @@ async function handleDashboardMirrorData(request, env) {
     entity_runs: filterScope(entityRuns.results || [], scope),
     entity_sets: filterScope(entitySets.results || [], scope),
     content_plans: filterScope(contentPlans.results || [], scope),
+    profiles: profileRows.results || [],
     commands: filterScope(normalizedCommands.map((command) => ({ ...command, project_id: command.payload?.project_id || command.result?.project?.id || command.result?.snapshot?.project_id || null })), scope),
     audit_events: scope.scoped ? [] : audits
   });
@@ -1810,7 +1828,12 @@ async function handleEntityRunDetail(request, env, id) {
 async function handleClientDetail(request, env, id) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   await assertProjectAccess(request, env, id);
-  const client = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
+  const client = await env.DB.prepare(
+    `SELECT p.*, pr.name AS profile_name, pr.client AS profile_client
+     FROM projects p
+     LEFT JOIN profiles pr ON pr.id = p.profile_id
+     WHERE p.id = ?`
+  ).bind(id).first();
   if (!client) return json({ ok: false, error: "Client not found" }, 404);
   const [keywords, runs, jobs, snapshots, targets, reports, plans, entityBatches, entityRuns, entitySets] = await Promise.all([
     env.DB.prepare("SELECT * FROM keywords WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 250").bind(id).all(),
@@ -2111,6 +2134,7 @@ function cloudMirrorHtml() {
       ["reports", "Cora Reports"],
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
+      ["cora-profiles", "Cora Profiles"],
       ["ranking", "Ranking Snapshots"],
       ["targets", "Optimization Targets"],
       ["entities", "Entity Explorer"],
@@ -2165,7 +2189,7 @@ function cloudMirrorHtml() {
       const syncRows = (data.sync?.tables || []).slice(-14).map((r) => '<div class="status-row"><span>' + esc(r.table_name) + '</span><strong>' + esc(fmtNum(r.rows_received)) + '</strong></div>').join("");
       const artifactRows = (data.artifacts || []).map((r) => '<div class="status-row"><span>' + esc(r.artifact_type) + '</span><strong>' + esc(fmtNum(r.artifact_count)) + ' / ' + esc(fmtBytes(r.total_bytes)) + '</strong></div>').join("");
       const bridgeRows = (data.bridges || []).map((b) => '<div class="status-row"><span>' + esc(b.bridge_id) + '<br><small class="muted">' + esc(fmtDate(b.last_seen_at)) + '</small><br><small class="muted">Cora ' + esc(b.allow_cora ? 'enabled' : 'off') + ' | Paid tools ' + esc(b.allow_paid_tools ? 'enabled' : 'off') + '</small></span><strong class="' + (b.online ? 'ok' : 'warn') + '">' + esc(b.online ? 'Online' : 'Offline') + '</strong></div>').join("");
-      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
+      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Content Plans", counts.content_plans],["Entity Sets", counts.entity_sets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
         + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
         + '<section><div class="head"><h3>Bridge Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (bridgeRows || '<div class="muted">No local bridge heartbeat yet.</div>') + '</div><div class="head"><h3>Cloud Files</h3></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
     }
@@ -2186,7 +2210,16 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Cora Reports</h3><span class="pill ok">Share-ready</span></div>' + filters + reportTable(filtered) + '</section>';
     }
     function clientsTable(items) {
-      return table(["Client", "Site", "Keywords", "Runs", "Snapshots", "Targets", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '</td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(c.id) + '">Open</button></td></tr>'));
+      return table(["Client", "Site / Profile", "Keywords", "Runs", "Snapshots", "Targets", "Plans", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '<br><span class="muted">' + esc(c.profile_name ? "Cora profile: " + c.profile_name : "No Cora profile") + '</span></td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td><td>' + esc(fmtNum(c.plan_count)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(c.id) + '">Open</button></td></tr>'));
+    }
+    function profilesTable(items) {
+      return table(["Profile", "Clients", "Attached Clients", "Updated"], rows(items).map((p) => '<tr><td><strong>' + esc(p.name || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(fmtNum(p.client_count || 0)) + '</td><td>' + esc(p.client_names || p.client || "") + '</td><td>' + esc(fmtDate(p.updated_at || p.created_at)) + '</td></tr>'), "No Cora profiles synced yet.");
+    }
+    function coraProfilesView(data) {
+      const profiles = data.profiles || [];
+      const attached = profiles.reduce((sum, profile) => sum + Number(profile.client_count || 0), 0);
+      return cards([["Profiles", profiles.length],["Attached Clients", attached],["Unattached", profiles.filter((profile) => !Number(profile.client_count || 0)).length]])
+        + '<section><div class="head"><h3>Cora Profiles</h3><span class="muted">Synced profile metadata. Native Cora profile editing still happens through the local Cora bridge.</span></div>' + profilesTable(profiles) + '</section>';
     }
     function runsTable(items) {
       return table(["Keyword", "Client", "Target", "Imported", "Data", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>'));
@@ -2533,7 +2566,7 @@ function cloudMirrorHtml() {
       const setRows = (data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
       const firstKeyword = (data.keywords || [])[0]?.keyword || "";
       const actionButtons = '<section><div class="head"><h3>Client Actions</h3><span class="muted">Pre-filled from this client.</span></div><div class="status-list"><div class="toolbar"><button class="client-command" data-client-command="ranking" data-project-id="' + esc(client.id || "") + '" data-target="' + esc(client.site_domain || "") + '">Run Ranking Snapshot</button><button class="client-command secondary" data-client-command="cora" data-project-id="' + esc(client.id || "") + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(client.site_domain || "") + '">Run Cora</button><button class="client-command secondary" data-client-command="entity" data-project-id="' + esc(client.id || "") + '" data-keyword="' + esc(firstKeyword) + '">Run Entity Explorer</button><button class="client-command secondary" data-client-command="pull" data-project-id="' + esc(client.id || "") + '">Pull Cloud Changes</button></div><div class="muted">Cora remains local-only. Ranking and Entity commands can run locally now; cloud execution for paid/API tools is staged behind provider secrets.</div></div></section>';
-      return smallCards([["Client", client.name || ""],["Main URL", client.site_domain || ""],["Keywords", (data.keywords || []).length],["Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length]])
+      return smallCards([["Client", client.name || ""],["Main URL", client.site_domain || ""],["Cora Profile", client.profile_name || "None"],["Keywords", (data.keywords || []).length],["Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length]])
         + actionButtons
         + '<section><div class="head"><h3>Keywords</h3></div>' + detailTable(["Keyword","Intent","Priority","Created"], keywordRows, "No keywords synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Cora Runs</h3></div>' + detailTable(["Keyword","Target","Imported",""], runRows, "No Cora runs synced for this client.") + '</section>'
@@ -2824,6 +2857,7 @@ function cloudMirrorHtml() {
         reports: () => reportPortal(data),
         runs: () => '<section><div class="head"><h3>Cora Runs</h3></div>' + runsTable(data.runs || []) + '</section>',
         jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
+        "cora-profiles": () => coraProfilesView(data),
         ranking: () => '<section><div class="head"><h3>Ranking Snapshots</h3></div>' + snapshotsTable(data.snapshots || []) + '</section>',
         targets: () => '<section><div class="head"><h3>Optimization Targets</h3></div>' + targetsTable(data.targets || []) + '</section>',
         entities: () => entityExplorerView(data),
