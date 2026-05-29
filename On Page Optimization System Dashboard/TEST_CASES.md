@@ -1,4 +1,4 @@
-# On Page Optimization System Test Cases
+# On Page Optimization System Dashboard Test Cases
 
 Use this set after dashboard changes and before relying on the tool for client work.
 
@@ -8,7 +8,7 @@ Use this set after dashboard changes and before relying on the tool for client w
 
 1. Start `start-dashboard.bat`.
 2. Open `http://127.0.0.1:9191/`.
-3. Confirm the page title says `On Page Optimization System`.
+3. Confirm the page title says `On Page Optimization System Dashboard`.
 4. Confirm the top menu has `Cora` and `API Keys`.
 5. Confirm the Cora status line shows either a Cora status or that Cora is unreachable.
 
@@ -79,11 +79,10 @@ Expected: The job is marked `stopped`, and the job error contains the stop respo
 
 ## Automated Smoke Tests
 
-Run from `D:\CC-Cora 7.2\cora_dashboard`:
+Run from `D:\CC-Cora 7.2\On Page Optimization System Dashboard`:
 
 ```bat
 python test_dashboard.py
 ```
 
 The smoke tests use a temporary database and do not touch `data/cora_runs.sqlite3`.
-

@@ -8,16 +8,24 @@
 !AGENTS.md
 !CLAUDE.md
 
-!cora_dashboard/
-!cora_dashboard/app.py
-!cora_dashboard/README.md
-!cora_dashboard/TEST_CASES.md
-!cora_dashboard/test_dashboard.py
-!cora_dashboard/start-dashboard.bat
-!cora_dashboard/static/
-!cora_dashboard/static/index.html
-!cora_dashboard/static/app.js
-!cora_dashboard/static/styles.css
+!On Page Optimization System Dashboard/
+!On Page Optimization System Dashboard/app.py
+!On Page Optimization System Dashboard/README.md
+!On Page Optimization System Dashboard/TEST_CASES.md
+!On Page Optimization System Dashboard/test_dashboard.py
+!On Page Optimization System Dashboard/start-dashboard.bat
+!On Page Optimization System Dashboard/static/
+!On Page Optimization System Dashboard/static/index.html
+!On Page Optimization System Dashboard/static/app.js
+!On Page Optimization System Dashboard/static/styles.css
+
+!cloudflare/
+!cloudflare/README.md
+!cloudflare/package.json
+!cloudflare/wrangler.toml.example
+!cloudflare/schema.sql
+!cloudflare/src/
+!cloudflare/src/worker.js
 
 !package_api_overlay.py
 !repair_api_enabled_jar.ps1
@@ -43,8 +51,8 @@
 !Cora SEO Software/build/cora/app-style.css
 
 # Explicit generated/runtime exclusions inside allowed folders.
-cora_dashboard/data/
-cora_dashboard/__pycache__/
+On Page Optimization System Dashboard/data/
+On Page Optimization System Dashboard/__pycache__/
 **/__pycache__/
 *.pyc
 *.sqlite3
@@ -60,4 +68,3 @@ cora_dashboard/__pycache__/
 *.backup*
 debug-cora*.bat
 debug-cora*.log
-

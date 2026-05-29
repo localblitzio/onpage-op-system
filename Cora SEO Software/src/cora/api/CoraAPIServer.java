@@ -11,7 +11,9 @@ import cora.util.AutoLog;
 import cora.util.AutoUtil;
 import cora.util.BatchRunner;
 import cora.util.LogUtil;
+import cora.util.MyDomainsUtil;
 import cora.util.PrefsUtil;
+import cora.util.ProfileUtil;
 import javafx.application.Platform;
 import javafx.collections.ObservableList;
 
@@ -20,7 +22,10 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class CoraAPIServer {
 
@@ -47,6 +52,8 @@ public class CoraAPIServer {
             server.createContext("/api/batch", new BatchHandler());
             server.createContext("/api/script", new ScriptHandler());
             server.createContext("/api/settings", new SettingsHandler());
+            server.createContext("/api/profiles", new ProfilesHandler());
+            server.createContext("/api/domains", new DomainsHandler());
             server.createContext("/api/results", new ResultsHandler());
             server.createContext("/api/log", new LogHandler());
             server.createContext("/api/help", new HelpHandler());
@@ -135,6 +142,10 @@ public class CoraAPIServer {
                 "    \"POST /api/batch\": \"Run batch. Body: {\\\"entries\\\": [{\\\"url\\\":\\\"...\\\",\\\"keyword\\\":\\\"...\\\"}]}\",\n" +
                 "    \"POST /api/script\": \"Run raw CoraScript. Body: {\\\"script\\\": \\\"search best seo; track https://...; click get data\\\"}\",\n" +
                 "    \"POST /api/settings\": \"Update settings. Body: {\\\"country\\\": \\\"US\\\", \\\"language\\\": \\\"en\\\", \\\"searches\\\": 3, \\\"platform\\\": \\\"Desktop\\\", \\\"profile\\\": \\\"...\\\", \\\"near\\\": \\\"...\\\"}\",\n" +
+                "    \"GET /api/profiles\": \"List saved Cora profiles\",\n" +
+                "    \"POST /api/profiles\": \"Create/update a Cora profile from current settings. Body: {\\\"name\\\": \\\"Profile Name\\\"}\",\n" +
+                "    \"GET /api/domains\": \"List tracked, banned, slow-render domains, and stop words\",\n" +
+                "    \"POST /api/domains\": \"Update domain lists. Body values are newline/comma/semicolon separated strings: tracked, banned, slowRender, stopWords\",\n" +
                 "    \"GET /api/export/csv\": \"Download results as CSV. Add ?factors=true for factor data\",\n" +
                 "    \"GET /api/export/json\": \"Download full results with factors, tracked data as JSON\"\n" +
                 "  }\n" +
@@ -245,7 +256,12 @@ public class CoraAPIServer {
                 return;
             }
             Platform.runLater(() -> {
-                CoraContext.stopButton.fire();
+                CoraContext.running = false;
+                CoraContext.searchRunning = false;
+                if (CoraContext.actionLabel != null) CoraContext.actionLabel.setText("");
+                if (CoraContext.progressBar != null) CoraContext.progressBar.setProgress(0.0);
+                AutoUtil.tasks.clear();
+                if (CoraContext.stopButton != null) CoraContext.stopButton.fire();
             });
             respond(ex, 200, "{\"ok\":true,\"action\":\"stop\"}");
         }
@@ -376,6 +392,280 @@ public class CoraAPIServer {
                 AutoUtil.processNextTask();
             });
             respond(ex, 200, "{\"ok\":true,\"applied\":\"" + esc(applied.toString()) + "\"}");
+        }
+    }
+
+    static class ProfilesHandler implements HttpHandler {
+        public void handle(HttpExchange ex) throws IOException {
+            if ("GET".equals(ex.getRequestMethod())) {
+                String selected = "";
+                List<String> names = new ArrayList<String>();
+                try {
+                    String dirname = PrefsUtil.getCoraHome() + "/profiles";
+                    File dir = new File(dirname);
+                    dir.mkdirs();
+                    String[] files = dir.list();
+                    if (files != null) {
+                        for (String file : files) {
+                            if (file != null && file.endsWith(".coraconfig")) {
+                                String shortname = file.replaceAll("\\.coraconfig$", "");
+                                if (!names.contains(shortname)) {
+                                    names.add(shortname);
+                                }
+                            }
+                        }
+                    }
+                    if (CoraContext.profileChoiceBox != null && CoraContext.profileChoiceBox.getSelectionModel().getSelectedItem() != null) {
+                        selected = CoraContext.profileChoiceBox.getSelectionModel().getSelectedItem().toString();
+                    } else {
+                        selected = PrefsUtil.getDefaultProfile();
+                    }
+                } catch (Exception e) {
+                    respond(ex, 500, "{\"error\":\"" + esc(e.toString()) + "\"}");
+                    return;
+                }
+                StringBuilder json = new StringBuilder();
+                json.append("{\"selected\":\"").append(esc(selected)).append("\",\"profiles\":[");
+                for (int i = 0; i < names.size(); i++) {
+                    if (i > 0) json.append(",");
+                    json.append("\"").append(esc(names.get(i))).append("\"");
+                }
+                json.append("]}");
+                respond(ex, 200, json.toString());
+                return;
+            }
+            if (!"POST".equals(ex.getRequestMethod())) {
+                respond(ex, 405, "{\"error\":\"GET or POST required\"}");
+                return;
+            }
+
+            String body = readBody(ex);
+            String name = sanitizeProfileName(getParam(body, "name"));
+            if (name == null || name.isEmpty()) {
+                respond(ex, 400, "{\"error\":\"name is required\"}");
+                return;
+            }
+
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> error = new AtomicReference<String>("");
+            Platform.runLater(() -> {
+                try {
+                    cora.model.Profile p = ProfileUtil.getCurrentSettings();
+                    String dirname = PrefsUtil.getCoraHome() + "/profiles";
+                    File dir = new File(dirname);
+                    dir.mkdirs();
+                    File file = new File(dirname + "/" + name + ".coraconfig");
+                    ProfileUtil.serialize(p, file);
+                    PrefsUtil.setDefaultProfile(name);
+                    ProfileUtil.loadProfiles();
+                    if (CoraContext.profileChoiceBox != null) {
+                        CoraContext.profileChoiceBox.getSelectionModel().select(name);
+                    }
+                } catch (Exception e) {
+                    error.set(e.toString());
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                respond(ex, 500, "{\"error\":\"interrupted while saving profile\"}");
+                return;
+            }
+            if (error.get() != null && !error.get().isEmpty()) {
+                respond(ex, 500, "{\"error\":\"" + esc(error.get()) + "\"}");
+                return;
+            }
+            respond(ex, 200, "{\"ok\":true,\"profile\":\"" + esc(name) + "\"}");
+        }
+
+        private static String sanitizeProfileName(String name) {
+            if (name == null) return "";
+            return name.trim().replaceAll("[\\\\/:*?\"<>|]", "_");
+        }
+    }
+
+    static class DomainsHandler implements HttpHandler {
+        public void handle(HttpExchange ex) throws IOException {
+            if ("GET".equals(ex.getRequestMethod())) {
+                respond(ex, 200, domainsJson());
+                return;
+            }
+            if (!"POST".equals(ex.getRequestMethod())) {
+                respond(ex, 405, "{\"error\":\"GET or POST required\"}");
+                return;
+            }
+
+            String body = readBody(ex);
+            CountDownLatch latch = new CountDownLatch(1);
+            AtomicReference<String> error = new AtomicReference<String>("");
+            Platform.runLater(() -> {
+                try {
+                    String tracked = getListParam(body, "tracked");
+                    String banned = getListParam(body, "banned");
+                    String competitors = getListParam(body, "competitors");
+                    String slowRender = getListParam(body, "slowRender");
+                    String stopWords = getListParam(body, "stopWords");
+
+                    if (tracked != null) {
+                        CopyOnWriteArrayList<String> vals = parseList(tracked);
+                        MyDomainsUtil.saveMyDomains(vals);
+                        MyDomainsUtil.loadMyDomains();
+                        if (CoraContext.trackedDomainsTextArea != null) CoraContext.trackedDomainsTextArea.setText(joinLines(vals));
+                    }
+                    if (banned != null) {
+                        CopyOnWriteArrayList<String> vals = parseList(banned);
+                        MyDomainsUtil.saveMyBannedDomains(vals);
+                        MyDomainsUtil.loadMyBannedDomains();
+                        if (CoraContext.bannedDomainsTextArea != null) CoraContext.bannedDomainsTextArea.setText(joinLines(vals));
+                    }
+                    if (competitors != null) {
+                        CopyOnWriteArrayList<String> vals = parseList(competitors);
+                        PrefsUtil.setCompetitors(joinLines(vals));
+                        MyDomainsUtil.loadMyCompetitors();
+                    }
+                    if (slowRender != null) {
+                        CopyOnWriteArrayList<String> vals = parseList(slowRender);
+                        MyDomainsUtil.saveSlowRenderDomains(vals);
+                        MyDomainsUtil.loadSlowRenderDomains();
+                        if (CoraContext.slowRenderTextArea != null) CoraContext.slowRenderTextArea.setText(joinLines(vals));
+                    }
+                    if (stopWords != null) {
+                        CopyOnWriteArrayList<String> vals = parseList(stopWords);
+                        MyDomainsUtil.saveMyStopWords(vals);
+                        MyDomainsUtil.loadMyStopWords();
+                        if (CoraContext.stopWordsTextArea != null) CoraContext.stopWordsTextArea.setText(joinLines(vals));
+                    }
+                } catch (Exception e) {
+                    error.set(e.toString());
+                } finally {
+                    latch.countDown();
+                }
+            });
+
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                respond(ex, 500, "{\"error\":\"interrupted while updating domain lists\"}");
+                return;
+            }
+            if (error.get() != null && !error.get().isEmpty()) {
+                respond(ex, 500, "{\"error\":\"" + esc(error.get()) + "\"}");
+                return;
+            }
+            respond(ex, 200, domainsJson());
+        }
+
+        private static String domainsJson() {
+            try {
+                MyDomainsUtil.loadMyDomains();
+                MyDomainsUtil.loadMyBannedDomains();
+                MyDomainsUtil.loadMyCompetitors();
+                MyDomainsUtil.loadSlowRenderDomains();
+                MyDomainsUtil.loadMyStopWords();
+                return "{" +
+                    "\"tracked\":" + listJson(CoraContext.myDomains) + "," +
+                    "\"competitors\":" + listJson(CoraData.competitorDomains) + "," +
+                    "\"banned\":" + listJson(CoraContext.myBannedDomains) + "," +
+                    "\"slowRender\":" + listJson(CoraData.slowRenderDomains) + "," +
+                    "\"stopWords\":" + listJson(CoraContext.myStopWords) +
+                    "}";
+            } catch (Exception e) {
+                return "{\"error\":\"" + esc(e.toString()) + "\"}";
+            }
+        }
+
+        private static String listJson(List<String> list) {
+            StringBuilder json = new StringBuilder();
+            json.append("[");
+            if (list != null) {
+                for (int i = 0; i < list.size(); i++) {
+                    if (i > 0) json.append(",");
+                    json.append("\"").append(esc(list.get(i))).append("\"");
+                }
+            }
+            json.append("]");
+            return json.toString();
+        }
+
+        private static CopyOnWriteArrayList<String> parseList(String raw) {
+            CopyOnWriteArrayList<String> vals = new CopyOnWriteArrayList<String>();
+            if (raw == null) return vals;
+            String normalized = raw.replace("\\n", "\n").replace("\\r", "\n");
+            String[] parts = normalized.split("[\\r\\n;,]+");
+            for (String part : parts) {
+                if (part == null) continue;
+                String val = part.trim();
+                if (val.isEmpty() || vals.contains(val)) continue;
+                vals.add(val);
+            }
+            return vals;
+        }
+
+        private static String getListParam(String body, String key) {
+            String pattern = "\"" + key + "\"";
+            int idx = body.indexOf(pattern);
+            if (idx < 0) return null;
+            int colon = body.indexOf(":", idx + pattern.length());
+            if (colon < 0) return null;
+            int start = colon + 1;
+            while (start < body.length() && Character.isWhitespace(body.charAt(start))) start++;
+            if (start >= body.length()) return "";
+            if (body.charAt(start) != '[') return getParam(body, key);
+
+            int end = body.indexOf("]", start);
+            if (end < 0) return "";
+            String array = body.substring(start + 1, end);
+            StringBuilder sb = new StringBuilder();
+            int pos = 0;
+            while (pos < array.length()) {
+                int quote = array.indexOf("\"", pos);
+                if (quote < 0) break;
+                StringBuilder item = new StringBuilder();
+                boolean escaped = false;
+                for (int i = quote + 1; i < array.length(); i++) {
+                    char ch = array.charAt(i);
+                    if (escaped) {
+                        if (ch == 'n') item.append('\n');
+                        else if (ch == 'r') item.append('\r');
+                        else item.append(ch);
+                        escaped = false;
+                        continue;
+                    }
+                    if (ch == '\\') {
+                        escaped = true;
+                        continue;
+                    }
+                    if (ch == '"') {
+                        pos = i + 1;
+                        String value = item.toString().trim();
+                        if (!value.isEmpty()) {
+                            if (sb.length() > 0) sb.append("\n");
+                            sb.append(value);
+                        }
+                        break;
+                    }
+                    item.append(ch);
+                }
+                if (pos <= quote) break;
+            }
+            return sb.toString();
+        }
+
+        private static String joinLines(List<String> vals) {
+            StringBuilder sb = new StringBuilder();
+            if (vals != null) {
+                for (String val : vals) {
+                    if (val == null || val.trim().isEmpty()) continue;
+                    if (sb.length() > 0) sb.append("\n");
+                    sb.append(val);
+                }
+            }
+            return sb.toString();
         }
     }
 

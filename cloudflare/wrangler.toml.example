@@ -1,0 +1,19 @@
+name = "on-page-optimization-system"
+main = "src/worker.js"
+compatibility_date = "2026-05-29"
+
+# Copy this file to wrangler.toml and fill in your real IDs before deploying.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "opos-production"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[[r2_buckets]]
+binding = "REPORTS"
+bucket_name = "opos-reports"
+
+[vars]
+# Set the real token with:
+# wrangler secret put SYNC_TOKEN
+APP_NAME = "On Page Optimization System"

@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en" data-theme="system">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>On Page Optimization System Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css?v=cloudflare-sync-1">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>On Page Optimization System Dashboard</h1>
+      <p id="cora-status">Checking Cora...</p>
+    </div>
+    <div class="actions">
+      <button id="force-stop-cora" class="danger" type="button">Force Stop Cora</button>
+      <button id="import-latest">Import Latest Report</button>
+      <button id="refresh">Refresh</button>
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="profile-context">
+        <label>
+          Current Client
+          <select id="active-client"></select>
+        </label>
+      </div>
+      <div class="theme-context">
+        <label>
+          Theme
+          <select id="theme-mode">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+      </div>
+      <nav class="main-menu" aria-label="Main menu">
+        <div class="menu-section-label">Clients</div>
+        <button class="main-tab active" type="button" data-view="clients-view">Client Dashboard</button>
+        <button class="main-tab submenu-tab" type="button" data-view="new-client-view">New Client</button>
+
+        <div class="menu-section-label">Cora</div>
+        <button class="main-tab" type="button" data-view="cora-view">Run Cora</button>
+        <button class="main-tab submenu-tab" type="button" data-view="cora-profiles-view">Cora Profiles</button>
+        <button class="main-tab submenu-tab" type="button" data-view="reports-view">Cora Reports</button>
+
+        <div class="menu-section-label">Tools</div>
+        <button class="main-tab" type="button" data-view="entity-view">Entity &amp; LSI Explorer</button>
+        <button class="main-tab submenu-tab" type="button" data-view="entity-crossover-view">Entity Crossover</button>
+        <button class="main-tab submenu-tab" type="button" data-view="entity-sets-view">Entity Sets</button>
+        <button class="main-tab" type="button" data-view="ranking-snapshot-view">Ranking Snapshot</button>
+        <button class="main-tab submenu-tab" type="button" data-view="ranking-targets-view">Saved Targets</button>
+
+        <div class="menu-section-label">System</div>
+        <button class="main-tab" type="button" data-view="overview-view">Overview</button>
+        <button class="main-tab" type="button" data-view="planner-view">Content Planner</button>
+        <button class="main-tab" type="button" data-view="api-keys-view">Settings</button>
+      </nav>
+    </aside>
+    <div class="app-content">
+
+  <main id="overview-view" class="overview-view app-view hidden">
+    <section class="overview-panel">
+      <div class="detail-head">
+        <div>
+          <h2>Client Dashboard</h2>
+          <p>Clients, websites, Cora reports, and content work in one place.</p>
+        </div>
+      </div>
+      <div id="overview-content"></div>
+    </section>
+  </main>
+
+  <main id="clients-view" class="layout app-view">
+    <section class="sidebar">
+      <div class="client-list-head">
+        <h3>Clients</h3>
+        <button id="open-new-client" type="button" class="secondary">New</button>
+      </div>
+      <div id="projects" class="project-list"></div>
+
+      <form id="run-manager" class="run-manager hidden">
+        <h3>Run Manager</h3>
+        <label>
+          Cora Profile
+          <select id="job-profile"></select>
+        </label>
+        <label>
+          New Cora Profile
+          <input id="job-profile-name" type="text" placeholder="Create from current Cora settings" autocomplete="off">
+        </label>
+        <label>
+          Keyword
+          <input id="job-keyword" type="text" value="san diego pools" autocomplete="off">
+        </label>
+        <label>
+          Target URL or Domain
+          <input id="job-target" type="text" value="https://www.sandiegopools.com/" autocomplete="off">
+        </label>
+        <button type="submit">Start Cora Run</button>
+      </form>
+      <div class="client-sidebar-actions hidden">
+        <button id="show-cora-settings" class="secondary" type="button">Cora Settings</button>
+      </div>
+      <div class="jobs-panel hidden">
+        <div class="panel-head">
+          <h3>Jobs</h3>
+          <button id="refresh-jobs" type="button" class="secondary">Refresh</button>
+        </div>
+        <div id="jobs" class="job-list"></div>
+      </div>
+      <div class="search-row hidden">
+        <input id="search" type="search" placeholder="Search runs">
+      </div>
+      <div id="runs" class="run-list hidden"></div>
+
+      <form id="compare-manager" class="compare-manager hidden">
+        <h3>Compare Runs</h3>
+        <label>
+          Baseline
+          <select id="compare-base"></select>
+        </label>
+        <label>
+          Compare To
+          <select id="compare-target"></select>
+        </label>
+        <button type="submit">Compare</button>
+      </form>
+    </section>
+
+    <section class="detail">
+      <div id="cora-settings-detail" class="hidden">
+        <div class="detail-head">
+          <div>
+            <h2>Cora Settings</h2>
+            <p>Native Cora profiles, tracked domains, competitors, and crawl lists.</p>
+          </div>
+        </div>
+
+        <form id="domain-lists-form" class="domain-lists-form">
+          <section class="editable-list-panel">
+            <h3>Tracked Domains</h3>
+            <div class="inline-add">
+              <input id="domains-tracked-new" type="text" placeholder="domain.com" autocomplete="off">
+              <button id="domains-tracked-add" type="button">Add</button>
+            </div>
+            <div id="domains-tracked-list" class="editable-list"></div>
+          </section>
+          <section class="editable-list-panel">
+            <h3>Competitors</h3>
+            <div class="inline-add">
+              <input id="domains-competitors-new" type="text" placeholder="competitor.com" autocomplete="off">
+              <button id="domains-competitors-add" type="button">Add</button>
+            </div>
+            <div id="domains-competitors-list" class="editable-list"></div>
+          </section>
+          <label>
+            Banned Domains
+            <textarea id="domains-banned" spellcheck="false"></textarea>
+          </label>
+          <label>
+            Slow Render Domains
+            <textarea id="domains-slow-render" spellcheck="false"></textarea>
+          </label>
+          <label>
+            Stop Words
+            <textarea id="domains-stop-words" spellcheck="false"></textarea>
+          </label>
+          <button type="submit">Save Cora Settings</button>
+        </form>
+      </div>
+
+      <div id="empty-state" class="empty-state">
+        Select a client or create one to add keywords and run tools.
+      </div>
+
+      <div id="project-detail" class="hidden"></div>
+      <div id="compare-detail" class="hidden"></div>
+
+      <div id="run-detail" class="hidden">
+        <div class="detail-head">
+          <div>
+            <h2 id="detail-title"></h2>
+            <p id="detail-meta"></p>
+          </div>
+          <div class="detail-actions">
+            <button id="share-report-link" type="button" class="secondary">Create Share Report</button>
+            <a id="download-link" class="button-link" href="#">Download XLSX</a>
+          </div>
+        </div>
+
+        <div id="run-assignment" class="assignment-panel"></div>
+
+        <div class="metrics">
+          <div><span id="metric-results">0</span><label>SERP Results</label></div>
+          <div><span id="metric-recs">0</span><label>Recommendations</label></div>
+          <div><span id="metric-lsi">0</span><label>LSI Terms</label></div>
+        </div>
+
+        <nav class="tabs">
+          <button class="tab active" data-tab="serp">SERP</button>
+          <button class="tab" data-tab="recommendations">Recommendations</button>
+          <button class="tab" data-tab="lsi">LSI</button>
+          <button class="tab" data-tab="workbook">Workbook</button>
+          <button class="tab" data-tab="raw">Raw File</button>
+        </nav>
+
+        <section id="tab-serp" class="tab-panel"></section>
+        <section id="tab-recommendations" class="tab-panel hidden"></section>
+        <section id="tab-lsi" class="tab-panel hidden"></section>
+        <section id="tab-workbook" class="tab-panel hidden"></section>
+        <section id="tab-raw" class="tab-panel hidden"></section>
+      </div>
+    </section>
+  </main>
+
+  <main id="new-client-view" class="settings-view app-view hidden">
+    <section class="settings-panel new-client-panel">
+      <div class="detail-head">
+        <div>
+          <h2>New Client</h2>
+          <p>Create the client profile, main URL, optional starting keywords, and Cora profile attachment.</p>
+        </div>
+      </div>
+
+      <form id="project-manager" class="new-client-form">
+        <section class="client-panel">
+          <h3>Client Details</h3>
+          <label>
+            Client Name
+            <input id="project-name" type="text" placeholder="San Diego Pools" autocomplete="off">
+          </label>
+          <label>
+            Account Label
+            <input id="project-client" type="text" placeholder="Optional account or brand label" autocomplete="off">
+          </label>
+          <label>
+            Main URL
+            <input id="project-site" type="text" placeholder="https://example.com" autocomplete="off">
+          </label>
+        </section>
+
+        <section class="client-panel">
+          <h3>Cora Profile</h3>
+          <label>
+            Existing Cora Profile
+            <select id="project-profile"></select>
+          </label>
+          <label>
+            Create New Cora Profile
+            <input id="project-profile-name" type="text" placeholder="Optional new profile name" autocomplete="off">
+          </label>
+        </section>
+
+        <section class="client-panel new-client-wide">
+          <h3>Starting Keywords</h3>
+          <label>
+            Keywords
+            <textarea id="project-keywords" placeholder="Optional. One keyword per line."></textarea>
+          </label>
+          <button type="submit">Create Client</button>
+        </section>
+      </form>
+    </section>
+  </main>
+
+  <main id="cora-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="cora-tool-content"></div>
+    </section>
+  </main>
+
+  <main id="cora-profiles-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="cora-profiles-content"></div>
+    </section>
+  </main>
+
+  <main id="reports-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div class="detail-head">
+        <div>
+          <h2>Report Generator</h2>
+          <p>Create and manage customer-facing Cora report links.</p>
+        </div>
+      </div>
+      <div id="report-generator-content"></div>
+    </section>
+  </main>
+
+  <main id="entity-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="entity-tool-content"></div>
+    </section>
+  </main>
+
+  <main id="ranking-snapshot-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="ranking-snapshot-content"></div>
+    </section>
+  </main>
+
+  <main id="ranking-targets-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="ranking-targets-content"></div>
+    </section>
+  </main>
+
+  <main id="entity-crossover-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="entity-crossover-content"></div>
+    </section>
+  </main>
+
+  <main id="entity-batch-detail-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="entity-batch-detail-content"></div>
+    </section>
+  </main>
+
+  <main id="entity-sets-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="entity-sets-content"></div>
+    </section>
+  </main>
+
+  <main id="tools2-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="tools2-tool-content"></div>
+    </section>
+  </main>
+
+  <main id="aeo-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div id="aeo-tool-content"></div>
+    </section>
+  </main>
+
+  <main id="planner-view" class="settings-view app-view hidden">
+    <section class="settings-panel">
+      <div class="detail-head">
+        <div>
+          <h2>Content Planner</h2>
+          <p>Plan page updates, briefs, and new content around projects, pages, and keywords.</p>
+        </div>
+      </div>
+
+      <form id="content-plan-form" class="content-plan-form">
+        <label>
+          Project
+          <select id="plan-project"></select>
+        </label>
+        <label>
+          Site
+          <select id="plan-site"></select>
+        </label>
+        <label>
+          Page
+          <select id="plan-page"></select>
+        </label>
+        <label>
+          Keyword
+          <select id="plan-keyword"></select>
+        </label>
+        <label>
+          Title
+          <input id="plan-title" type="text" placeholder="Content task title" autocomplete="off">
+        </label>
+        <label>
+          Type
+          <select id="plan-type">
+            <option value="Page Update">Page Update</option>
+            <option value="New Page">New Page</option>
+            <option value="Blog Post">Blog Post</option>
+            <option value="Content Brief">Content Brief</option>
+            <option value="Technical Fix">Technical Fix</option>
+          </select>
+        </label>
+        <label>
+          Intent
+          <input id="plan-intent" type="text" placeholder="Commercial, informational, local" autocomplete="off">
+        </label>
+        <label>
+          Priority
+          <select id="plan-priority">
+            <option value="High">High</option>
+            <option value="Medium">Medium</option>
+            <option value="Low">Low</option>
+          </select>
+        </label>
+        <label>
+          Status
+          <select id="plan-status">
+            <option value="planned">Planned</option>
+            <option value="drafting">Drafting</option>
+            <option value="review">Review</option>
+            <option value="published">Published</option>
+          </select>
+        </label>
+        <label>
+          Due Date
+          <input id="plan-due-date" type="date">
+        </label>
+        <label class="wide">
+          Notes
+          <input id="plan-notes" type="text" placeholder="What needs to be written, updated, or checked" autocomplete="off">
+        </label>
+        <button type="submit">Add Plan</button>
+      </form>
+
+      <div id="content-plans" class="content-plan-list"></div>
+    </section>
+  </main>
+
+  <main id="api-keys-view" class="settings-view app-view hidden">
+    <section class="settings-panel">
+      <div class="detail-head">
+        <div>
+          <h2>API Providers</h2>
+          <p>Store and test API credentials for OpenAI, Anthropic, Google, xAI / Grok, Perplexity, and DataForSEO.</p>
+        </div>
+      </div>
+
+      <div id="api-keys" class="api-key-list"></div>
+    </section>
+  </main>
+
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js?v=cloudflare-sync-1"></script>
+</body>
+</html>

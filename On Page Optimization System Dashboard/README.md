@@ -1,4 +1,4 @@
-# On Page Optimization System
+# On Page Optimization System Dashboard
 
 Local database and dashboard for on-page SEO analysis, beginning with Cora report ingestion.
 
@@ -16,6 +16,7 @@ Local database and dashboard for on-page SEO analysis, beginning with Cora repor
 - Adds a manual Force Stop Cora control and a managed-run watchdog for frozen Cora status.
 - Stores API keys for future AI vendors and SEO data tools with masked display in the UI.
 - Starts Cora jobs through the local Cora API and watches for the generated report.
+- Pushes structured dashboard data to a Cloudflare Worker/D1 endpoint when configured.
 - Serves a local dashboard at `http://127.0.0.1:9191/`.
 
 ## Start
@@ -80,6 +81,35 @@ For older imported runs:
 
 ```bat
 python app.py backfill-workbook
+```
+
+## Push To Cloudflare
+
+Deploy the Worker in `../cloudflare/`, then set:
+
+```powershell
+$env:CLOUDFLARE_SYNC_URL = "https://YOUR-WORKER.workers.dev"
+$env:CLOUDFLARE_SYNC_TOKEN = "same-token-set-in-cloudflare"
+```
+
+Preview what would sync:
+
+```powershell
+python app.py cloudflare-sync --dry-run
+```
+
+Push structured data:
+
+```powershell
+python app.py cloudflare-sync
+```
+
+You can also use **Push to Cloudflare** on the Overview screen.
+
+Raw workbook rows are skipped by default because they can be large. To include them:
+
+```powershell
+$env:CLOUDFLARE_SYNC_WORKBOOK_ROWS = "1"
 ```
 
 ## Next Build Steps

@@ -1,0 +1,14 @@
+{
+  "name": "on-page-optimization-cloudflare",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "d1:init": "wrangler d1 execute OPOS_DB --file ./schema.sql",
+    "d1:init:remote": "wrangler d1 execute OPOS_DB --remote --file ./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

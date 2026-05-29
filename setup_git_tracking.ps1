@@ -19,14 +19,14 @@ if (-not (Test-Path ".git")) {
 git add -f .gitignore
 
 $paths = @(
-    "cora_dashboard\app.py",
-    "cora_dashboard\README.md",
-    "cora_dashboard\TEST_CASES.md",
-    "cora_dashboard\test_dashboard.py",
-    "cora_dashboard\start-dashboard.bat",
-    "cora_dashboard\static\index.html",
-    "cora_dashboard\static\app.js",
-    "cora_dashboard\static\styles.css",
+    "On Page Optimization System Dashboard\app.py",
+    "On Page Optimization System Dashboard\README.md",
+    "On Page Optimization System Dashboard\TEST_CASES.md",
+    "On Page Optimization System Dashboard\test_dashboard.py",
+    "On Page Optimization System Dashboard\start-dashboard.bat",
+    "On Page Optimization System Dashboard\static\index.html",
+    "On Page Optimization System Dashboard\static\app.js",
+    "On Page Optimization System Dashboard\static\styles.css",
     "package_api_overlay.py",
     "repair_api_enabled_jar.ps1",
     "diagnose_cora_api_launch.ps1",
