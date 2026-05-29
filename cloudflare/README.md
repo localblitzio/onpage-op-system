@@ -43,12 +43,18 @@ npm run d1:init:remote
 npm run deploy
 ```
 
+The production Worker is configured for:
+
+```text
+https://onpage.localblitz.io
+```
+
 ## Local Dashboard Sync
 
 Set these environment variables before starting `app.py`:
 
 ```powershell
-$env:CLOUDFLARE_SYNC_URL = "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev"
+$env:CLOUDFLARE_SYNC_URL = "https://onpage.localblitz.io"
 $env:CLOUDFLARE_SYNC_TOKEN = "same-token-set-with-wrangler-secret"
 ```
 
