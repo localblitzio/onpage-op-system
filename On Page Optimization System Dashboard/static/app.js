@@ -397,6 +397,7 @@ function renderOverview() {
   const artifactFiles = Number(artifactState.total_files || 0);
   const artifactBytes = Number(artifactState.total_bytes || 0);
   const artifactLast = artifactState.last_uploaded_at || "";
+  const bridge = cloudflare.bridge || {};
   root.innerHTML = `
     <div class="overview-grid">
       <div class="overview-card"><span>${fmtNum(counts.profiles || 0)}</span><label>Profiles</label></div>
@@ -434,6 +435,14 @@ function renderOverview() {
           <div><label>Report Files</label><strong>${fmtNum(artifactFiles)} synced</strong></div>
           <div><label>File Bytes</label><strong>${fmtBytes(artifactBytes)}</strong></div>
           <div><label>Last File Upload</label><strong>${fmtDate(artifactLast) || "Never"}</strong></div>
+          <div><label>Bridge</label><strong>${bridge.enabled ? "Auto" : "Manual"}</strong></div>
+          <div><label>Last Poll</label><strong>${fmtDate(bridge.last_poll_at) || "Never"}</strong></div>
+        </div>
+        <div class="cloud-bridge-controls">
+          <label><input id="bridge-enabled" type="checkbox" ${bridge.enabled ? "checked" : ""}> Auto-pull cloud commands</label>
+          <label><input id="bridge-allow-cora" type="checkbox" ${bridge.allow_cora ? "checked" : ""}> Allow cloud to queue Cora runs</label>
+          <label>Poll seconds <input id="bridge-poll-interval" type="number" min="10" max="3600" value="${htmlEscape(bridge.poll_interval || 30)}"></label>
+          <button id="save-bridge-settings" type="button" class="secondary">Save Bridge</button>
         </div>
       </section>
       <section class="data-section">
@@ -504,6 +513,7 @@ function bindCloudflareSyncControls() {
   el("cloudflare-files-dry-run")?.addEventListener("click", () => runCloudflareArtifactSync(true).catch((err) => toast(err.message)));
   el("cloudflare-files-sync-now")?.addEventListener("click", () => runCloudflareArtifactSync(false).catch((err) => toast(err.message)));
   el("cloudflare-commands-pull")?.addEventListener("click", () => pullCloudflareCommands().catch((err) => toast(err.message)));
+  el("save-bridge-settings")?.addEventListener("click", () => saveCloudBridgeSettings().catch((err) => toast(err.message)));
 }
 
 async function runCloudflareSync(dryRun = false) {
@@ -546,6 +556,20 @@ async function pullCloudflareCommands() {
   ]);
   if (state.activeView === "overview-view") renderOverview();
   toast(`Processed ${fmtNum(result.processed || 0)} cloud commands.`);
+}
+
+async function saveCloudBridgeSettings() {
+  const result = await api("/api/cloudflare/bridge", {
+    method: "POST",
+    body: JSON.stringify({
+      enabled: Boolean(el("bridge-enabled")?.checked),
+      allow_cora: Boolean(el("bridge-allow-cora")?.checked),
+      poll_interval: Number(el("bridge-poll-interval")?.value || 30),
+    }),
+  });
+  state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
+  renderOverview();
+  toast(result.enabled ? "Cloud bridge auto-polling enabled." : "Cloud bridge auto-polling disabled.");
 }
 
 function renderProjects() {

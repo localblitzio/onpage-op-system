@@ -31,6 +31,7 @@ DATA_DIR = APP_DIR / "data"
 ARCHIVE_DIR = DATA_DIR / "archive"
 DB_PATH = DATA_DIR / "cora_runs.sqlite3"
 QUEUE_PAUSE_PATH = DATA_DIR / "queue_paused.flag"
+BRIDGE_SETTINGS_PATH = DATA_DIR / "cloud_bridge.json"
 ACTIVITY_LOG_PATH = DATA_DIR / "dashboard_activity.jsonl"
 STATIC_DIR = APP_DIR / "static"
 DEFAULT_REPORT_DIR = Path.home()
@@ -47,6 +48,9 @@ CLOUDFLARE_SYNC_TOKEN = os.environ.get("CLOUDFLARE_SYNC_TOKEN", "")
 CLOUDFLARE_SYNC_BATCH_SIZE = max(1, min(int(os.environ.get("CLOUDFLARE_SYNC_BATCH_SIZE", "250")), 1000))
 CLOUDFLARE_SYNC_WORKBOOK_ROWS = os.environ.get("CLOUDFLARE_SYNC_WORKBOOK_ROWS", "").strip().lower() in {"1", "true", "yes"}
 CORA_JOB_LOCK = threading.Lock()
+BRIDGE_WORKER_STOP = threading.Event()
+BRIDGE_WORKER_LOCK = threading.Lock()
+BRIDGE_WORKER_THREAD: threading.Thread | None = None
 ENTITY_LSI_WORKERS: dict[int, threading.Thread] = {}
 ENTITY_LSI_WORKER_LOCK = threading.Lock()
 
@@ -176,6 +180,53 @@ def set_queue_paused(
         log_activity("queue", "Queue resumed", "info")
         if QUEUE_PAUSE_PATH.exists():
             QUEUE_PAUSE_PATH.unlink()
+
+
+def bridge_settings() -> dict[str, Any]:
+    defaults = {
+        "enabled": False,
+        "allow_cora": False,
+        "poll_interval": 30,
+        "bridge_id": "local-dashboard",
+        "updated_at": None,
+        "last_poll_at": None,
+        "last_result": None,
+        "last_error": None,
+    }
+    if not BRIDGE_SETTINGS_PATH.exists():
+        return defaults
+    try:
+        data = json.loads(BRIDGE_SETTINGS_PATH.read_text(encoding="utf-8"))
+        merged = {**defaults, **data}
+        merged["poll_interval"] = max(10, min(int(merged.get("poll_interval") or 30), 3600))
+        return merged
+    except Exception:
+        return {**defaults, "last_error": "Unreadable bridge settings file"}
+
+
+def set_bridge_settings(enabled: bool | None = None, allow_cora: bool | None = None, poll_interval: int | None = None) -> dict[str, Any]:
+    ensure_dirs()
+    settings = bridge_settings()
+    if enabled is not None:
+        settings["enabled"] = bool(enabled)
+    if allow_cora is not None:
+        settings["allow_cora"] = bool(allow_cora)
+    if poll_interval is not None:
+        settings["poll_interval"] = max(10, min(int(poll_interval), 3600))
+    settings["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    BRIDGE_SETTINGS_PATH.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    return settings
+
+
+def save_bridge_runtime_state(result: dict[str, Any] | None = None, error: str | None = None) -> dict[str, Any]:
+    settings = bridge_settings()
+    settings["last_poll_at"] = datetime.now().isoformat(timespec="seconds")
+    settings["last_result"] = result
+    settings["last_error"] = error
+    settings["updated_at"] = settings["last_poll_at"]
+    ensure_dirs()
+    BRIDGE_SETTINGS_PATH.write_text(json.dumps(settings, indent=2, default=str), encoding="utf-8")
+    return settings
 
 
 def ensure_dirs() -> None:
@@ -714,6 +765,7 @@ def cloudflare_sync_state() -> dict[str, Any]:
         "counts": counts,
         "state": [row_to_dict(row) for row in rows],
         "artifacts": artifacts,
+        "bridge": bridge_status(),
     }
 
 
@@ -837,6 +889,9 @@ def update_cloudflare_command(command_id: int, status: str, result: dict[str, An
 def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
     command_type = command.get("command_type") or ""
     payload = command.get("payload") if isinstance(command.get("payload"), dict) else {}
+    settings = bridge_settings()
+    if command_type == "run_cora" and not settings.get("allow_cora"):
+        raise ValueError("Cloud bridge is not allowed to queue Cora runs. Enable Allow Cora in local bridge settings.")
     changed_tables: set[str] = set()
     artifact_report_ids: list[int] = []
     result: dict[str, Any] = {"command_type": command_type}
@@ -937,6 +992,56 @@ def pull_cloudflare_commands(limit: int = 25) -> dict[str, Any]:
                 pass
             results.append({"id": command_id, "status": "failed", "error": str(exc)})
     return {"ok": all(item["status"] == "complete" for item in results), "processed": len(results), "commands": results}
+
+
+def send_bridge_heartbeat(result: dict[str, Any] | None = None, status: str = "online") -> dict[str, Any]:
+    settings = bridge_settings()
+    payload = {
+        "bridge_id": settings.get("bridge_id") or "local-dashboard",
+        "status": status,
+        "version": "local-dashboard",
+        "allow_cora": bool(settings.get("allow_cora")),
+        "poll_interval": int(settings.get("poll_interval") or 30),
+        "last_poll_at": settings.get("last_poll_at"),
+        "last_result": result if result is not None else settings.get("last_result"),
+    }
+    return cloudflare_request_json("/api/bridge/heartbeat", payload)
+
+
+def bridge_status() -> dict[str, Any]:
+    settings = bridge_settings()
+    return {
+        "configured": cloudflare_sync_configured(),
+        **settings,
+    }
+
+
+def cloud_bridge_loop() -> None:
+    while not BRIDGE_WORKER_STOP.is_set():
+        settings = bridge_settings()
+        interval = int(settings.get("poll_interval") or 30)
+        if settings.get("enabled") and cloudflare_sync_configured():
+            try:
+                result = pull_cloudflare_commands(limit=25)
+                save_bridge_runtime_state(result=result, error=None)
+                send_bridge_heartbeat(result=result)
+            except Exception as exc:
+                save_bridge_runtime_state(result=None, error=str(exc))
+                try:
+                    send_bridge_heartbeat(result={"ok": False, "error": str(exc)}, status="error")
+                except Exception:
+                    pass
+        BRIDGE_WORKER_STOP.wait(max(10, interval))
+
+
+def ensure_bridge_worker() -> None:
+    global BRIDGE_WORKER_THREAD
+    with BRIDGE_WORKER_LOCK:
+        if BRIDGE_WORKER_THREAD and BRIDGE_WORKER_THREAD.is_alive():
+            return
+        BRIDGE_WORKER_STOP.clear()
+        BRIDGE_WORKER_THREAD = threading.Thread(target=cloud_bridge_loop, name="cloud-bridge", daemon=True)
+        BRIDGE_WORKER_THREAD.start()
 
 
 def report_artifact_key(token: str, artifact_type: str, file_name: str) -> str:
@@ -5767,6 +5872,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 json_response(self, cloudflare_sync_state())
             elif path == "/api/cloudflare/artifacts":
                 json_response(self, cloudflare_artifact_state())
+            elif path == "/api/cloudflare/bridge":
+                json_response(self, bridge_status())
             elif path == "/api/content-plans":
                 self.api_content_plans(query)
             elif path == "/api/entity-lsi/runs":
@@ -5917,6 +6024,19 @@ class AppHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/cloudflare/commands/pull":
                 result = pull_cloudflare_commands(int(body.get("limit") or 25))
                 json_response(self, result, 200 if result.get("ok") else 502)
+            elif parsed.path == "/api/cloudflare/bridge":
+                result = set_bridge_settings(
+                    enabled=bool(body.get("enabled")) if "enabled" in body else None,
+                    allow_cora=bool(body.get("allow_cora")) if "allow_cora" in body else None,
+                    poll_interval=int(body.get("poll_interval")) if body.get("poll_interval") else None,
+                )
+                ensure_bridge_worker()
+                if cloudflare_sync_configured():
+                    try:
+                        send_bridge_heartbeat(result={"settings_updated": True})
+                    except Exception:
+                        pass
+                json_response(self, result)
             elif parsed.path == "/api/share-reports":
                 report = create_share_report(
                     int(body.get("run_id")),
@@ -6688,6 +6808,7 @@ def start_server(port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
     init_db()
     log_activity("system", f"Dashboard server started on port {port}", "info")
     resume_pending_jobs()
+    ensure_bridge_worker()
     server = ThreadingHTTPServer(("127.0.0.1", port), AppHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -6737,6 +6858,19 @@ def main(argv: list[str]) -> int:
         limit_arg = next((arg for arg in argv[2:] if arg.startswith("--limit=")), "")
         limit = int(limit_arg.removeprefix("--limit=")) if limit_arg else 25
         result = pull_cloudflare_commands(limit=limit)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if len(argv) > 1 and argv[1] == "cloudflare-bridge-enable":
+        allow_cora = "--allow-cora" in argv
+        interval_arg = next((arg for arg in argv[2:] if arg.startswith("--interval=")), "")
+        interval = int(interval_arg.removeprefix("--interval=")) if interval_arg else None
+        result = set_bridge_settings(enabled=True, allow_cora=allow_cora, poll_interval=interval)
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+
+    if len(argv) > 1 and argv[1] == "cloudflare-bridge-disable":
+        result = set_bridge_settings(enabled=False)
         print(json.dumps(result, indent=2, default=str))
         return 0
 

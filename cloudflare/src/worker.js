@@ -253,6 +253,49 @@ async function updateCommand(request, env, id) {
   return json({ ok: true, command: normalizeCommand(row) });
 }
 
+async function bridgeHeartbeat(request, env) {
+  if (!requireSyncAuth(request, env)) return json({ ok: false, error: "Unauthorized" }, 401);
+  const payload = await request.json();
+  const bridgeId = String(payload.bridge_id || "local-dashboard").trim();
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT INTO bridge_heartbeats
+     (bridge_id, status, version, allow_cora, poll_interval, last_poll_at, last_result_json, last_seen_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(bridge_id) DO UPDATE SET
+       status=excluded.status,
+       version=excluded.version,
+       allow_cora=excluded.allow_cora,
+       poll_interval=excluded.poll_interval,
+       last_poll_at=excluded.last_poll_at,
+       last_result_json=excluded.last_result_json,
+       last_seen_at=excluded.last_seen_at`
+  ).bind(
+    bridgeId,
+    String(payload.status || "online"),
+    String(payload.version || ""),
+    payload.allow_cora ? 1 : 0,
+    Number(payload.poll_interval || 0),
+    payload.last_poll_at || now,
+    payload.last_result ? JSON.stringify(payload.last_result) : null,
+    now
+  ).run();
+  const row = await env.DB.prepare("SELECT * FROM bridge_heartbeats WHERE bridge_id = ?").bind(bridgeId).first();
+  return json({ ok: true, bridge: normalizeBridge(row) });
+}
+
+function normalizeBridge(row) {
+  if (!row) return null;
+  let lastResult = null;
+  try { lastResult = row.last_result_json ? JSON.parse(row.last_result_json) : null; } catch (_err) { lastResult = row.last_result_json; }
+  return { ...row, allow_cora: Boolean(row.allow_cora), online: Date.now() - Date.parse(row.last_seen_at || 0) < 120000, last_result: lastResult, last_result_json: undefined };
+}
+
+async function bridgeStatus(env) {
+  const rows = await env.DB.prepare("SELECT * FROM bridge_heartbeats ORDER BY last_seen_at DESC LIMIT 20").all();
+  return (rows.results || []).map(normalizeBridge);
+}
+
 async function syncStatusData(env) {
   const rows = await env.DB.prepare(
     "SELECT table_name, SUM(row_count) AS rows_received, MAX(received_at) AS last_received_at FROM sync_batches GROUP BY table_name ORDER BY table_name"
@@ -270,7 +313,7 @@ async function countTable(env, table) {
 }
 
 async function handleDashboardData(request, env) {
-  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, artifacts, sync] = await Promise.all([
+  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
     countTable(env, "projects"),
     countTable(env, "keywords"),
@@ -279,6 +322,7 @@ async function handleDashboardData(request, env) {
     countTable(env, "ranking_snapshots"),
     countTable(env, "ranking_optimization_targets"),
     env.DB.prepare("SELECT COUNT(*) AS count FROM cloud_commands WHERE status IN ('pending', 'claimed')").first().then((row) => Number(row?.count || 0)),
+    bridgeStatus(env),
     artifactStatusData(env),
     syncStatusData(env)
   ]);
@@ -320,6 +364,7 @@ async function handleDashboardData(request, env) {
     counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, pending_commands: pendingCommands },
     artifacts,
     sync,
+    bridges,
     reports: recentReports.results || [],
     clients: clientRows.results || []
   });
@@ -656,9 +701,10 @@ function cloudMirrorHtml() {
       const lastSync = (data.sync?.tables || []).map((r) => r.last_received_at).filter(Boolean).sort().pop();
       const syncRows = (data.sync?.tables || []).slice(-14).map((r) => '<div class="status-row"><span>' + esc(r.table_name) + '</span><strong>' + esc(fmtNum(r.rows_received)) + '</strong></div>').join("");
       const artifactRows = (data.artifacts || []).map((r) => '<div class="status-row"><span>' + esc(r.artifact_type) + '</span><strong>' + esc(fmtNum(r.artifact_count)) + ' / ' + esc(fmtBytes(r.total_bytes)) + '</strong></div>').join("");
+      const bridgeRows = (data.bridges || []).map((b) => '<div class="status-row"><span>' + esc(b.bridge_id) + '<br><small class="muted">' + esc(fmtDate(b.last_seen_at)) + '</small></span><strong class="' + (b.online ? 'ok' : 'warn') + '">' + esc(b.online ? 'Online' : 'Offline') + '</strong></div>').join("");
       return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
         + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
-        + '<section><div class="head"><h3>Sync Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
+        + '<section><div class="head"><h3>Bridge Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (bridgeRows || '<div class="muted">No local bridge heartbeat yet.</div>') + '</div><div class="head"><h3>Cloud Files</h3></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
     }
     function reportTable(items) {
       return table(["Report", "Client", "Level", "Files", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">' + esc(r.keyword || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.level || "") + '</td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><a href="' + reportUrl(r.token) + '" target="_blank">Open</a><br><a href="' + downloadUrl(r.token) + '">XLSX</a></td></tr>'), "No cloud reports synced yet.");
@@ -796,6 +842,7 @@ export default {
       if (url.pathname === "/api/commands" && request.method === "POST") return createCommand(request, env);
       const commandRoute = url.pathname.match(/^\/api\/commands\/(\d+)$/);
       if (commandRoute && request.method === "POST") return updateCommand(request, env, Number(commandRoute[1]));
+      if (url.pathname === "/api/bridge/heartbeat" && request.method === "POST") return bridgeHeartbeat(request, env);
       const shareDownload = url.pathname.match(/^\/share\/report\/([^/]+)\/download$/);
       if (shareDownload && ["GET", "HEAD"].includes(request.method)) return serveReportArtifact(request, env, decodeURIComponent(shareDownload[1]), "source_xlsx");
       const shareReport = url.pathname.match(/^\/share\/report\/([^/]+)$/);

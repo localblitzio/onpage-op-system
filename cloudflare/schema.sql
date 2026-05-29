@@ -34,6 +34,17 @@ CREATE TABLE IF NOT EXISTS cloud_commands (
   completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS bridge_heartbeats (
+  bridge_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'online',
+  version TEXT,
+  allow_cora INTEGER NOT NULL DEFAULT 0,
+  poll_interval INTEGER,
+  last_poll_at TEXT,
+  last_result_json TEXT,
+  last_seen_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, profile_id INTEGER, name TEXT, client TEXT, site_domain TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, project_id INTEGER, domain TEXT, name TEXT, created_at TEXT);
@@ -275,6 +286,7 @@ CREATE TABLE IF NOT EXISTS ranking_optimization_targets (
 CREATE INDEX IF NOT EXISTS idx_sync_batches_table ON sync_batches(table_name, received_at);
 CREATE INDEX IF NOT EXISTS idx_report_artifacts_token ON report_artifacts(token, artifact_type);
 CREATE INDEX IF NOT EXISTS idx_cloud_commands_status ON cloud_commands(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_bridge_heartbeats_seen ON bridge_heartbeats(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id);
 CREATE INDEX IF NOT EXISTS idx_runs_project ON runs(project_id);
 CREATE INDEX IF NOT EXISTS idx_serp_run ON serp_results(run_id);

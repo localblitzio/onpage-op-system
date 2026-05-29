@@ -18,6 +18,7 @@ class DashboardSmokeTests(unittest.TestCase):
         app.ARCHIVE_DIR = app.DATA_DIR / "archive"
         app.DB_PATH = app.DATA_DIR / "test.sqlite3"
         app.QUEUE_PAUSE_PATH = app.DATA_DIR / "queue_paused.flag"
+        app.BRIDGE_SETTINGS_PATH = app.DATA_DIR / "cloud_bridge.json"
         app.ACTIVITY_LOG_PATH = app.DATA_DIR / "dashboard_activity.jsonl"
         app.STATIC_DIR = root / "static"
         app.init_db()
@@ -1281,6 +1282,35 @@ class DashboardSmokeTests(unittest.TestCase):
         )
 
         self.assertEqual(result["keyword"]["keyword"], "cloud keyword")
+
+    def test_bridge_settings_default_blocks_cora_commands(self) -> None:
+        settings = app.bridge_settings()
+
+        self.assertFalse(settings["enabled"])
+        self.assertFalse(settings["allow_cora"])
+
+        with self.assertRaisesRegex(ValueError, "not allowed to queue Cora"):
+            app.apply_cloudflare_command(
+                {
+                    "command_type": "run_cora",
+                    "payload": {"project_id": 1, "keyword": "cloud cora", "target_url": "https://example.com"},
+                }
+            )
+
+    def test_bridge_settings_can_enable_cora_commands(self) -> None:
+        project = app.create_project("Cora Client", site_domain="https://example.com")
+        app.set_queue_paused(True)
+        app.set_bridge_settings(enabled=True, allow_cora=True, poll_interval=15)
+
+        result = app.apply_cloudflare_command(
+            {
+                "command_type": "run_cora",
+                "payload": {"project_id": project["id"], "keyword": "cloud cora", "target_url": "https://example.com"},
+            }
+        )
+
+        self.assertEqual(result["job"]["keyword"], "cloud cora")
+        self.assertEqual(app.bridge_settings()["poll_interval"], 15)
 
 
 if __name__ == "__main__":

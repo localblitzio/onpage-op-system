@@ -2941,6 +2941,28 @@ input[type="search"] {
   overflow-wrap: anywhere;
 }
 
+.cloud-bridge-controls {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.cloud-bridge-controls label {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  gap: 6px;
+  margin: 0;
+}
+
+.cloud-bridge-controls input[type="number"] {
+  margin: 0;
+  max-width: 90px;
+}
+
 .status-pill {
   display: inline-block;
   padding: 2px 6px;
