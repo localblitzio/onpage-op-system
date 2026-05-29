@@ -1453,7 +1453,7 @@ async function handleDashboardMirrorData(request, env) {
   const profileWhere = scope.scoped && profileScope.sql ? `WHERE ${profileScope.sql}` : "";
   const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, commands, audits] = await Promise.all([
     env.DB.prepare(
-      `SELECT r.id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
+      `SELECT r.id, r.project_id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
               (SELECT COUNT(*) FROM recommendations rec WHERE rec.run_id = r.id) AS recommendation_count,
               (SELECT COUNT(*) FROM lsi_keywords lsi WHERE lsi.run_id = r.id) AS lsi_count,
@@ -1464,7 +1464,7 @@ async function handleDashboardMirrorData(request, env) {
        LIMIT 100`
     ).all(),
     env.DB.prepare(
-      `SELECT j.id, j.keyword, j.target_url, j.target_domain, j.cora_profile, j.tool, j.status,
+      `SELECT j.id, j.project_id, j.keyword, j.target_url, j.target_domain, j.cora_profile, j.tool, j.status,
               j.status_message, j.started_at, j.updated_at, j.completed_at, j.last_activity_at,
               p.name AS project_name
        FROM managed_jobs j
@@ -2351,7 +2351,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "overview", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     const pages = [
       ["overview", "Overview"],
       ["clients", "Clients"],
@@ -2483,10 +2483,32 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Cora Profiles</h3><span class="muted">Synced profile metadata. Native Cora profile editing still happens through the local Cora bridge.</span></div>' + profilesTable(profiles) + '</section>';
     }
     function runsTable(items) {
-      return table(["Keyword", "Client", "Target", "Imported", "Data", ""], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>'));
+      return table(["Keyword", "Client", "Target", "Imported", "Data", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open Run</button><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(r.project_id || "") + '">Open Client</button></td></tr>'));
     }
     function jobsTable(items) {
-      return table(["Keyword", "Client", "Tool/Profile", "Status", "Updated"], rows(items).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.project_name || "") + '</td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span><br><span class="muted">' + esc(j.status_message || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>'));
+      return table(["Keyword", "Client", "Tool/Profile", "Status", "Updated", "Actions"], rows(items).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.project_name || "") + '</td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span><br><span class="muted">' + esc(j.status_message || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(j.project_id || "") + '">Open Client</button></td></tr>'));
+    }
+    function coraRunsView(data) {
+      const allRuns = data.runs || [];
+      const clients = [...new Map(allRuns.map((run) => [String(run.project_id || ""), run.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const filtered = allRuns.filter((run) => state.runClient === "all" || String(run.project_id || "") === state.runClient);
+      const latest = filtered.map((run) => run.imported_at).filter(Boolean).sort().pop();
+      const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.runClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
+      const filters = '<div class="filters"><select id="run-client-filter">' + clientOptions + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(allRuns.length) + ' runs</span></div>';
+      return cards([["Cora Runs", allRuns.length],["Visible", filtered.length],["Clients", clients.length],["Latest Import", fmtDate(latest) || "None"]])
+        + '<section><div class="head"><h3>Cora Runs</h3><span class="muted">Imported Cora report workbooks and extracted rows.</span></div>' + filters + runsTable(filtered) + '</section>';
+    }
+    function coraJobsView(data) {
+      const allJobs = data.jobs || [];
+      const clients = [...new Map(allJobs.map((job) => [String(job.project_id || ""), job.project_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const statuses = [...new Set(allJobs.map((job) => String(job.status || "").trim()).filter(Boolean))].sort();
+      const filtered = allJobs.filter((job) => (state.jobClient === "all" || String(job.project_id || "") === state.jobClient) && (state.jobStatus === "all" || String(job.status || "") === state.jobStatus));
+      const running = allJobs.filter((job) => ["queued", "running", "claimed"].includes(String(job.status || "").toLowerCase())).length;
+      const clientOptions = '<option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.jobClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("");
+      const statusOptions = '<option value="all">All statuses</option>' + statuses.map((status) => '<option value="' + esc(status) + '"' + (state.jobStatus === status ? ' selected' : '') + '>' + esc(status) + '</option>').join("");
+      const filters = '<div class="filters"><select id="job-client-filter">' + clientOptions + '</select><select id="job-status-filter">' + statusOptions + '</select><span class="muted">' + esc(filtered.length) + ' of ' + esc(allJobs.length) + ' jobs</span></div>';
+      return cards([["Cora Jobs", allJobs.length],["Visible", filtered.length],["Active", running],["Clients", clients.length]])
+        + '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + filters + jobsTable(filtered) + '</section>';
     }
     function snapshotsTable(items) {
       return table(["Target", "Client", "Locale", "Keywords", "Pages", "Created", ""], rows(items).map((s) => '<tr><td><strong>' + esc(s.target || "") + '</strong><br><span class="muted">' + esc(s.source || "") + ' / ' + esc(s.freshness || "") + '</span></td><td>' + esc(s.project_name || "") + '</td><td>' + esc(s.location_code || "") + ' / ' + esc(s.language_code || "") + '</td><td>' + esc(fmtNum(s.keyword_count)) + '</td><td>' + esc(fmtNum(s.page_count)) + '</td><td>' + esc(fmtDate(s.created_at)) + '</td><td><button class="detail-btn" data-detail-type="snapshot" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>'));
@@ -3106,6 +3128,8 @@ function cloudMirrorHtml() {
         + '</div>';
       const toolCards = [
         ["Cora", "Queue or review Cora jobs using this client URL, keywords, and Cora profile.", "commands", "Prepare Cora Run", "cora-command"],
+        ["Cora Runs", "Open imported Cora workbooks and report details for this client.", "runs", "Open Cora Runs", ""],
+        ["Cora Jobs", "Review local Cora queue activity scoped to this client.", "jobs", "Open Cora Jobs", ""],
         ["Ranking Snapshot", "Create DataForSEO ranking snapshots and open existing snapshot details.", "ranking", "Open Ranking Snapshots", ""],
         ["Optimization Targets", "Review ranking URLs saved from snapshots and move them into Cora or plans.", "targets", "Open Targets", ""],
         ["Entity Explorer", "Run or review entity batches tied to this client's keywords.", "entities", "Open Entity Explorer", ""],
@@ -3358,6 +3382,14 @@ function cloudMirrorHtml() {
         };
       });
     }
+    function bindCoraListControls() {
+      const runClient = document.getElementById("run-client-filter");
+      if (runClient) runClient.onchange = (event) => { state.runClient = event.target.value || "all"; render(); };
+      const jobClient = document.getElementById("job-client-filter");
+      const jobStatus = document.getElementById("job-status-filter");
+      if (jobClient) jobClient.onchange = (event) => { state.jobClient = event.target.value || "all"; render(); };
+      if (jobStatus) jobStatus.onchange = (event) => { state.jobStatus = event.target.value || "all"; render(); };
+    }
     function bindDetailControls() {
       document.querySelectorAll(".detail-btn").forEach((button) => {
         if (button.classList.contains("sheet-btn")) return;
@@ -3400,6 +3432,11 @@ function cloudMirrorHtml() {
           const page = button.dataset.pageTarget || "clients";
           const projectId = String(button.dataset.projectId || "all");
           if (page === "reports") state.reportClient = projectId;
+          if (page === "runs") state.runClient = projectId;
+          if (page === "jobs") {
+            state.jobClient = projectId;
+            state.jobStatus = "all";
+          }
           if (page === "ranking") {
             state.rankingClient = projectId;
             state.rankingBase = "";
@@ -3446,8 +3483,8 @@ function cloudMirrorHtml() {
         overview: () => overview(data),
         clients: () => '<section><div class="head"><h3>Clients</h3></div>' + clientsTable(data.clients || []) + '</section>',
         reports: () => reportPortal(data),
-        runs: () => '<section><div class="head"><h3>Cora Runs</h3></div>' + runsTable(data.runs || []) + '</section>',
-        jobs: () => '<section><div class="head"><h3>Cora Jobs</h3><span class="pill warn">Read only</span></div>' + jobsTable(data.jobs || []) + '</section>',
+        runs: () => coraRunsView(data),
+        jobs: () => coraJobsView(data),
         "cora-profiles": () => coraProfilesView(data),
         ranking: () => rankingView(data),
         targets: () => targetsView(data),
@@ -3462,6 +3499,7 @@ function cloudMirrorHtml() {
       }[state.page] || (() => overview(data));
       document.getElementById("app").innerHTML = content() + detailPanel();
       setTimeout(bindReportControls, 0);
+      if (["runs", "jobs"].includes(state.page)) setTimeout(bindCoraListControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);
       if (state.page === "targets") setTimeout(bindTargetControls, 0);
