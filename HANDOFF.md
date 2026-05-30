@@ -92,6 +92,9 @@ Implemented:
 - Cloud validates report attachments against the selected Cora run client before creating the report.
 - `Cora > Cora Profiles` now includes a cloud-side Profile Setup panel.
 - Cloud can create/reuse Cora profile metadata and attach a profile to a client.
+- Cloud Cora Profiles can update profile metadata, detach a profile from a client, and archive a profile without deleting historical run/report references.
+- Cloud Cora Profiles can queue local bridge commands to apply a profile in Windows Cora or push current Windows Cora settings into a profile.
+- Local Cora Profiles now support archive behavior through the profile editor; archived profiles are hidden from normal profile lists.
 - Cloud-to-local pull sync includes `profiles` by default so profile/client links mirror back locally.
 - Cloud-created report metadata is immediate, but customer HTML/source XLSX artifacts still come from the local bridge/report file sync.
 - Cloud reports without uploaded artifacts show `Files pending` and route the user to sync report files instead of opening a missing artifact URL.
@@ -162,7 +165,7 @@ Authenticated smoke currently checks:
 - No unexpected browser/page errors.
 - Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer, Entity Crossover, Entity Sets.
 - Cora page renders.
-- Cora Profiles setup panel renders.
+- Cora Profiles setup panel renders, including create, attach, update, detach, archive, and local apply controls.
 - Cora Reports create panel renders, including the Optimization Targets picker.
 - Ranking Snapshot run button renders.
 - Ranking Snapshot detail renders Save Optimization Targets and the target save button when snapshots exist.
@@ -257,6 +260,7 @@ Live status refresh on the tool pages has been started:
 
 - Apply the parity checklist to the live codebase and close the next highest-impact gaps:
   - Confirm Ranking Snapshot local/cloud run and result parity.
+  - Confirm real bridge execution of cloud-queued Cora profile apply/push commands.
   - Confirm real bridge generation/upload for cloud-created Cora report artifacts.
   - Verify attached Ranking Snapshot, Optimization Targets, and Entity Set metadata appear in generated customer reports.
   - Confirm cloud-to-local sync for cloud-created Ranking Targets and Entity Sets in a real bridge pull.

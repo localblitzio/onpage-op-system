@@ -78,6 +78,10 @@ try {
     await page.getByRole("heading", { name: "Profile Setup" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#profile-create-submit").count(), "Cora Profiles create button renders");
     assert(await page.locator("#profile-attach-submit").count(), "Cora Profiles attach button renders");
+    assert(await page.locator("#profile-update-submit").count(), "Cora Profiles update button renders");
+    assert(await page.locator("#profile-detach-submit").count(), "Cora Profiles detach button renders");
+    assert(await page.locator("#profile-archive-submit").count(), "Cora Profiles archive button renders");
+    assert(await page.locator("#profile-apply-cora").count(), "Cora Profiles local apply button renders");
     assert(await page.locator("#profiles-inline-status").count(), "Cora Profiles inline status area exists");
 
     await clickNav(page, "Cora Reports");

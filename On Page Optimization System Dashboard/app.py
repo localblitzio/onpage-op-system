@@ -390,7 +390,8 @@ def init_db() -> None:
                 client TEXT,
                 notes TEXT,
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                archived_at TEXT
             );
 
             CREATE TABLE IF NOT EXISTS projects (
@@ -665,6 +666,7 @@ def init_db() -> None:
         ensure_column(con, "runs", "site_id", "INTEGER")
         ensure_column(con, "runs", "page_id", "INTEGER")
         ensure_column(con, "runs", "keyword_id", "INTEGER")
+        ensure_column(con, "profiles", "archived_at", "TEXT")
         ensure_column(con, "projects", "profile_id", "INTEGER")
         ensure_column(con, "managed_jobs", "cora_profile", "TEXT")
         ensure_column(con, "managed_jobs", "project_id", "INTEGER")
@@ -1077,6 +1079,62 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         result["duplicate"] = bool(existing)
         result["project"] = project
         changed_tables.update({"profiles", "projects", "sites"})
+    elif command_type == "create_profile":
+        profile = create_profile(payload.get("name", ""), payload.get("client"), payload.get("notes"))
+        if payload.get("execution_mode") != "cloud":
+            try:
+                result["cora"] = create_cora_profile(profile["name"])
+            except Exception as exc:
+                result["cora_error"] = str(exc)
+        result["profile"] = profile
+        changed_tables.add("profiles")
+    elif command_type == "update_profile":
+        profile = update_profile(
+            int(payload.get("profile_id") or 0),
+            payload.get("name", ""),
+            payload.get("client"),
+            payload.get("notes"),
+        )
+        result["profile"] = profile
+        changed_tables.add("profiles")
+    elif command_type == "attach_profile":
+        profile_name = clean_text(payload.get("profile_name"))
+        if profile_name and payload.get("execution_mode") != "cloud":
+            try:
+                create_cora_profile(profile_name)
+            except Exception as exc:
+                result["cora_error"] = str(exc)
+        project = attach_project_profile(
+            int(payload.get("project_id") or 0),
+            int(payload["profile_id"]) if payload.get("profile_id") else None,
+            profile_name,
+        )
+        result["project"] = project
+        changed_tables.update({"profiles", "projects"})
+    elif command_type == "detach_profile":
+        project = attach_project_profile(int(payload.get("project_id") or 0), detach=True)
+        result["project"] = project
+        changed_tables.add("projects")
+    elif command_type == "archive_profile":
+        profile = archive_profile(int(payload.get("profile_id") or 0))
+        result["profile"] = profile
+        changed_tables.update({"profiles", "projects"})
+    elif command_type == "apply_cora_profile":
+        profile_id = int(payload.get("profile_id") or 0)
+        with connect() as con:
+            profile = con.execute("SELECT * FROM profiles WHERE id = ? AND archived_at IS NULL", (profile_id,)).fetchone()
+        if not profile:
+            raise ValueError("Profile not found")
+        result["profile"] = row_to_dict(profile)
+        result["cora"] = post_cora("/api/settings", {"profile": profile["name"]})
+    elif command_type == "push_cora_profile":
+        profile_id = int(payload.get("profile_id") or 0)
+        with connect() as con:
+            profile = con.execute("SELECT * FROM profiles WHERE id = ? AND archived_at IS NULL", (profile_id,)).fetchone()
+        if not profile:
+            raise ValueError("Profile not found")
+        result["profile"] = row_to_dict(profile)
+        result["cora"] = create_cora_profile(profile["name"])
     elif command_type == "add_keyword":
         project_id = int(payload.get("project_id") or 0)
         keyword_text = clean_text(payload.get("keyword")) or ""
@@ -2164,6 +2222,7 @@ def sync_cora_profiles() -> list[dict[str, Any]]:
                 SELECT pr.*,
                        (SELECT COUNT(*) FROM projects p WHERE p.profile_id = pr.id) AS project_count
                 FROM profiles pr
+                WHERE pr.archived_at IS NULL
                 ORDER BY pr.name COLLATE NOCASE
                 """
             ).fetchall()
@@ -2188,6 +2247,7 @@ def sync_cora_profiles() -> list[dict[str, Any]]:
             SELECT pr.*,
                    (SELECT COUNT(*) FROM projects p WHERE p.profile_id = pr.id) AS project_count
             FROM profiles pr
+            WHERE pr.archived_at IS NULL
             ORDER BY pr.name COLLATE NOCASE
             """
         ).fetchall()
@@ -2693,6 +2753,19 @@ def create_profile(name: str, client: str | None = None, notes: str | None = Non
     with connect() as con:
         existing = find_profile_by_name(con, name)
         if existing:
+            if existing["archived_at"]:
+                con.execute(
+                    """
+                    UPDATE profiles
+                    SET client = COALESCE(?, client),
+                        notes = COALESCE(?, notes),
+                        updated_at = ?,
+                        archived_at = NULL
+                    WHERE id = ?
+                    """,
+                    (clean_text(client), clean_text(notes), now, existing["id"]),
+                )
+                return row_to_dict(con.execute("SELECT * FROM profiles WHERE id = ?", (existing["id"],)).fetchone()) or {}
             return row_to_dict(existing) or {}
         cur = con.execute(
             """
@@ -2714,7 +2787,7 @@ def update_profile(profile_id: int, name: str, client: str | None = None, notes:
         if not existing:
             raise ValueError("Profile not found")
         duplicate = con.execute(
-            "SELECT id FROM profiles WHERE lower(name) = lower(?) AND id != ?",
+            "SELECT id FROM profiles WHERE lower(name) = lower(?) AND id != ? AND archived_at IS NULL",
             (name, profile_id),
         ).fetchone()
         if duplicate:
@@ -2722,7 +2795,7 @@ def update_profile(profile_id: int, name: str, client: str | None = None, notes:
         con.execute(
             """
             UPDATE profiles
-            SET name = ?, client = ?, notes = ?, updated_at = ?
+            SET name = ?, client = ?, notes = ?, updated_at = ?, archived_at = NULL
             WHERE id = ?
             """,
             (name, clean_text(client), clean_text(notes), now, profile_id),
@@ -2747,6 +2820,10 @@ def get_or_create_profile(
 ) -> sqlite3.Row:
     existing = find_profile_by_name(con, name)
     if existing:
+        if existing["archived_at"]:
+            now = datetime.now().isoformat(timespec="seconds")
+            con.execute("UPDATE profiles SET archived_at = NULL, updated_at = ? WHERE id = ?", (now, existing["id"]))
+            return con.execute("SELECT * FROM profiles WHERE id = ?", (existing["id"],)).fetchone()
         return existing
     now = datetime.now().isoformat(timespec="seconds")
     cur = con.execute(
@@ -2757,6 +2834,18 @@ def get_or_create_profile(
         (name.strip(), clean_text(client), clean_text(notes), now, now),
     )
     return con.execute("SELECT * FROM profiles WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+
+def archive_profile(profile_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        profile = con.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+        if not profile:
+            raise ValueError("Profile not found")
+        con.execute("UPDATE projects SET profile_id = NULL WHERE profile_id = ?", (profile_id,))
+        con.execute("UPDATE profiles SET archived_at = ?, updated_at = ? WHERE id = ?", (now, now, profile_id))
+        row = con.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+        return row_to_dict(row) or {}
 
 
 def create_project(
@@ -2774,7 +2863,7 @@ def create_project(
     with connect() as con:
         if profile_id:
             profile = con.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
-            if not profile:
+            if not profile or profile["archived_at"]:
                 raise ValueError("Selected profile was not found")
         elif clean_text(profile_name):
             profile = get_or_create_profile(con, clean_text(profile_name) or "", client=client)
@@ -2819,7 +2908,7 @@ def attach_project_profile(
         if not detach:
             if profile_id:
                 profile = con.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
-                if not profile:
+                if not profile or profile["archived_at"]:
                     raise ValueError("Selected Cora profile was not found")
                 resolved_profile_id = int(profile["id"])
             elif profile_name:
@@ -6475,6 +6564,9 @@ class AppHandler(BaseHTTPRequestHandler):
             if re.match(r"^/api/api-keys/\d+$", parsed.path):
                 delete_api_key(int(parsed.path.rsplit("/", 1)[1]))
                 json_response(self, {"deleted": True})
+            elif re.match(r"^/api/profiles/\d+$", parsed.path):
+                profile = archive_profile(int(parsed.path.rsplit("/", 1)[1]))
+                json_response(self, {"archived": True, "profile": profile})
             elif re.match(r"^/api/entity-lsi/runs/\d+$", parsed.path):
                 delete_entity_lsi_run(int(parsed.path.rsplit("/", 1)[1]))
                 json_response(self, {"deleted": True})

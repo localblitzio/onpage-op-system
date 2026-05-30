@@ -1,5 +1,5 @@
 const TABLE_COLUMNS = {
-  profiles: ["id", "name", "client", "notes", "created_at", "updated_at"],
+  profiles: ["id", "name", "client", "notes", "created_at", "updated_at", "archived_at"],
   projects: ["id", "profile_id", "name", "client", "site_domain", "notes", "created_at", "updated_at"],
   sites: ["id", "project_id", "domain", "name", "created_at"],
   pages: ["id", "site_id", "url", "title", "created_at"],
@@ -208,7 +208,7 @@ async function assertCommandAccess(request, env, commandType, payload) {
   return scope;
 }
 
-const COMMAND_TYPES = new Set(["create_project", "create_profile", "attach_profile", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
 const RANKING_TARGET_STATUSES = new Set(["new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"]);
 const CONTENT_PLAN_STATUSES = new Set(["planned", "in_progress", "drafting", "review", "published", "paused", "done", "archived"]);
 const ENTITY_DEPTH_LIMITS = {
@@ -685,7 +685,7 @@ async function executeCloudCommand(commandType, payload, env) {
   const now = new Date().toISOString();
   const changedTables = [];
   const result = { command_type: commandType, execution_mode: "cloud", changed_tables: changedTables };
-  if (commandType === "run_cora") throw new Error("Cora execution is local-only. Use Local bridge mode.");
+  if (["run_cora", "apply_cora_profile", "push_cora_profile"].includes(commandType)) throw new Error("This action is local-only. Use the local bridge mode.");
   if (commandType === "create_project") {
     const name = cleanText(payload.name);
     if (!name) throw new Error("Client name is required.");
@@ -713,14 +713,37 @@ async function executeCloudCommand(commandType, payload, env) {
     if (!name) throw new Error("Profile name is required.");
     const existing = await env.DB.prepare("SELECT * FROM profiles WHERE lower(name) = lower(?) ORDER BY id LIMIT 1").bind(name).first();
     if (existing) {
+      if (existing.archived_at) {
+        await env.DB.prepare("UPDATE profiles SET client = ?, notes = ?, updated_at = ?, archived_at = NULL WHERE id = ?")
+          .bind(cleanText(payload.client) || existing.client || null, cleanText(payload.notes) || existing.notes || null, now, existing.id).run();
+        result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(existing.id).first();
+        changedTables.push("profiles");
+        return result;
+      }
       result.duplicate = true;
       result.profile = existing;
       return result;
     }
     const inserted = await env.DB.prepare(
-      "INSERT INTO profiles (name, client, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+      "INSERT INTO profiles (name, client, notes, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, NULL)"
     ).bind(name, cleanText(payload.client) || null, cleanText(payload.notes) || null, now, now).run();
     result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(inserted.meta.last_row_id).first();
+    changedTables.push("profiles");
+    return result;
+  }
+  if (commandType === "update_profile") {
+    const profileId = Number(payload.profile_id || 0);
+    const name = cleanText(payload.name);
+    if (!profileId) throw new Error("Profile is required.");
+    if (!name) throw new Error("Profile name is required.");
+    const profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first();
+    if (!profile) throw new Error("Profile not found.");
+    const duplicate = await env.DB.prepare("SELECT id FROM profiles WHERE lower(name) = lower(?) AND id != ? AND archived_at IS NULL ORDER BY id LIMIT 1").bind(name, profileId).first();
+    if (duplicate) throw new Error("Another active profile already uses that name.");
+    await env.DB.prepare(
+      "UPDATE profiles SET name = ?, client = ?, notes = ?, updated_at = ?, archived_at = NULL WHERE id = ?"
+    ).bind(name, cleanText(payload.client) || null, cleanText(payload.notes) || null, now, profileId).run();
+    result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first();
     changedTables.push("profiles");
     return result;
   }
@@ -731,12 +754,17 @@ async function executeCloudCommand(commandType, payload, env) {
     if (!projectId) throw new Error("Client is required for profile attachment.");
     const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(projectId).first();
     if (!project) throw new Error("Client not found.");
-    let profile = profileId ? await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first() : null;
+    let profile = profileId ? await env.DB.prepare("SELECT * FROM profiles WHERE id = ? AND archived_at IS NULL").bind(profileId).first() : null;
     if (!profile && profileName) {
       profile = await env.DB.prepare("SELECT * FROM profiles WHERE lower(name) = lower(?) ORDER BY id LIMIT 1").bind(profileName).first();
+      if (profile?.archived_at) {
+        await env.DB.prepare("UPDATE profiles SET archived_at = NULL, updated_at = ? WHERE id = ?").bind(now, profile.id).run();
+        profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profile.id).first();
+        changedTables.push("profiles");
+      }
       if (!profile) {
         const inserted = await env.DB.prepare(
-          "INSERT INTO profiles (name, client, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+          "INSERT INTO profiles (name, client, notes, created_at, updated_at, archived_at) VALUES (?, ?, ?, ?, ?, NULL)"
         ).bind(profileName, project.name || null, cleanText(payload.notes) || "Created from cloud Cora Profiles", now, now).run();
         profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(inserted.meta.last_row_id).first();
         changedTables.push("profiles");
@@ -754,6 +782,33 @@ async function executeCloudCommand(commandType, payload, env) {
        WHERE p.id = ?`
     ).bind(projectId).first();
     changedTables.push("projects", "profiles");
+    return result;
+  }
+  if (commandType === "detach_profile") {
+    const projectId = Number(payload.project_id || 0);
+    if (!projectId) throw new Error("Client is required for profile detachment.");
+    const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(projectId).first();
+    if (!project) throw new Error("Client not found.");
+    await env.DB.prepare("UPDATE projects SET profile_id = NULL, updated_at = ? WHERE id = ?").bind(now, projectId).run();
+    result.project = await env.DB.prepare(
+      `SELECT p.*, pr.name AS profile_name
+       FROM projects p
+       LEFT JOIN profiles pr ON pr.id = p.profile_id
+       WHERE p.id = ?`
+    ).bind(projectId).first();
+    changedTables.push("projects");
+    return result;
+  }
+  if (commandType === "archive_profile") {
+    const profileId = Number(payload.profile_id || 0);
+    if (!profileId) throw new Error("Profile is required.");
+    const profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first();
+    if (!profile) throw new Error("Profile not found.");
+    await env.DB.prepare("UPDATE projects SET profile_id = NULL, updated_at = ? WHERE profile_id = ?").bind(now, profileId).run();
+    await env.DB.prepare("UPDATE profiles SET archived_at = ?, updated_at = ? WHERE id = ?").bind(now, now, profileId).run();
+    result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first();
+    result.detached_clients = Number(profile.client_count || 0);
+    changedTables.push("profiles", "projects");
     return result;
   }
   if (commandType === "add_keyword") {
@@ -1631,12 +1686,12 @@ async function handleDashboardMirrorData(request, env) {
        LIMIT 150`
     ).all(),
     env.DB.prepare(
-      `SELECT pr.id, pr.name, pr.client, pr.notes, pr.created_at, pr.updated_at,
+      `SELECT pr.id, pr.name, pr.client, pr.notes, pr.created_at, pr.updated_at, pr.archived_at,
               COUNT(p.id) AS client_count,
               GROUP_CONCAT(p.name, ', ') AS client_names
        FROM profiles pr
        LEFT JOIN projects p ON p.profile_id = pr.id
-       ${profileWhere}
+       ${profileWhere ? profileWhere + " AND pr.archived_at IS NULL" : "WHERE pr.archived_at IS NULL"}
        GROUP BY pr.id
        ORDER BY pr.updated_at DESC, pr.id DESC
        LIMIT 150`
@@ -2478,6 +2533,7 @@ function cloudMirrorHtml() {
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
+    button.danger { background:rgba(255,123,114,.15); color:var(--danger); border:1px solid rgba(255,123,114,.45); }
     button:disabled { opacity:.55; cursor:not-allowed; }
     input, select, textarea { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
     textarea { width:100%; min-height:72px; resize:vertical; font:inherit; }
@@ -2493,6 +2549,7 @@ function cloudMirrorHtml() {
     .command-card { border:1px solid var(--line); border-radius:8px; padding:12px; background:rgba(29,38,48,.45); display:grid; gap:8px; }
     .command-card h4 { margin:0; font-size:14px; }
     .command-card button { justify-self:start; background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
+    .command-card button.danger { background:rgba(255,123,114,.15); color:var(--danger); border:1px solid rgba(255,123,114,.45); }
     .field-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
     .field-row input { min-width:150px; flex:1 1 150px; }
     .check-list { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
@@ -2561,7 +2618,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
@@ -2816,7 +2873,7 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Recent Cora Jobs</h3><span class="muted">Synced from the local dashboard.</span></div>' + detailTable(["Keyword","Profile","Status","Updated"], jobRows, "No Cora jobs synced for this client.") + '</section>';
     }
     function profilesTable(items) {
-      return table(["Profile", "Clients", "Attached Clients", "Updated"], rows(items).map((p) => '<tr><td><strong>' + esc(p.name || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(fmtNum(p.client_count || 0)) + '</td><td>' + esc(p.client_names || p.client || "") + '</td><td>' + esc(fmtDate(p.updated_at || p.created_at)) + '</td></tr>'), "No Cora profiles synced yet.");
+      return table(["Profile", "Clients", "Attached Clients", "Updated", "Actions"], rows(items).map((p) => '<tr><td><strong>' + esc(p.name || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(fmtNum(p.client_count || 0)) + '</td><td>' + esc(p.client_names || p.client || "") + '</td><td>' + esc(fmtDate(p.updated_at || p.created_at)) + '</td><td><button class="profile-edit-row mini-btn" data-profile-id="' + esc(p.id || "") + '">Edit</button></td></tr>'), "No Cora profiles synced yet.");
     }
     function coraProfilesView(data) {
       const profiles = data.profiles || [];
@@ -2824,9 +2881,15 @@ function cloudMirrorHtml() {
       const attached = profiles.reduce((sum, profile) => sum + Number(profile.client_count || 0), 0);
       const clientOptions = clients.map((client) => '<option value="' + esc(client.id) + '">' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
       const profileOptions = '<option value="">Select existing Cora profile</option>' + profiles.map((profile) => '<option value="' + esc(profile.id) + '">' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
+      const selectedProfile = profiles.find((profile) => String(profile.id) === String(state.profileEditId)) || profiles[0] || {};
+      const selectedProfileId = String(selectedProfile.id || "");
+      const editProfileOptions = profiles.map((profile) => '<option value="' + esc(profile.id) + '"' + (String(profile.id) === selectedProfileId ? ' selected' : '') + '>' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
+      const attachedClientOptions = clients.filter((client) => String(client.profile_id || "") === selectedProfileId).map((client) => '<option value="' + esc(client.id) + '">' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
       const setupPanel = '<section><div class="head"><h3>Profile Setup</h3><span class="muted">Cloud profile metadata syncs back to the local dashboard. Native Cora settings are still applied from local Cora.</span></div><div class="command-grid"><div class="command-card"><h4>Create Profile</h4><input id="profile-create-name" placeholder="Profile name"><input id="profile-create-client" placeholder="Optional client label"><input id="profile-create-notes" placeholder="Notes"><button id="profile-create-submit">Create Profile</button></div><div class="command-card"><h4>Attach to Client</h4><select id="profile-attach-client">' + (clientOptions || '<option value="">No clients synced</option>') + '</select><select id="profile-attach-existing">' + profileOptions + '</select><input id="profile-attach-new" placeholder="Or create profile name"><button id="profile-attach-submit"' + (clients.length ? "" : " disabled") + '>Attach Profile</button></div></div><div id="profiles-inline-status">' + toolFeedbackHtml(state.toolFeedback?.profiles) + '</div></section>';
+      const managePanel = '<section><div class="head"><h3>Manage Profile</h3><span class="muted">Edit metadata, detach clients, or queue native Cora actions for the local bridge.</span></div><div class="command-grid"><div class="command-card"><h4>Edit Metadata</h4><select id="profile-edit-select">' + (editProfileOptions || '<option value="">No profiles</option>') + '</select><input id="profile-edit-name" placeholder="Profile name" value="' + esc(selectedProfile.name || "") + '"><input id="profile-edit-client" placeholder="Optional client label" value="' + esc(selectedProfile.client || "") + '"><input id="profile-edit-notes" placeholder="Notes" value="' + esc(selectedProfile.notes || "") + '"><button id="profile-update-submit"' + (selectedProfileId ? "" : " disabled") + '>Save Profile</button></div><div class="command-card"><h4>Client Attachment</h4><select id="profile-detach-client">' + (attachedClientOptions || '<option value="">No clients attached to this profile</option>') + '</select><button id="profile-detach-submit"' + (attachedClientOptions ? "" : " disabled") + '>Detach Client</button><button id="profile-archive-submit" class="danger"' + (selectedProfileId ? "" : " disabled") + '>Archive Profile</button></div><div class="command-card"><h4>Native Cora Bridge</h4><div class="muted">These queue local bridge commands because Cloudflare cannot control the Windows Cora process directly.</div><button id="profile-apply-cora"' + (selectedProfileId ? "" : " disabled") + '>Apply in Cora</button><button id="profile-push-cora" class="secondary"' + (selectedProfileId ? "" : " disabled") + '>Push Current Cora Settings</button></div></div></section>';
       return cards([["Profiles", profiles.length],["Attached Clients", attached],["Unattached", profiles.filter((profile) => !Number(profile.client_count || 0)).length]])
         + setupPanel
+        + managePanel
         + '<section><div class="head"><h3>Cora Profiles</h3><span class="muted">Synced profile metadata. Native Cora profile editing still happens through the local Cora bridge.</span></div>' + profilesTable(profiles) + '</section>';
     }
     function runsTable(items) {
@@ -3149,7 +3212,12 @@ function cloudMirrorHtml() {
       const labels = {
         create_project: "Create Client",
         create_profile: "Create Cora Profile",
+        update_profile: "Update Cora Profile",
         attach_profile: "Attach Cora Profile",
+        detach_profile: "Detach Cora Profile",
+        archive_profile: "Archive Cora Profile",
+        apply_cora_profile: "Apply Cora Profile",
+        push_cora_profile: "Push Cora Profile",
         add_keyword: "Add Keyword",
         create_content_plan: "Content Plan",
         create_share_report: "Customer Report",
@@ -3177,6 +3245,7 @@ function cloudMirrorHtml() {
     }
     function commandRisk(command_type, payload) {
       if (command_type === "run_cora") return "Needs local bridge with Cora enabled.";
+      if (["apply_cora_profile", "push_cora_profile"].includes(command_type)) return "Native Cora profile action. This waits for the local Windows bridge.";
       if (payload?.execution_mode === "cloud") return "Runs in Cloudflare and then needs cloud-to-local sync for local parity.";
       if (isPaidLiveCommand(command_type, payload)) return "Paid/API run. This can use DataForSEO or LLM credits.";
       if (["create_ranking_snapshot", "run_entity_lsi"].includes(command_type)) return "Dry run only. No paid/API execution.";
@@ -3851,7 +3920,12 @@ function cloudMirrorHtml() {
     function commandSummary(command_type, payload) {
       if (command_type === "create_project") return 'Create or reuse client "' + (payload.name || "") + '" for ' + (payload.site_domain || "no domain");
       if (command_type === "create_profile") return 'Create or reuse Cora profile "' + (payload.name || "") + '".';
+      if (command_type === "update_profile") return 'Update Cora profile "' + (payload.name || payload.profile_id || "") + '".';
       if (command_type === "attach_profile") return 'Attach Cora profile "' + (payload.profile_name || payload.profile_id || "") + '" to client ID ' + (payload.project_id || "");
+      if (command_type === "detach_profile") return 'Detach Cora profile from client ID ' + (payload.project_id || "");
+      if (command_type === "archive_profile") return 'Archive Cora profile ID ' + (payload.profile_id || "") + ' and detach it from clients.';
+      if (command_type === "apply_cora_profile") return 'Ask the local bridge to apply Cora profile "' + (payload.profile_name || payload.profile_id || "") + '" in Cora.';
+      if (command_type === "push_cora_profile") return 'Ask the local bridge to save current Cora settings into profile "' + (payload.profile_name || payload.profile_id || "") + '".';
       if (command_type === "add_keyword") return 'Add or reuse keyword "' + (payload.keyword || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_content_plan") return 'Create or reuse content plan "' + (payload.title || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
@@ -3875,7 +3949,11 @@ function cloudMirrorHtml() {
     function validateCommand(command_type, payload) {
       if (command_type === "create_project" && !(payload.name || "").trim()) return "Client name is required.";
       if (command_type === "create_profile" && !(payload.name || "").trim()) return "Profile name is required.";
+      if (command_type === "update_profile" && (!payload.profile_id || !(payload.name || "").trim())) return "Select a profile and enter a profile name.";
       if (command_type === "attach_profile" && (!payload.project_id || (!payload.profile_id && !(payload.profile_name || "").trim()))) return "Select a client and choose or create a profile.";
+      if (command_type === "detach_profile" && !payload.project_id) return "Select an attached client to detach.";
+      if (command_type === "archive_profile" && !payload.profile_id) return "Select a profile to archive.";
+      if (["apply_cora_profile", "push_cora_profile"].includes(command_type) && (!payload.profile_id || !(payload.profile_name || "").trim())) return "Select a Cora profile first.";
       if (command_type === "add_keyword" && (!(payload.project_id) || !(payload.keyword || "").trim())) return "Select a client and enter a keyword.";
       if (command_type === "create_content_plan" && (!(payload.project_id) || !(payload.title || "").trim())) return "Select a client and enter a plan title.";
       if (command_type === "create_share_report" && !payload.run_id) return "Select a Cora run for the report.";
@@ -4197,12 +4275,46 @@ function cloudMirrorHtml() {
       }
     }
     function bindCoraProfileControls() {
+      document.getElementById("profile-edit-select")?.addEventListener("change", (event) => {
+        state.profileEditId = event.target.value || "";
+        render();
+      });
+      document.querySelectorAll(".profile-edit-row").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.profileEditId = button.dataset.profileId || "";
+          render();
+          setTimeout(() => document.getElementById("profile-edit-name")?.focus(), 0);
+        });
+      });
       document.getElementById("profile-create-submit")?.addEventListener("click", (event) => createCloudProfile(event.currentTarget).catch((error) => {
         setToolFeedback("profiles", { status: "failed", title: "Profile Creation Failed", message: error.message || String(error) });
       }));
       document.getElementById("profile-attach-submit")?.addEventListener("click", (event) => attachCloudProfile(event.currentTarget).catch((error) => {
         setToolFeedback("profiles", { status: "failed", title: "Profile Attachment Failed", message: error.message || String(error) });
       }));
+      document.getElementById("profile-update-submit")?.addEventListener("click", (event) => updateCloudProfile(event.currentTarget).catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Profile Update Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("profile-detach-submit")?.addEventListener("click", (event) => detachCloudProfile(event.currentTarget).catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Profile Detach Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("profile-archive-submit")?.addEventListener("click", (event) => archiveCloudProfile(event.currentTarget).catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Profile Archive Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("profile-apply-cora")?.addEventListener("click", (event) => queueCoraProfileBridgeAction(event.currentTarget, "apply_cora_profile").catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Apply Profile Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("profile-push-cora")?.addEventListener("click", (event) => queueCoraProfileBridgeAction(event.currentTarget, "push_cora_profile").catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Push Profile Failed", message: error.message || String(error) });
+      }));
+    }
+    function selectedProfilePayload() {
+      return {
+        profile_id: Number(document.getElementById("profile-edit-select")?.value || 0),
+        name: document.getElementById("profile-edit-name")?.value || "",
+        client: document.getElementById("profile-edit-client")?.value || "",
+        notes: document.getElementById("profile-edit-notes")?.value || ""
+      };
     }
     async function createCloudProfile(button) {
       const originalLabel = button?.textContent || "Create Profile";
@@ -4259,6 +4371,123 @@ function cloudMirrorHtml() {
           status: "complete",
           title: "Cora Profile Attached",
           message: (project.profile_name || payload.profile_name || "Profile") + " is attached to " + (project.name || "the client") + ". Pull cloud changes locally to mirror it."
+        }, true);
+        startToolAutoRefresh("profiles", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function updateCloudProfile(button) {
+      const originalLabel = button?.textContent || "Save Profile";
+      const payload = { execution_mode: "cloud", ...selectedProfilePayload() };
+      if (!payload.profile_id || !(payload.name || "").trim()) throw new Error("Select a profile and enter a profile name.");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Saving...";
+      }
+      setToolFeedback("profiles", { status: "running", title: "Saving Cora Profile", message: "Updating profile metadata in Cloudflare." });
+      try {
+        const result = await postCommand("update_profile", payload);
+        await load({ preserveScroll: true });
+        const profile = result.command?.result?.profile || {};
+        state.profileEditId = String(profile.id || payload.profile_id || "");
+        setToolFeedback("profiles", {
+          status: "complete",
+          title: "Cora Profile Saved",
+          message: (profile.name || payload.name || "Profile") + " metadata updated. Pull cloud changes locally to mirror it."
+        }, true);
+        startToolAutoRefresh("profiles", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function detachCloudProfile(button) {
+      const originalLabel = button?.textContent || "Detach Client";
+      const payload = {
+        execution_mode: "cloud",
+        project_id: Number(document.getElementById("profile-detach-client")?.value || 0)
+      };
+      if (!payload.project_id) throw new Error("Select an attached client to detach.");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Detaching...";
+      }
+      setToolFeedback("profiles", { status: "running", title: "Detaching Cora Profile", message: "Removing the profile link from the selected client." });
+      try {
+        const result = await postCommand("detach_profile", payload);
+        await load({ preserveScroll: true });
+        const project = result.command?.result?.project || {};
+        setToolFeedback("profiles", {
+          status: "complete",
+          title: "Cora Profile Detached",
+          message: "Profile detached from " + (project.name || "the client") + ". Pull cloud changes locally to mirror it."
+        }, true);
+        startToolAutoRefresh("profiles", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function archiveCloudProfile(button) {
+      const originalLabel = button?.textContent || "Archive Profile";
+      const payload = selectedProfilePayload();
+      if (!payload.profile_id) throw new Error("Select a profile to archive.");
+      if (!confirm("Archive this profile and detach it from clients?")) return;
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Archiving...";
+      }
+      setToolFeedback("profiles", { status: "running", title: "Archiving Cora Profile", message: "Archiving profile metadata and detaching clients." });
+      try {
+        await postCommand("archive_profile", { execution_mode: "cloud", profile_id: payload.profile_id });
+        state.profileEditId = "";
+        await load({ preserveScroll: true });
+        setToolFeedback("profiles", {
+          status: "complete",
+          title: "Cora Profile Archived",
+          message: "Profile archived and detached from clients. Native Cora profiles are not deleted from the Windows Cora app."
+        }, true);
+        startToolAutoRefresh("profiles", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function queueCoraProfileBridgeAction(button, commandType) {
+      const originalLabel = button?.textContent || "Queue";
+      const payload = selectedProfilePayload();
+      if (!payload.profile_id || !(payload.name || "").trim()) throw new Error("Select a Cora profile first.");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Queueing...";
+      }
+      const title = commandType === "apply_cora_profile" ? "Queueing Apply Profile" : "Queueing Push Profile";
+      setToolFeedback("profiles", { status: "running", title, message: "Sending native Cora profile action to the local bridge queue." });
+      try {
+        await postCommand(commandType, {
+          execution_mode: "local",
+          profile_id: payload.profile_id,
+          profile_name: payload.name
+        });
+        await load({ preserveScroll: true });
+        setToolFeedback("profiles", {
+          status: "complete",
+          title: "Cora Bridge Command Queued",
+          message: (commandType === "apply_cora_profile" ? "Apply" : "Push") + " command queued for " + payload.name + ". The local bridge will run it against Windows Cora."
         }, true);
         startToolAutoRefresh("profiles", 90000);
       } catch (error) {

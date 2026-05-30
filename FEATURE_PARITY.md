@@ -95,6 +95,6 @@ These areas need active parity checks during upcoming phases:
 - Cora run workflow: cloud has been aligned to the local-style run page; verify local stays equally simple.
 - Entity Explorer: cloud has provider/model selectors, direct run status, inline Entity Crossover save workflow, and Entity Set storage/sync defaults; next check is a real bridge pull of cloud-created Entity Sets.
 - Ranking Snapshot: cloud has direct run status, recent snapshot panels, comparison, snapshot detail, and Save Optimization Targets; next check is a real bridge pull of cloud-created ranking targets.
-- Cora Profiles: local/Cora bridge is the source of truth today; cloud needs a clean attach/edit workflow when profile management moves further into the dashboard.
+- Cora Profiles: local and cloud now support create/read/update, client attach/detach, and archive behavior for dashboard profile metadata. Native Windows Cora actions remain local-only and are queued from cloud through the bridge; next check is real bridge execution of apply/push commands.
 - Reports: Cora Reports should be available from both surfaces, with report storage and share URLs handled consistently. Cloud report creation now supports Ranking Snapshot, saved Optimization Target, and Entity Set attachments; local bridge artifact generation/upload still needs real workflow verification.
 - Users/admin: planned future cloud feature; local impact and permissions model need to be defined before implementation.

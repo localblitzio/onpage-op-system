@@ -1110,6 +1110,19 @@ class DashboardSmokeTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             app.update_profile(profile["id"], other["name"])
 
+    def test_profile_archive_detaches_clients_and_hides_from_sync_list(self) -> None:
+        profile = app.create_profile("Archive Profile")
+        project = app.create_project("Archive Client", profile_id=profile["id"])
+
+        archived = app.archive_profile(profile["id"])
+
+        self.assertIsNotNone(archived["archived_at"])
+        with app.connect() as con:
+            project_row = con.execute("SELECT profile_id FROM projects WHERE id = ?", (project["id"],)).fetchone()
+            visible = con.execute("SELECT COUNT(*) FROM profiles WHERE archived_at IS NULL").fetchone()[0]
+        self.assertIsNone(project_row["profile_id"])
+        self.assertEqual(visible, 0)
+
     def test_placeholder_tool_accepts_selected_client_keywords(self) -> None:
         project = app.create_project("Client", site_domain="https://example.com")
         keyword = app.create_keyword(project["id"], "example keyword")

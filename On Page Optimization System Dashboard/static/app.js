@@ -1668,6 +1668,7 @@ function renderCoraProfileEditor(project, coraSettings = {}) {
         <button id="profile-editor-apply-cora" type="button" class="secondary">Apply in Cora</button>
         <button id="profile-editor-push-cora" type="button" class="secondary">Push Current Cora Settings</button>
         <button id="profile-editor-pull-cora" type="button" class="secondary">Pull Current Cora Settings</button>
+        <button id="profile-editor-archive" type="button" class="danger">Archive Profile</button>
       </div>
     </form>
     <div id="profile-editor-cora-settings" class="profile-cora-settings">
@@ -1764,12 +1765,27 @@ async function pullEditorCoraSettings() {
   toast("Pulled current Cora settings.");
 }
 
+async function archiveEditorProfile() {
+  const profile = selectedEditorProfile();
+  if (!profile) {
+    toast("Choose a profile to archive.");
+    return;
+  }
+  const confirmed = window.confirm(`Archive "${profile.name}" and detach it from clients?`);
+  if (!confirmed) return;
+  await api(`/api/profiles/${profile.id}`, { method: "DELETE" });
+  await loadProfiles();
+  toast(`Archived profile: ${profile.name}`);
+  await renderCoraProfilesPage();
+}
+
 function bindCoraProfileEditor() {
   el("profile-editor-select")?.addEventListener("change", () => fillProfileEditor(selectedEditorProfile()));
   el("cora-profile-editor-form")?.addEventListener("submit", (event) => saveProfileEditor(event).catch((err) => toast(err.message)));
   el("profile-editor-apply-cora")?.addEventListener("click", () => applyEditorProfileInCora().catch((err) => toast(err.message)));
   el("profile-editor-push-cora")?.addEventListener("click", () => pushEditorProfileToCora().catch((err) => toast(err.message)));
   el("profile-editor-pull-cora")?.addEventListener("click", () => pullEditorCoraSettings().catch((err) => toast(err.message)));
+  el("profile-editor-archive")?.addEventListener("click", () => archiveEditorProfile().catch((err) => toast(err.message)));
 }
 
 function renderCoraDomainListForm(scope = "main") {
