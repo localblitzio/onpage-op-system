@@ -90,6 +90,16 @@ try {
     assert(await page.locator("#ranking-run-snapshot").isVisible(), "Ranking Snapshot run button renders");
     assert(await page.locator("#ranking-inline-status").count(), "Ranking Snapshot inline status area exists");
     assert(await page.getByRole("heading", { name: "Last Snapshot" }).count(), "Ranking Snapshot last snapshot panel renders");
+    const snapshotOpenButton = page.locator("button.detail-btn", { hasText: "Open" }).first();
+    if (await snapshotOpenButton.count()) {
+      await snapshotOpenButton.click();
+      await page.getByRole("heading", { name: "Ranking Snapshot Detail" }).waitFor({ state: "visible", timeout: 10000 });
+      assert(await page.getByRole("heading", { name: "Save Optimization Targets" }).count(), "Ranking Snapshot detail can save optimization targets");
+      assert(await page.locator("#snapshot-target-save").count(), "Ranking Snapshot target save button renders");
+      await page.locator(".close-detail").click();
+    } else {
+      checks.push({ ok: true, message: "Ranking Snapshot has no synced snapshots to open" });
+    }
 
     await clickNav(page, "Entity Explorer");
     await page.getByRole("heading", { name: "Run Entity Explorer" }).waitFor({ state: "visible", timeout: 10000 });

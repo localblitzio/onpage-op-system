@@ -951,7 +951,7 @@ async function handleSyncExport(request, env) {
     .split(",")
     .map((table) => table.trim())
     .filter(Boolean);
-  const tables = selected.length ? selected : ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"];
+  const tables = selected.length ? selected : ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"];
   const limit = Math.min(Number(url.searchParams.get("limit") || 5000), 25000);
   const exported = [];
   for (const table of tables) {
@@ -2030,6 +2030,82 @@ async function handleOptimizationTargetStatus(request, env) {
   return json({ ok: true, targets: updated.results || [], updated: ids.length });
 }
 
+async function handleOptimizationTargetSave(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const snapshotId = Number(payload.snapshot_id || 0);
+  const projectId = Number(payload.project_id || 0) || null;
+  const status = RANKING_TARGET_STATUSES.has(cleanText(payload.status)) ? cleanText(payload.status) : "selected";
+  const targets = Array.isArray(payload.targets) ? payload.targets.slice(0, 250) : [];
+  if (!snapshotId) return json({ ok: false, error: "snapshot_id is required" }, 400);
+  if (!targets.length) return json({ ok: false, error: "Select at least one optimization target" }, 400);
+  const snapshot = await env.DB.prepare("SELECT id, project_id FROM ranking_snapshots WHERE id = ?").bind(snapshotId).first();
+  if (!snapshot) return json({ ok: false, error: "Ranking snapshot not found" }, 404);
+  const resolvedProjectId = Number(snapshot.project_id || projectId || 0) || null;
+  if (projectId && resolvedProjectId && Number(projectId) !== Number(resolvedProjectId)) {
+    return json({ ok: false, error: "Optimization targets must be saved to the same client as the Ranking Snapshot" }, 400);
+  }
+  await requireProjectWriteAccess(request, env, resolvedProjectId);
+  const now = new Date().toISOString();
+  const savedIds = [];
+  for (const item of targets) {
+    const url = cleanText(item.url || item.rankingUrl);
+    if (!url) continue;
+    const existing = await env.DB.prepare("SELECT id FROM ranking_optimization_targets WHERE snapshot_id = ? AND url = ? ORDER BY id LIMIT 1").bind(snapshotId, url).first();
+    const values = [
+      snapshotId,
+      resolvedProjectId,
+      url,
+      cleanText(item.keyword),
+      Number(item.bestPosition ?? item.best_position ?? 0) || null,
+      Number(item.rankingKeywords ?? item.ranking_keywords ?? 0) || null,
+      Number(item.opportunityCount ?? item.opportunity_count ?? 0) || null,
+      Number(item.totalSearchVolume ?? item.total_search_volume ?? 0) || null,
+      Number(item.estimatedTraffic ?? item.estimated_traffic ?? 0) || null,
+      Number(item.pageOrganicTraffic ?? item.page_organic_traffic ?? 0) || null,
+      Number(item.pageOrganicKeywords ?? item.page_organic_keywords ?? 0) || null,
+      Number(item.top10 ?? 0) || null,
+      cleanText(item.priorityType || item.priority_type),
+      Number(item.opportunityScore ?? item.opportunity_score ?? 0) || null,
+      cleanText(item.recommendedAction || item.recommended_action),
+      JSON.stringify(Array.isArray(item.topKeywords) ? item.topKeywords : []),
+      status,
+      cleanText(item.notes),
+      now
+    ];
+    if (existing) {
+      await env.DB.prepare(
+        `UPDATE ranking_optimization_targets
+         SET snapshot_id = ?, project_id = ?, url = ?, keyword = ?, best_position = ?, ranking_keywords = ?,
+             opportunity_count = ?, total_search_volume = ?, estimated_traffic = ?, page_organic_traffic = ?,
+             page_organic_keywords = ?, top10 = ?, priority_type = ?, opportunity_score = ?, recommended_action = ?,
+             top_keywords_json = ?, status = ?, notes = COALESCE(NULLIF(?, ''), notes), updated_at = ?
+         WHERE id = ?`
+      ).bind(...values, existing.id).run();
+      savedIds.push(existing.id);
+    } else {
+      const inserted = await env.DB.prepare(
+        `INSERT INTO ranking_optimization_targets
+         (snapshot_id, project_id, url, keyword, best_position, ranking_keywords, opportunity_count,
+          total_search_volume, estimated_traffic, page_organic_traffic, page_organic_keywords, top10,
+          priority_type, opportunity_score, recommended_action, top_keywords_json, status, notes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).bind(...values, now).run();
+      savedIds.push(inserted.meta.last_row_id);
+    }
+  }
+  if (!savedIds.length) return json({ ok: false, error: "No valid target URLs were selected" }, 400);
+  const placeholders = savedIds.map(() => "?").join(",");
+  const rows = await env.DB.prepare(
+    `SELECT rot.*, p.name AS project_name
+     FROM ranking_optimization_targets rot
+     LEFT JOIN projects p ON p.id = rot.project_id
+     WHERE rot.id IN (${placeholders})
+     ORDER BY rot.opportunity_score DESC, rot.updated_at DESC`
+  ).bind(...savedIds).all();
+  await logAudit(request, env, "optimization_target_saved", "ranking_snapshot", snapshotId, { count: savedIds.length, project_id: resolvedProjectId }, "cloud-dashboard");
+  return json({ ok: true, targets: rows.results || [], saved_ids: savedIds }, 201);
+}
+
 async function handleContentPlanStatus(request, env) {
   const payload = await request.json().catch(() => ({}));
   const ids = Array.isArray(payload.plan_ids) ? payload.plan_ids.map((id) => Number(id)).filter(Boolean).slice(0, 250) : [];
@@ -2763,6 +2839,81 @@ function cloudMirrorHtml() {
         + '<div class="grid2"><section><div class="head"><h3>Keyword Movement</h3><span class="muted">' + esc(data.base?.target || "") + ' to ' + esc(data.compare?.target || "") + '</span></div>' + detailTable(["Status","Keyword","Before","After","Change","Volume","Traffic +/-"], keywordRows, "No keyword movement found between these snapshots.") + '</section>'
         + '<section><div class="head"><h3>Page Movement</h3></div>' + detailTable(["Status","URL","Before Traffic","After Traffic","Traffic +/-","Keyword +/-"], pageRows, "No page movement found between these snapshots.") + '</section></div>';
     }
+    function normalizeRankingUrlKey(url) {
+      return String(url || "").trim().replace(/\\/+$/, "");
+    }
+    function rankingTargetType(position, previousPosition, aiOverviewPresent, aiOverviewReference) {
+      const pos = Number(position || 0);
+      const prev = Number(previousPosition || 0);
+      if (aiOverviewPresent && !aiOverviewReference) return "AI Overview Gap";
+      if (prev && pos && pos > prev) return "Slipping Keyword";
+      if (pos >= 4 && pos <= 10) return "Top 3 Push";
+      if (pos >= 11 && pos <= 20) return "Page Two Lift";
+      if (pos >= 21 && pos <= 30) return "Content Expansion";
+      return "Monitor";
+    }
+    function rankingTargetRecommendedAction(type) {
+      if (type === "Top 3 Push") return "Improve on-page optimization, internal links, title/meta, and content depth to push the strongest terms into top 3.";
+      if (type === "Page Two Lift") return "Refresh the ranking page and strengthen topical coverage to move page-two keywords onto page one.";
+      if (type === "Content Expansion") return "Expand content depth, add internal links, and consider whether a dedicated page is needed for weaker keyword clusters.";
+      if (type === "AI Overview Gap") return "Add concise answer blocks, entity-rich explanations, citations, and schema where relevant.";
+      if (type === "Slipping Keyword") return "Review SERP movement, refresh stale sections, and reinforce internal links before more rankings decline.";
+      return "Monitor the page and use Cora or entity analysis when search volume or position movement justifies work.";
+    }
+    function buildSnapshotOptimizationTargets(data) {
+      const pagesByUrl = new Map((data.pages || []).map((page) => [normalizeRankingUrlKey(page.url), page]));
+      const savedByUrl = new Map((data.targets || []).map((target) => [normalizeRankingUrlKey(target.url), target]));
+      const groups = new Map();
+      (data.keywords || []).forEach((row) => {
+        const url = normalizeRankingUrlKey(row.ranking_url || row.rankingUrl);
+        if (!url) return;
+        if (!groups.has(url)) groups.set(url, []);
+        groups.get(url).push(row);
+      });
+      return Array.from(groups.entries()).map(([url, keywords]) => {
+        const page = pagesByUrl.get(url) || {};
+        const sortedKeywords = [...keywords].sort((a, b) => Number(b.search_volume || b.searchVolume || 0) - Number(a.search_volume || a.searchVolume || 0) || Number(a.position || 999) - Number(b.position || 999));
+        const bestKeyword = [...keywords].sort((a, b) => Number(a.position || 999) - Number(b.position || 999))[0] || {};
+        const opportunityRows = keywords.filter((row) => {
+          const pos = Number(row.position || 0);
+          const prev = Number(row.previous_position || row.previousPosition || 0);
+          return (pos >= 4 && pos <= 30) || (prev && pos > prev) || (row.ai_overview_present && !row.ai_overview_reference);
+        });
+        const typeCounts = opportunityRows.reduce((acc, row) => {
+          const type = rankingTargetType(row.position, row.previous_position || row.previousPosition, row.ai_overview_present || row.aiOverviewPresent, row.ai_overview_reference || row.aiOverviewReference);
+          acc[type] = (acc[type] || 0) + 1;
+          return acc;
+        }, {});
+        const priorityType = ["AI Overview Gap", "Slipping Keyword", "Top 3 Push", "Page Two Lift", "Content Expansion"].find((type) => typeCounts[type]) || "Monitor";
+        const totalSearchVolume = keywords.reduce((sum, row) => sum + Number(row.search_volume || row.searchVolume || 0), 0);
+        const estimatedTraffic = keywords.reduce((sum, row) => sum + Number(row.estimated_traffic || row.estimatedTraffic || 0), 0);
+        const bestPosition = keywords.reduce((best, row) => {
+          const pos = Number(row.position || 0);
+          return pos ? Math.min(best, pos) : best;
+        }, 999);
+        const score = Math.round((opportunityRows.length * 12) + (Math.log10(totalSearchVolume + 1) * 18) + (bestPosition === 999 ? 0 : Math.max(0, 31 - bestPosition)) + (typeCounts["AI Overview Gap"] ? 25 : 0) + (typeCounts["Slipping Keyword"] ? 18 : 0));
+        const saved = savedByUrl.get(url) || {};
+        return {
+          id: saved.id || null,
+          url,
+          keyword: bestKeyword.keyword || sortedKeywords[0]?.keyword || "",
+          bestPosition: bestPosition === 999 ? null : bestPosition,
+          rankingKeywords: keywords.length,
+          opportunityCount: opportunityRows.length,
+          totalSearchVolume,
+          estimatedTraffic,
+          pageOrganicTraffic: page.organic_traffic ?? page.organicTraffic ?? null,
+          pageOrganicKeywords: page.organic_keywords ?? page.organicKeywords ?? null,
+          top10: page.top10 ?? null,
+          priorityType: saved.priority_type || priorityType,
+          opportunityScore: saved.opportunity_score ?? score,
+          recommendedAction: saved.recommended_action || rankingTargetRecommendedAction(priorityType),
+          topKeywords: sortedKeywords.slice(0, 3).map((row) => row.keyword).filter(Boolean),
+          status: saved.status || "new",
+          notes: saved.notes || ""
+        };
+      }).sort((a, b) => Number(b.opportunityScore || 0) - Number(a.opportunityScore || 0));
+    }
     function rankingView(data) {
       const allSnapshots = data.snapshots || [];
       const clientRows = data.clients || [];
@@ -3052,7 +3203,7 @@ function cloudMirrorHtml() {
       });
       document.getElementById("sync-review-pull")?.addEventListener("click", () => {
         setPage("commands");
-        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
+        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
       });
       document.getElementById("sync-review-files")?.addEventListener("click", () => {
         setPage("commands");
@@ -3380,6 +3531,33 @@ function cloudMirrorHtml() {
       await load();
       setPage("entity-sets");
     }
+    async function saveSnapshotOptimizationTargets(button) {
+      const checked = Array.from(document.querySelectorAll(".snapshot-target-check:checked"));
+      if (!checked.length) throw new Error("Select at least one optimization target.");
+      const targets = checked.map((box) => JSON.parse(decodeURIComponent(box.dataset.target || "%7B%7D")));
+      const payload = {
+        snapshot_id: Number(button.dataset.snapshotId || 0),
+        project_id: Number(button.dataset.projectId || 0),
+        status: document.getElementById("snapshot-target-status")?.value || "selected",
+        targets
+      };
+      if (!payload.snapshot_id || !payload.project_id) throw new Error("Snapshot and client are required.");
+      const originalLabel = button.textContent || "Save Selected Targets";
+      button.disabled = true;
+      button.textContent = "Saving...";
+      try {
+        const response = await fetch("/api/optimization-targets", { method: "POST", headers: writeHeaders(), body: JSON.stringify(payload) });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "Optimization target save failed");
+        state.targetClient = String(payload.project_id);
+        await load();
+        await openDetail("snapshot", payload.snapshot_id);
+      } catch (error) {
+        button.disabled = false;
+        button.textContent = originalLabel;
+        throw error;
+      }
+    }
     async function deleteEntitySet(id) {
       if (!confirm("Delete this entity set?")) return;
       const response = await fetch("/api/entity-sets/" + encodeURIComponent(id), { method: "DELETE", headers: writeHeaders() });
@@ -3454,10 +3632,18 @@ function cloudMirrorHtml() {
       const keywords = data.keywords || [];
       const pages = data.pages || [];
       const targets = data.targets || [];
+      const derivedTargets = buildSnapshotOptimizationTargets(data);
       const keywordRows = keywords.map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong><br><span class="muted">' + esc(k.intent || "") + '</span></td><td>' + esc(k.position || "") + '</td><td>' + esc(k.previous_position || "") + '</td><td><a href="' + esc(k.ranking_url || "") + '" target="_blank">' + esc(k.ranking_url || "") + '</a></td><td>' + esc(fmtNum(k.search_volume)) + '</td><td>' + esc(k.estimated_traffic || "") + '</td><td>' + (k.ai_overview_present ? 'AIO' : '') + (k.ai_overview_reference ? ' / Ref' : '') + '</td></tr>');
       const pageRows = pages.map((p) => '<tr><td><a href="' + esc(p.url || "") + '" target="_blank">' + esc(p.url || "") + '</a></td><td>' + esc(fmtNum(p.organic_keywords)) + '</td><td>' + esc(p.organic_traffic || "") + '</td><td>' + esc(p.organic_traffic_cost || "") + '</td><td>' + esc(p.top3 || "") + '</td><td>' + esc(p.top10 || "") + '</td></tr>');
       const targetRows = targets.map((t) => '<tr><td><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></td><td>' + esc(t.keyword || "") + '</td><td>' + esc(t.best_position || "") + '</td><td>' + esc(t.opportunity_score || "") + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td><td>' + esc(t.recommended_action || "") + '</td></tr>');
+      const saveRows = derivedTargets.slice(0, 100).map((target, index) => {
+        const encoded = encodeURIComponent(JSON.stringify(target));
+        const checked = target.id ? "" : " checked";
+        return '<tr><td><input class="snapshot-target-check" type="checkbox" data-target-index="' + esc(index) + '" data-target="' + encoded + '"' + checked + '></td><td><a href="' + esc(target.url || "") + '" target="_blank">' + esc(target.url || "") + '</a><br><span class="muted">' + esc(target.recommendedAction || "") + '</span></td><td>' + esc(target.keyword || "") + '</td><td>' + esc(target.bestPosition || "") + '</td><td>' + esc(fmtNum(target.opportunityCount || 0)) + '</td><td>' + esc(fmtNum(target.totalSearchVolume || 0)) + '</td><td><span class="pill">' + esc(fmtNum(target.opportunityScore || 0)) + '</span><br><span class="muted">' + esc(target.priorityType || "") + '</span></td><td><span class="pill">' + esc(target.status || "new") + '</span></td></tr>';
+      });
+      const savePanel = '<section><div class="head"><h3>Save Optimization Targets</h3><span class="muted">Select ranking pages from this snapshot and save them to Saved Targets.</span></div><div class="toolbar"><button id="snapshot-target-select-visible" class="secondary">Select Visible</button><button id="snapshot-target-clear" class="secondary">Clear</button><select id="snapshot-target-status"><option value="selected">Selected</option><option value="in_cora">In Cora</option><option value="in_entity_explorer">In Entity Explorer</option><option value="content_plan_created">Plan Created</option><option value="optimized">Optimized</option><option value="archived">Archived</option></select><button id="snapshot-target-save" data-snapshot-id="' + esc(snapshot.id || "") + '" data-project-id="' + esc(snapshot.project_id || "") + '">Save Selected Targets</button></div>' + detailTable(["","URL","Keyword","Best Pos","Opps","Volume","Score","Status"], saveRows, "No ranking pages can be converted to optimization targets for this snapshot.") + '</section>';
       return smallCards([["Target", snapshot.target || ""],["Client", snapshot.project_name || ""],["Locale", (snapshot.location_code || "") + " / " + (snapshot.language_code || "")],["Keywords", keywords.length],["Pages", pages.length],["Targets", targets.length]])
+        + savePanel
         + '<section><div class="head"><h3>Ranking Keywords</h3></div>' + detailTable(["Keyword","Pos","Prev","URL","Volume","Traffic","AI"], keywordRows, "No ranking keywords synced for this snapshot.") + '</section>'
         + '<section><div class="head"><h3>Ranking Pages</h3></div>' + detailTable(["URL","Keywords","Traffic","Cost","Top 3","Top 10"], pageRows, "No ranking pages synced for this snapshot.") + '</section>'
         + '<section><div class="head"><h3>Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status","Action"], targetRows, "No optimization targets synced for this snapshot.") + '</section>';
@@ -3812,7 +3998,7 @@ function cloudMirrorHtml() {
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
-      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, clients, keywords, plans, entity sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,projects,sites,keywords,content_plans,entity_sets,entity_set_terms,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
+      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, clients, keywords, plans, ranking snapshots, saved targets, entity sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,projects,sites,keywords,content_plans,ranking_snapshots,ranking_optimization_targets,entity_sets,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions(prefillProject) + '</select><input id="cmd-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions(prefillProject) + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
       const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions(prefillProject) + '</select><input id="cmd-cora-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-cora-url" placeholder="Target URL" value="' + esc(prefillTarget) + '"><input id="cmd-cora-profile" placeholder="Optional Cora profile" value="' + esc(prefillProfile) + '"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions(prefillProject) + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com" value="' + esc(prefillTarget) + '"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions(prefillProject) + '</select><input id="cmd-entity-seed" placeholder="Seed keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
       const commandTypes = [...new Set((data.commands || []).map((c) => c.command_type).filter(Boolean))];
@@ -4155,7 +4341,7 @@ function cloudMirrorHtml() {
             setPage("entities");
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
-            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
+            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
           }
         };
       });
@@ -4212,6 +4398,15 @@ function cloudMirrorHtml() {
       });
       document.getElementById("entity-save-set")?.addEventListener("click", (event) => {
         saveSelectedEntitySet(event.currentTarget).catch((error) => alert(error.message || error));
+      });
+      document.getElementById("snapshot-target-select-visible")?.addEventListener("click", () => {
+        document.querySelectorAll(".snapshot-target-check").forEach((box) => { box.checked = true; });
+      });
+      document.getElementById("snapshot-target-clear")?.addEventListener("click", () => {
+        document.querySelectorAll(".snapshot-target-check").forEach((box) => { box.checked = false; });
+      });
+      document.getElementById("snapshot-target-save")?.addEventListener("click", (event) => {
+        saveSnapshotOptimizationTargets(event.currentTarget).catch((error) => alert(error.message || error));
       });
     }
     function render() {
@@ -4445,6 +4640,7 @@ export default {
       const runSheetRowsRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/sheet-rows$/);
       if (runSheetRowsRoute && request.method === "GET") return await handleRunSheetRows(request, env, Number(runSheetRowsRoute[1]));
       if (url.pathname === "/api/ranking-snapshots/compare" && request.method === "GET") return await handleRankingSnapshotCompare(request, env);
+      if (url.pathname === "/api/optimization-targets" && request.method === "POST") return await handleOptimizationTargetSave(request, env);
       if (url.pathname === "/api/optimization-targets/status" && request.method === "POST") return await handleOptimizationTargetStatus(request, env);
       if (url.pathname === "/api/content-plans/status" && request.method === "POST") return await handleContentPlanStatus(request, env);
       const rankingSnapshotDetailRoute = url.pathname.match(/^\/api\/ranking-snapshots\/(\d+)\/detail$/);
