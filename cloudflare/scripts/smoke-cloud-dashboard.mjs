@@ -4,7 +4,7 @@ const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
 const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
 const headless = String(process.env.OPOS_SMOKE_HEADLESS || "").toLowerCase() === "true";
-const requiredNav = ["Run Cora", "Cora Reports", "Ranking Snapshot", "Entity Explorer"];
+const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity Explorer"];
 const checks = [];
 const errors = [];
 
@@ -73,6 +73,12 @@ try {
     await page.locator("text=Remote Cora Bridge").waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("text=Run Cora").count(), "Cora run page renders");
     assert(await page.locator("#cora-inline-status").count(), "Cora inline status area exists");
+
+    await clickNav(page, "Cora Profiles");
+    await page.getByRole("heading", { name: "Profile Setup" }).waitFor({ state: "visible", timeout: 10000 });
+    assert(await page.locator("#profile-create-submit").count(), "Cora Profiles create button renders");
+    assert(await page.locator("#profile-attach-submit").count(), "Cora Profiles attach button renders");
+    assert(await page.locator("#profiles-inline-status").count(), "Cora Profiles inline status area exists");
 
     await clickNav(page, "Cora Reports");
     await page.getByRole("heading", { name: "Create Customer Report" }).waitFor({ state: "visible", timeout: 10000 });

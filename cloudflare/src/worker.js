@@ -208,7 +208,7 @@ async function assertCommandAccess(request, env, commandType, payload) {
   return scope;
 }
 
-const COMMAND_TYPES = new Set(["create_project", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const COMMAND_TYPES = new Set(["create_project", "create_profile", "attach_profile", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
 const RANKING_TARGET_STATUSES = new Set(["new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"]);
 const CONTENT_PLAN_STATUSES = new Set(["planned", "in_progress", "drafting", "review", "published", "paused", "done", "archived"]);
 const ENTITY_DEPTH_LIMITS = {
@@ -706,6 +706,54 @@ async function executeCloudCommand(commandType, payload, env) {
       changedTables.push("sites");
     }
     result.project = project;
+    return result;
+  }
+  if (commandType === "create_profile") {
+    const name = cleanText(payload.name);
+    if (!name) throw new Error("Profile name is required.");
+    const existing = await env.DB.prepare("SELECT * FROM profiles WHERE lower(name) = lower(?) ORDER BY id LIMIT 1").bind(name).first();
+    if (existing) {
+      result.duplicate = true;
+      result.profile = existing;
+      return result;
+    }
+    const inserted = await env.DB.prepare(
+      "INSERT INTO profiles (name, client, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+    ).bind(name, cleanText(payload.client) || null, cleanText(payload.notes) || null, now, now).run();
+    result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(inserted.meta.last_row_id).first();
+    changedTables.push("profiles");
+    return result;
+  }
+  if (commandType === "attach_profile") {
+    const projectId = Number(payload.project_id || 0);
+    const profileName = cleanText(payload.profile_name);
+    let profileId = Number(payload.profile_id || 0);
+    if (!projectId) throw new Error("Client is required for profile attachment.");
+    const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(projectId).first();
+    if (!project) throw new Error("Client not found.");
+    let profile = profileId ? await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first() : null;
+    if (!profile && profileName) {
+      profile = await env.DB.prepare("SELECT * FROM profiles WHERE lower(name) = lower(?) ORDER BY id LIMIT 1").bind(profileName).first();
+      if (!profile) {
+        const inserted = await env.DB.prepare(
+          "INSERT INTO profiles (name, client, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?)"
+        ).bind(profileName, project.name || null, cleanText(payload.notes) || "Created from cloud Cora Profiles", now, now).run();
+        profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(inserted.meta.last_row_id).first();
+        changedTables.push("profiles");
+      }
+    }
+    if (!profile) throw new Error("Select an existing profile or enter a new profile name.");
+    profileId = Number(profile.id);
+    await env.DB.prepare("UPDATE projects SET profile_id = ?, updated_at = ? WHERE id = ?").bind(profileId, now, projectId).run();
+    await env.DB.prepare("UPDATE profiles SET updated_at = ? WHERE id = ?").bind(now, profileId).run();
+    result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first();
+    result.project = await env.DB.prepare(
+      `SELECT p.*, pr.name AS profile_name
+       FROM projects p
+       LEFT JOIN profiles pr ON pr.id = p.profile_id
+       WHERE p.id = ?`
+    ).bind(projectId).first();
+    changedTables.push("projects", "profiles");
     return result;
   }
   if (commandType === "add_keyword") {
@@ -2498,7 +2546,7 @@ function cloudMirrorHtml() {
     }
     function startToolAutoRefresh(key, durationMs) {
       if (toolRefreshTimer) clearInterval(toolRefreshTimer);
-      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"], reports: ["reports"] }[key] || [];
+      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"], reports: ["reports"], profiles: ["cora-profiles"] }[key] || [];
       const until = Date.now() + (durationMs || 120000);
       toolRefreshTimer = setInterval(async () => {
         if (Date.now() > until || !allowedPages.includes(state.page)) {
@@ -2652,8 +2700,13 @@ function cloudMirrorHtml() {
     }
     function coraProfilesView(data) {
       const profiles = data.profiles || [];
+      const clients = data.clients || [];
       const attached = profiles.reduce((sum, profile) => sum + Number(profile.client_count || 0), 0);
+      const clientOptions = clients.map((client) => '<option value="' + esc(client.id) + '">' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
+      const profileOptions = '<option value="">Select existing Cora profile</option>' + profiles.map((profile) => '<option value="' + esc(profile.id) + '">' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
+      const setupPanel = '<section><div class="head"><h3>Profile Setup</h3><span class="muted">Cloud profile metadata syncs back to the local dashboard. Native Cora settings are still applied from local Cora.</span></div><div class="command-grid"><div class="command-card"><h4>Create Profile</h4><input id="profile-create-name" placeholder="Profile name"><input id="profile-create-client" placeholder="Optional client label"><input id="profile-create-notes" placeholder="Notes"><button id="profile-create-submit">Create Profile</button></div><div class="command-card"><h4>Attach to Client</h4><select id="profile-attach-client">' + (clientOptions || '<option value="">No clients synced</option>') + '</select><select id="profile-attach-existing">' + profileOptions + '</select><input id="profile-attach-new" placeholder="Or create profile name"><button id="profile-attach-submit"' + (clients.length ? "" : " disabled") + '>Attach Profile</button></div></div><div id="profiles-inline-status">' + toolFeedbackHtml(state.toolFeedback?.profiles) + '</div></section>';
       return cards([["Profiles", profiles.length],["Attached Clients", attached],["Unattached", profiles.filter((profile) => !Number(profile.client_count || 0)).length]])
+        + setupPanel
         + '<section><div class="head"><h3>Cora Profiles</h3><span class="muted">Synced profile metadata. Native Cora profile editing still happens through the local Cora bridge.</span></div>' + profilesTable(profiles) + '</section>';
     }
     function runsTable(items) {
@@ -2896,6 +2949,8 @@ function cloudMirrorHtml() {
     function commandLabel(type) {
       const labels = {
         create_project: "Create Client",
+        create_profile: "Create Cora Profile",
+        attach_profile: "Attach Cora Profile",
         add_keyword: "Add Keyword",
         create_content_plan: "Content Plan",
         create_share_report: "Customer Report",
@@ -2993,7 +3048,7 @@ function cloudMirrorHtml() {
       });
       document.getElementById("sync-review-pull")?.addEventListener("click", () => {
         setPage("commands");
-        setPendingCommand("sync_cloud_to_local", { tables: ["projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
+        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
       });
       document.getElementById("sync-review-files")?.addEventListener("click", () => {
         setPage("commands");
@@ -3508,6 +3563,8 @@ function cloudMirrorHtml() {
     }
     function commandSummary(command_type, payload) {
       if (command_type === "create_project") return 'Create or reuse client "' + (payload.name || "") + '" for ' + (payload.site_domain || "no domain");
+      if (command_type === "create_profile") return 'Create or reuse Cora profile "' + (payload.name || "") + '".';
+      if (command_type === "attach_profile") return 'Attach Cora profile "' + (payload.profile_name || payload.profile_id || "") + '" to client ID ' + (payload.project_id || "");
       if (command_type === "add_keyword") return 'Add or reuse keyword "' + (payload.keyword || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_content_plan") return 'Create or reuse content plan "' + (payload.title || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
@@ -3530,6 +3587,8 @@ function cloudMirrorHtml() {
     }
     function validateCommand(command_type, payload) {
       if (command_type === "create_project" && !(payload.name || "").trim()) return "Client name is required.";
+      if (command_type === "create_profile" && !(payload.name || "").trim()) return "Profile name is required.";
+      if (command_type === "attach_profile" && (!payload.project_id || (!payload.profile_id && !(payload.profile_name || "").trim()))) return "Select a client and choose or create a profile.";
       if (command_type === "add_keyword" && (!(payload.project_id) || !(payload.keyword || "").trim())) return "Select a client and enter a keyword.";
       if (command_type === "create_content_plan" && (!(payload.project_id) || !(payload.title || "").trim())) return "Select a client and enter a plan title.";
       if (command_type === "create_share_report" && !payload.run_id) return "Select a Cora run for the report.";
@@ -3696,7 +3755,7 @@ function cloudMirrorHtml() {
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
-      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created clients, keywords, plans, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: projects,sites,keywords,content_plans,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
+      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, clients, keywords, plans, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,projects,sites,keywords,content_plans,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions(prefillProject) + '</select><input id="cmd-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions(prefillProject) + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
       const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions(prefillProject) + '</select><input id="cmd-cora-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-cora-url" placeholder="Target URL" value="' + esc(prefillTarget) + '"><input id="cmd-cora-profile" placeholder="Optional Cora profile" value="' + esc(prefillProfile) + '"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions(prefillProject) + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com" value="' + esc(prefillTarget) + '"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions(prefillProject) + '</select><input id="cmd-entity-seed" placeholder="Seed keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
       const commandTypes = [...new Set((data.commands || []).map((c) => c.command_type).filter(Boolean))];
@@ -3808,6 +3867,79 @@ function cloudMirrorHtml() {
           message
         }, true);
         startToolAutoRefresh("reports", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    function bindCoraProfileControls() {
+      document.getElementById("profile-create-submit")?.addEventListener("click", (event) => createCloudProfile(event.currentTarget).catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Profile Creation Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("profile-attach-submit")?.addEventListener("click", (event) => attachCloudProfile(event.currentTarget).catch((error) => {
+        setToolFeedback("profiles", { status: "failed", title: "Profile Attachment Failed", message: error.message || String(error) });
+      }));
+    }
+    async function createCloudProfile(button) {
+      const originalLabel = button?.textContent || "Create Profile";
+      const payload = {
+        execution_mode: "cloud",
+        name: document.getElementById("profile-create-name")?.value || "",
+        client: document.getElementById("profile-create-client")?.value || "",
+        notes: document.getElementById("profile-create-notes")?.value || ""
+      };
+      if (!(payload.name || "").trim()) throw new Error("Profile name is required.");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Creating...";
+      }
+      setToolFeedback("profiles", { status: "running", title: "Creating Cora Profile", message: "Creating profile metadata in Cloudflare." });
+      try {
+        const result = await postCommand("create_profile", payload);
+        await load({ preserveScroll: true });
+        const profile = result.command?.result?.profile || {};
+        const duplicate = Boolean(result.command?.result?.duplicate);
+        setToolFeedback("profiles", {
+          status: "complete",
+          title: duplicate ? "Profile Already Exists" : "Cora Profile Created",
+          message: (duplicate ? "Reused existing profile" : "Created profile") + (profile.name ? ": " + profile.name : "") + ". Pull cloud changes locally to mirror it."
+        }, true);
+        startToolAutoRefresh("profiles", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function attachCloudProfile(button) {
+      const originalLabel = button?.textContent || "Attach Profile";
+      const payload = {
+        execution_mode: "cloud",
+        project_id: Number(document.getElementById("profile-attach-client")?.value || 0),
+        profile_id: Number(document.getElementById("profile-attach-existing")?.value || 0) || null,
+        profile_name: document.getElementById("profile-attach-new")?.value || ""
+      };
+      if (!payload.project_id || (!payload.profile_id && !(payload.profile_name || "").trim())) throw new Error("Select a client and choose or create a profile.");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Attaching...";
+      }
+      setToolFeedback("profiles", { status: "running", title: "Attaching Cora Profile", message: "Updating the client profile link in Cloudflare." });
+      try {
+        const result = await postCommand("attach_profile", payload);
+        await load({ preserveScroll: true });
+        const project = result.command?.result?.project || {};
+        setToolFeedback("profiles", {
+          status: "complete",
+          title: "Cora Profile Attached",
+          message: (project.profile_name || payload.profile_name || "Profile") + " is attached to " + (project.name || "the client") + ". Pull cloud changes locally to mirror it."
+        }, true);
+        startToolAutoRefresh("profiles", 90000);
       } catch (error) {
         if (button) {
           button.disabled = false;
@@ -3966,7 +4098,7 @@ function cloudMirrorHtml() {
             setPage("entities");
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
-            setPendingCommand("sync_cloud_to_local", { tables: ["projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
+            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
           }
         };
       });
@@ -4055,6 +4187,7 @@ function cloudMirrorHtml() {
       setTimeout(bindReportControls, 0);
       if (state.page === "new-client") setTimeout(bindNewClientControls, 0);
       if (state.page === "cora") setTimeout(bindCoraControls, 0);
+      if (state.page === "cora-profiles") setTimeout(bindCoraProfileControls, 0);
       if (["runs", "jobs"].includes(state.page)) setTimeout(bindCoraListControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);

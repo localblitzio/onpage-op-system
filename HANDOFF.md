@@ -82,6 +82,9 @@ Implemented:
 - Cora runs queue to the local Windows bridge; the UI states that execution happens on the remote/local Cora machine.
 - Ranking Snapshot and Entity Explorer run through cloud/API command paths.
 - `Cora > Cora Reports` now includes a cloud-side Create Customer Report panel.
+- `Cora > Cora Profiles` now includes a cloud-side Profile Setup panel.
+- Cloud can create/reuse Cora profile metadata and attach a profile to a client.
+- Cloud-to-local pull sync includes `profiles` by default so profile/client links mirror back locally.
 - Cloud-created report metadata is immediate, but customer HTML/source XLSX artifacts still come from the local bridge/report file sync.
 - Cloud reports without uploaded artifacts show `Files pending` and route the user to sync report files instead of opening a missing artifact URL.
 - Inline status/progress cards exist for:
@@ -90,6 +93,7 @@ Implemented:
   - Ranking Snapshot started/duplicate/failed.
   - Entity Explorer model run started/duplicate/failed.
 - Duplicate cloud commands are now handled idempotently instead of surfacing D1 unique-constraint errors.
+- Native push/apply into the Windows Cora app still runs through the local dashboard/bridge because it talks to the desktop Cora process.
 
 ## Latest Local Workflow State
 
@@ -150,6 +154,7 @@ Authenticated smoke currently checks:
 - No unexpected browser/page errors.
 - Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer.
 - Cora page renders.
+- Cora Profiles setup panel renders.
 - Cora Reports create panel renders.
 - Ranking Snapshot run button renders.
 - Entity Explorer run button renders.
