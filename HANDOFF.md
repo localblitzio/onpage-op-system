@@ -78,6 +78,9 @@ Implemented:
 - `Cora > Run Cora` is a real tool page.
 - `Ranking > Ranking Snapshot` has a direct run panel.
 - `Entity Explorer > Entity Explorer` has a direct run panel.
+- `Entity Explorer > Entity Crossover` now loads the selected batch crossover table inline.
+- Cloud Entity Crossover supports auto-select modes, select visible, clear, and Save Entity Set from the page.
+- `Entity Explorer > Entity Sets` stores approved terms and cloud-to-local pull sync now includes `entity_sets` and `entity_set_terms`.
 - Client workspace opens tool pages directly instead of routing normal users through `Command Review`.
 - Cora runs queue to the local Windows bridge; the UI states that execution happens on the remote/local Cora machine.
 - Ranking Snapshot and Entity Explorer run through cloud/API command paths.
@@ -152,12 +155,14 @@ Authenticated smoke currently checks:
 
 - Dashboard leaves loading state.
 - No unexpected browser/page errors.
-- Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer.
+- Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer, Entity Crossover, Entity Sets.
 - Cora page renders.
 - Cora Profiles setup panel renders.
 - Cora Reports create panel renders.
 - Ranking Snapshot run button renders.
 - Entity Explorer run button renders.
+- Entity Crossover page renders the inline save workflow instead of requiring a separate detail prompt.
+- Entity Sets page renders saved-set context.
 - Inline status containers exist.
 
 ## Local Dashboard
@@ -244,8 +249,8 @@ Live status refresh on the tool pages has been started:
 
 ## Next Phase
 
-- Apply the parity checklist to the live codebase and close the highest-impact gaps:
-  - Confirm Entity Explorer local/cloud model selector parity.
+- Apply the parity checklist to the live codebase and close the next highest-impact gaps:
   - Confirm Ranking Snapshot local/cloud run and result parity.
   - Confirm Cora Reports local/cloud workflow parity.
+  - Confirm cloud-to-local sync for cloud-created Entity Sets in a real bridge pull.
   - Document any intentional local-only or cloud-only execution differences.

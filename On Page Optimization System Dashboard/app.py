@@ -884,7 +884,7 @@ def prepare_cloudflare_row_for_local(table: str, row: dict[str, Any]) -> dict[st
 
 
 def pull_cloudflare_sync(tables: list[str] | None = None, limit: int = 5000) -> dict[str, Any]:
-    selected = [table for table in (tables or ["profiles", "projects", "sites", "keywords", "content_plans", "share_reports"]) if table]
+    selected = [table for table in (tables or ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"]) if table]
     table_query = quote(",".join(selected))
     data = cloudflare_get_json(f"/api/sync/export?tables={table_query}&limit={int(limit)}")
     exported = data.get("tables") if isinstance(data.get("tables"), list) else []
@@ -1157,7 +1157,7 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         tables = payload.get("tables")
         selected_tables = [str(table) for table in tables if table] if isinstance(tables, list) else None
         if bool(payload.get("dry_run")):
-            result["sync"] = {"ok": True, "direction": "cloud_to_local", "dry_run": True, "tables": selected_tables or ["profiles", "projects", "sites", "keywords", "content_plans", "share_reports"]}
+            result["sync"] = {"ok": True, "direction": "cloud_to_local", "dry_run": True, "tables": selected_tables or ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"]}
         else:
             result["sync"] = pull_cloudflare_sync(tables=selected_tables, limit=int(payload.get("limit") or 5000))
     elif command_type == "sync_report_artifacts":

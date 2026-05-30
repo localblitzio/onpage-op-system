@@ -4,7 +4,7 @@ const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
 const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
 const headless = String(process.env.OPOS_SMOKE_HEADLESS || "").toLowerCase() === "true";
-const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity Explorer"];
+const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity Explorer", "Entity Crossover", "Entity Sets"];
 const checks = [];
 const errors = [];
 
@@ -97,6 +97,21 @@ try {
     assert(await page.locator("#entity-inline-status").count(), "Entity Explorer inline status area exists");
     assert(await page.locator(".provider-card").count() >= 5, "Entity Explorer provider cards render");
     assert(await page.locator(".entity-model-check:checked").count() >= 3, "Entity Explorer recommended models are selected");
+
+    await clickNav(page, "Entity Crossover");
+    await page.locator("#page-title", { hasText: "Entity Crossover" }).waitFor({ state: "visible", timeout: 10000 });
+    assert(await page.locator("text=Compare model output").count(), "Entity Crossover page explains save workflow");
+    const crossoverWorkspace = page.locator("#entity-crossover-workspace");
+    if (await crossoverWorkspace.count()) {
+      await page.getByRole("heading", { name: "Crossover Terms" }).waitFor({ state: "visible", timeout: 15000 });
+      assert(await page.locator("text=Open the full crossover table to select terms").count() === 0, "Entity Crossover no longer routes saving through a separate detail prompt");
+    } else {
+      checks.push({ ok: true, message: "Entity Crossover has no synced batches to load inline terms" });
+    }
+
+    await clickNav(page, "Entity Sets");
+    await page.locator("#page-title", { hasText: "Entity Sets" }).waitFor({ state: "visible", timeout: 10000 });
+    assert(await page.locator("text=Saved approved entity/LSI terms").count(), "Entity Sets page renders saved-set context");
 
     console.log(JSON.stringify({ ok: true, mode: "authenticated", checks }, null, 2));
   }

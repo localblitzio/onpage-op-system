@@ -951,7 +951,7 @@ async function handleSyncExport(request, env) {
     .split(",")
     .map((table) => table.trim())
     .filter(Boolean);
-  const tables = selected.length ? selected : ["projects", "sites", "keywords", "content_plans", "share_reports"];
+  const tables = selected.length ? selected : ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"];
   const limit = Math.min(Number(url.searchParams.get("limit") || 5000), 25000);
   const exported = [];
   for (const table of tables) {
@@ -1387,7 +1387,7 @@ async function syncStatusData(env) {
   ).all();
   const tableRows = rows.results || [];
   const seen = new Set(tableRows.map((row) => row.table_name));
-  const coreTables = ["projects", "sites", "pages", "keywords", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "entity_sets"];
+  const coreTables = ["profiles", "projects", "sites", "pages", "keywords", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "entity_sets", "entity_set_terms"];
   for (const table of coreTables) {
     if (!seen.has(table)) tableRows.push({ table_name: table, rows_received: 0, batch_count: 0, last_received_at: null });
   }
@@ -2451,7 +2451,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
@@ -2896,10 +2896,14 @@ function cloudMirrorHtml() {
       const batchOptions = '<select id="entity-batch-filter">' + (batches.length ? batches.map((batch) => '<option value="' + esc(batch.id) + '"' + (selected && String(batch.id) === String(selected.id) ? ' selected' : '') + '>' + esc((batch.seed_keyword || "Batch") + " | " + (batch.project_name || "") + " | " + fmtDate(batch.created_at)) + '</option>').join("") : '<option value="all">No batches</option>') + '</select>';
       const batchRows = batches.map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong><br><span class="muted">' + esc(b.project_name || "") + '</span></td><td>' + esc(b.depth || "") + '</td><td>' + entityBatchProgress(b) + '</td><td><span class="pill ' + entityBatchStatusClass(b.status) + '">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(b.id) + '">Open Detail</button></td></tr>');
       const runRows = batchRuns.map((r) => '<tr><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill ' + (r.status === "complete" ? "ok" : r.status === "failed" ? "warn" : "") + '">' + esc(r.status || "") + '</span></td><td><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
+      const detail = selected && state.entityCrossoverDetail && String(state.entityCrossoverDetail.id) === String(selected.id) ? state.entityCrossoverDetail : null;
+      const crossoverPanel = selected
+        ? '<div id="entity-crossover-workspace" data-batch-id="' + esc(selected.id) + '">' + (detail?.loading ? '<section><div class="head"><h3>Crossover Terms</h3><span class="pill warn">Loading</span></div><div class="empty">Loading crossover terms...</div></section>' : detail?.data ? entityCrossoverWorkspace(detail.data) : detail?.error ? entityCrossoverWorkspace({ error: detail.error }) : '<section><div class="head"><h3>Crossover Terms</h3><span class="pill warn">Loading</span></div><div class="empty">Loading crossover terms...</div></section>') + '</div>'
+        : '<section><div class="head"><h3>Crossover Terms</h3></div><div class="empty">Select or run an entity batch first.</div></section>';
       setTimeout(bindEntityPageControls, 0);
-      return '<section><div class="head"><h3>Entity Crossover</h3><span class="muted">Read-only cloud view of multi-model entity batches.</span></div><div class="filters">' + clientOptions + batchOptions + '<button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button><span class="muted">' + esc(batches.length) + ' of ' + esc(allBatches.length) + ' batches</span></div></section>'
+      return '<section><div class="head"><h3>Entity Crossover</h3><span class="muted">Compare model output, auto-select terms, and save approved Entity Sets.</span></div><div class="filters">' + clientOptions + batchOptions + '<button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button><span class="muted">' + esc(batches.length) + ' of ' + esc(allBatches.length) + ' batches</span></div></section>'
         + (selected ? cards([["Selected Batch", selected.seed_keyword || ""],["Client", selected.project_name || ""],["Progress", entityBatchProgress(selected)],["Models", batchRuns.length]]) : "")
-        + (selected ? '<section><div class="head"><h3>Batch Detail</h3><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(selected.id) + '">Open Full Crossover</button></div><div class="empty">Open the full crossover table to select terms and save an Entity Set.</div></section>' : '')
+        + crossoverPanel
         + '<section><div class="head"><h3>Selected Batch Model Runs</h3></div>' + table(["Provider","Model","Status","Summary / Error","Completed",""], runRows, "Select or run an entity batch first.") + '</section>'
         + '<section><div class="head"><h3>All Entity Batches</h3></div>' + table(["Seed","Depth","Progress","Status","Updated",""], rows(batchRows.map((html, i) => ({ html, _search: JSON.stringify(batches[i] || {}) }))).map((row) => row.html), "No entity batches synced yet.") + '</section>';
     }
@@ -3048,7 +3052,7 @@ function cloudMirrorHtml() {
       });
       document.getElementById("sync-review-pull")?.addEventListener("click", () => {
         setPage("commands");
-        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
+        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
       });
       document.getElementById("sync-review-files")?.addEventListener("click", () => {
         setPage("commands");
@@ -3263,13 +3267,14 @@ function cloudMirrorHtml() {
       document.querySelectorAll(".entity-batch-select").forEach((button) => {
         button.onclick = () => {
           state.entityBatch = button.dataset.batchId || "all";
+          state.entityCrossoverDetail = null;
           setPage("entity-crossover");
         };
       });
       const batchFilter = document.getElementById("entity-batch-filter");
-      if (batchFilter) batchFilter.onchange = (event) => { state.entityBatch = event.target.value || "all"; render(); };
+      if (batchFilter) batchFilter.onchange = (event) => { state.entityBatch = event.target.value || "all"; state.entityCrossoverDetail = null; render(); };
       const entityClient = document.getElementById("entity-client-filter");
-      if (entityClient) entityClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; render(); };
+      if (entityClient) entityClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; state.entityCrossoverDetail = null; render(); };
       const entityRunClient = document.getElementById("entity-run-client");
       if (entityRunClient) entityRunClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; state.commandPrefill = null; render(); };
       document.getElementById("entity-run-start")?.addEventListener("click", (event) => {
@@ -3331,6 +3336,31 @@ function cloudMirrorHtml() {
       document.querySelectorAll(".entity-set-delete").forEach((button) => {
         button.onclick = () => deleteEntitySet(button.dataset.setId).catch((error) => alert(error.message || error));
       });
+      document.getElementById("entity-auto-select")?.addEventListener("click", () => {
+        const mode = document.getElementById("entity-auto-select-mode")?.value || "balanced";
+        const thresholds = { conservative: 75, balanced: 55, comprehensive: 35 };
+        const topRatios = { conservative: 0.2, balanced: 0.4, comprehensive: 0.65 };
+        const boxes = Array.from(document.querySelectorAll(".entity-crossover-check"));
+        const threshold = thresholds[mode] || thresholds.balanced;
+        const topLimit = Math.max(1, Math.ceil(boxes.length * (topRatios[mode] || topRatios.balanced)));
+        boxes.forEach((box, index) => {
+          box.checked = index < topLimit || Number(box.dataset.relevance || 0) >= threshold;
+        });
+      });
+      document.getElementById("entity-select-visible")?.addEventListener("click", () => {
+        document.querySelectorAll(".entity-crossover-check").forEach((box) => { box.checked = true; });
+      });
+      document.getElementById("entity-clear-selected")?.addEventListener("click", () => {
+        document.querySelectorAll(".entity-crossover-check").forEach((box) => { box.checked = false; });
+      });
+      document.getElementById("entity-save-set")?.addEventListener("click", (event) => {
+        saveSelectedEntitySet(event.currentTarget).catch((error) => alert(error.message || error));
+      });
+      const crossoverRoot = document.getElementById("entity-crossover-workspace");
+      const crossoverBatchId = crossoverRoot?.dataset.batchId || "";
+      if (crossoverBatchId && (!state.entityCrossoverDetail || String(state.entityCrossoverDetail.id) !== String(crossoverBatchId))) {
+        loadEntityCrossoverDetail(crossoverBatchId).catch((error) => console.warn("Entity crossover load failed", error));
+      }
     }
     async function saveSelectedEntitySet(button) {
       const checked = Array.from(document.querySelectorAll(".entity-crossover-check:checked"));
@@ -3356,6 +3386,18 @@ function cloudMirrorHtml() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Entity set delete failed");
       await load();
+    }
+    async function loadEntityCrossoverDetail(batchId) {
+      state.entityCrossoverDetail = { id: batchId, loading: true };
+      render();
+      try {
+        const data = await apiGet("/api/entity-batches/" + encodeURIComponent(batchId) + "/detail");
+        state.entityCrossoverDetail = { id: batchId, loading: false, data };
+        if (state.page === "entity-crossover") render();
+      } catch (error) {
+        state.entityCrossoverDetail = { id: batchId, loading: false, error: error.message || String(error) };
+        if (state.page === "entity-crossover") render();
+      }
     }
     async function apiGet(path) {
       const token = readToken();
@@ -3426,6 +3468,21 @@ function cloudMirrorHtml() {
       const termRows = terms.map((t) => '<tr><td><strong>' + esc(t.term || "") + '</strong><br><span class="muted">' + esc(t.normalized || "") + '</span></td><td>' + esc(t.type || "") + '</td><td>' + esc(fmtNum(t.source_count)) + '</td><td><span class="muted">' + esc(JSON.stringify(t.sources || [])) + '</span></td><td>' + esc(t.notes || "") + '</td></tr>');
       return smallCards([["Entity Set", set.name || ""],["Client", set.project_name || ""],["Terms", terms.length],["Created", fmtDate(set.created_at)],["Updated", fmtDate(set.updated_at)],["Source Batch", set.source_batch_id || ""]])
         + '<section><div class="head"><h3>Entity Terms</h3></div>' + detailTable(["Term","Type","Sources","Source Detail","Notes"], termRows, "No entity terms synced for this set.") + '</section>';
+    }
+    function entityCrossoverWorkspace(data) {
+      if (data.error) return '<section><div class="head"><h3>Crossover Terms</h3><span class="pill warn">Error</span></div><div class="empty">' + esc(data.error) + '</div></section>';
+      const batch = data.batch || {};
+      const runs = data.runs || [];
+      const crossover = data.crossover || [];
+      const rowsHtml = crossover.slice(0, 500).map((row) => {
+        const sourceIds = new Set((row.sources || []).map((source) => String(source.run_id)));
+        const encoded = encodeURIComponent(JSON.stringify(row));
+        const reasons = Array.isArray(row.relevance_reasons) && row.relevance_reasons.length ? '<br><span class="muted">' + esc(row.relevance_reasons.join(", ")) + '</span>' : "";
+        return '<tr><td><input class="entity-crossover-check" type="checkbox" data-term="' + encoded + '" data-relevance="' + esc(row.relevance_score || 0) + '"></td><td><strong>' + esc(row.term || "") + '</strong><br><span class="muted">' + esc(row.normalized || "") + '</span></td><td>' + esc(row.type || "") + '</td><td>' + esc(fmtNum(row.source_count || 0)) + '</td><td>' + esc(fmtNum(row.relevance_score || 0)) + reasons + '</td>' + runs.map((run) => '<td>' + (sourceIds.has(String(run.id)) ? 'Yes' : '') + '</td>').join("") + '</tr>';
+      });
+      const saveBar = '<section><div class="head"><h3>Save Entity Set</h3><span class="muted">Auto-select or manually choose crossover rows, then save them for this client.</span></div><div class="status-list"><div class="toolbar"><select id="entity-auto-select-mode"><option value="balanced">Balanced</option><option value="conservative">Conservative</option><option value="comprehensive">Comprehensive</option></select><button id="entity-auto-select" class="secondary">Auto Select</button><button id="entity-select-visible" class="secondary">Select Visible</button><button id="entity-clear-selected" class="secondary">Clear</button></div><div class="field-row"><input id="entity-set-name" placeholder="Entity set name" value="' + esc((batch.seed_keyword || "Entity") + " approved terms") + '"><input id="entity-set-notes" placeholder="Notes"></div><div class="toolbar"><button id="entity-save-set" data-batch-id="' + esc(batch.id || "") + '" data-project-id="' + esc(batch.project_id || "") + '">Save Selected Terms</button><button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button></div></div></section>';
+      return saveBar
+        + '<section><div class="head"><h3>Crossover Terms</h3><span class="muted">' + esc(crossover.length) + ' computed terms from ' + esc(runs.length) + ' model runs.</span></div><div class="scroll-table">' + table(["Save","Term","Type","Sources","Relevance"].concat(runs.map((run) => (run.provider || "") + " " + (run.model || ""))), rowsHtml, "No crossover terms available for this batch.") + '</div></section>';
     }
     function entityBatchDetail(data) {
       const batch = data.batch || {};
@@ -3755,7 +3812,7 @@ function cloudMirrorHtml() {
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
-      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, clients, keywords, plans, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,projects,sites,keywords,content_plans,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
+      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, clients, keywords, plans, entity sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,projects,sites,keywords,content_plans,entity_sets,entity_set_terms,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions(prefillProject) + '</select><input id="cmd-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions(prefillProject) + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
       const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions(prefillProject) + '</select><input id="cmd-cora-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-cora-url" placeholder="Target URL" value="' + esc(prefillTarget) + '"><input id="cmd-cora-profile" placeholder="Optional Cora profile" value="' + esc(prefillProfile) + '"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions(prefillProject) + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com" value="' + esc(prefillTarget) + '"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions(prefillProject) + '</select><input id="cmd-entity-seed" placeholder="Seed keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
       const commandTypes = [...new Set((data.commands || []).map((c) => c.command_type).filter(Boolean))];
@@ -4098,7 +4155,7 @@ function cloudMirrorHtml() {
             setPage("entities");
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
-            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "share_reports"], dry_run: true });
+            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
           }
         };
       });

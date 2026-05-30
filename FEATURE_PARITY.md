@@ -93,7 +93,7 @@ Before finishing a feature:
 These areas need active parity checks during upcoming phases:
 
 - Cora run workflow: cloud has been aligned to the local-style run page; verify local stays equally simple.
-- Entity Explorer: cloud has provider/model selectors and direct run status; verify or port the same selector behavior locally.
+- Entity Explorer: cloud has provider/model selectors, direct run status, inline Entity Crossover save workflow, and Entity Set storage/sync defaults; next check is a real bridge pull of cloud-created Entity Sets.
 - Ranking Snapshot: cloud has direct run status and recent snapshot panels; verify or port equivalent local workflow.
 - Cora Profiles: local/Cora bridge is the source of truth today; cloud needs a clean attach/edit workflow when profile management moves further into the dashboard.
 - Reports: Cora Reports should be available from both surfaces, with report storage and share URLs handled consistently.
