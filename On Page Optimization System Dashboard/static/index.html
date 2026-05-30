@@ -47,16 +47,21 @@
         <button class="main-tab submenu-tab" type="button" data-view="cora-profiles-view">Cora Profiles</button>
         <button class="main-tab submenu-tab" type="button" data-view="reports-view">Cora Reports</button>
 
-        <div class="menu-section-label">Tools</div>
+        <div class="menu-section-label">Entity Explorer</div>
         <button class="main-tab" type="button" data-view="entity-view">Entity &amp; LSI Explorer</button>
         <button class="main-tab submenu-tab" type="button" data-view="entity-crossover-view">Entity Crossover</button>
         <button class="main-tab submenu-tab" type="button" data-view="entity-sets-view">Entity Sets</button>
+
+        <div class="menu-section-label">Ranking</div>
         <button class="main-tab" type="button" data-view="ranking-snapshot-view">Ranking Snapshot</button>
         <button class="main-tab submenu-tab" type="button" data-view="ranking-targets-view">Saved Targets</button>
 
+        <div class="menu-section-label">Planning</div>
+        <button class="main-tab" type="button" data-view="planner-view">Content Planner</button>
+
         <div class="menu-section-label">System</div>
         <button class="main-tab" type="button" data-view="overview-view">Overview</button>
-        <button class="main-tab" type="button" data-view="planner-view">Content Planner</button>
+        <button class="main-tab" type="button" data-view="cloud-sync-view">Cloud Sync</button>
         <button class="main-tab" type="button" data-view="api-keys-view">Settings</button>
       </nav>
     </aside>
@@ -336,6 +341,18 @@
   <main id="aeo-view" class="settings-view app-view hidden">
     <section class="settings-panel tool-page">
       <div id="aeo-tool-content"></div>
+    </section>
+  </main>
+
+  <main id="cloud-sync-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page">
+      <div class="detail-head">
+        <div>
+          <h2>Cloud Sync</h2>
+          <p>Push local dashboard data and report files to Cloudflare, then pull cloud commands back to this machine.</p>
+        </div>
+      </div>
+      <div id="cloud-sync-content"></div>
     </section>
   </main>
 

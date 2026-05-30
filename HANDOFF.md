@@ -87,6 +87,29 @@ Implemented:
   - Entity Explorer model run started/duplicate/failed.
 - Duplicate cloud commands are now handled idempotently instead of surfacing D1 unique-constraint errors.
 
+## Latest Local Workflow State
+
+Implemented in the parity phase:
+
+- Local sidebar now follows the same major grouping as cloud:
+  - Clients
+  - Cora
+  - Entity Explorer
+  - Ranking
+  - Planning
+  - System
+- Local `System > Cloud Sync` is now a dedicated page instead of being available only inside Overview.
+- The local Cloud Sync page reuses the existing sync/bridge backend and includes:
+  - Dry run data sync
+  - Push to Cloudflare
+  - Dry run report files
+  - Push report files
+  - Pull cloud commands
+  - Auto-pull bridge toggle
+  - Allow cloud Cora commands toggle
+  - Allow cloud paid/API tool runs toggle
+- Overview still shows the Cloudflare sync summary, but the full workflow now has a matching System page like cloud.
+
 ## Smoke Testing
 
 Smoke tests are visible by default so the browser window can be observed.
@@ -212,7 +235,7 @@ Live status refresh on the tool pages has been started:
 ## Next Phase
 
 - Apply the parity checklist to the live codebase and close the highest-impact gaps:
-  - Confirm Entity Explorer local/cloud workflow parity.
-  - Confirm Ranking Snapshot local/cloud workflow parity.
+  - Confirm Entity Explorer local/cloud model selector parity.
+  - Confirm Ranking Snapshot local/cloud run and result parity.
   - Confirm Cora Reports local/cloud workflow parity.
   - Document any intentional local-only or cloud-only execution differences.

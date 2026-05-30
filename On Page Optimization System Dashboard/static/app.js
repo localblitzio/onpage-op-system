@@ -303,6 +303,9 @@ function showMainView(viewId, options = {}) {
   if (viewId === "overview-view") {
     loadOverview().catch((err) => toast(err.message));
   }
+  if (viewId === "cloud-sync-view") {
+    loadCloudSyncPage().catch((err) => toast(err.message));
+  }
   if (viewId === "planner-view") {
     loadPlanner().catch((err) => toast(err.message));
   }
@@ -329,6 +332,9 @@ function refreshCurrentProfileView() {
   }
   if (state.activeView === "overview-view") {
     return loadOverview();
+  }
+  if (state.activeView === "cloud-sync-view") {
+    return loadCloudSyncPage();
   }
   if (state.activeView === "planner-view") {
     return loadPlanner();
@@ -380,6 +386,8 @@ async function refreshCoraStatus() {
 
 function renderOverview() {
   const root = el("overview-content");
+  const cloudSyncRoot = el("cloud-sync-content");
+  if (cloudSyncRoot) cloudSyncRoot.innerHTML = "";
   const data = state.overview;
   if (!data) {
     root.innerHTML = `<div class="note-box">Loading overview...</div>`;
@@ -391,13 +399,8 @@ function renderOverview() {
   const recentJobs = data.recent_jobs || [];
   const apiProviders = data.api_key_providers || [];
   const cloudflare = state.cloudflareSync || {};
-  const cloudflareRows = Object.values(cloudflare.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
-  const cloudflareLast = (cloudflare.state || []).map((row) => row.last_success_at).filter(Boolean).sort().pop() || "";
   const artifactState = cloudflare.artifacts || {};
   const artifactFiles = Number(artifactState.total_files || 0);
-  const artifactBytes = Number(artifactState.total_bytes || 0);
-  const artifactLast = artifactState.last_uploaded_at || "";
-  const bridge = cloudflare.bridge || {};
   root.innerHTML = `
     <div class="overview-grid">
       <div class="overview-card"><span>${fmtNum(counts.profiles || 0)}</span><label>Profiles</label></div>
@@ -413,38 +416,7 @@ function renderOverview() {
       <div class="overview-card"><span>${fmtNum(artifactFiles)}</span><label>Cloud Files</label></div>
     </div>
     <div class="overview-sections">
-      <section class="data-section">
-        <div class="panel-head">
-          <div>
-            <h3>Cloudflare Production Sync</h3>
-            <p>${cloudflare.configured ? "Push local dashboard data to the configured Cloudflare Worker/D1 endpoint." : "Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN before pushing to production."}</p>
-          </div>
-          <div class="row-actions">
-            <button id="cloudflare-dry-run" type="button" class="secondary">Dry Run</button>
-            <button id="cloudflare-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push to Cloudflare</button>
-            <button id="cloudflare-files-dry-run" type="button" class="secondary">Dry Run Files</button>
-            <button id="cloudflare-files-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push Report Files</button>
-            <button id="cloudflare-commands-pull" type="button" class="secondary" ${cloudflare.configured ? "" : "disabled"}>Pull Cloud Commands</button>
-          </div>
-        </div>
-        <div id="cloudflare-sync-status" class="cloudflare-sync-status">
-          <div><label>Endpoint</label><strong>${htmlEscape(cloudflare.sync_url || "Not configured")}</strong></div>
-          <div><label>Rows Prepared</label><strong>${fmtNum(cloudflareRows)}</strong></div>
-          <div><label>Batch Size</label><strong>${fmtNum(cloudflare.batch_size || 0)}</strong></div>
-          <div><label>Last Success</label><strong>${fmtDate(cloudflareLast) || "Never"}</strong></div>
-          <div><label>Report Files</label><strong>${fmtNum(artifactFiles)} synced</strong></div>
-          <div><label>File Bytes</label><strong>${fmtBytes(artifactBytes)}</strong></div>
-          <div><label>Last File Upload</label><strong>${fmtDate(artifactLast) || "Never"}</strong></div>
-          <div><label>Bridge</label><strong>${bridge.enabled ? "Auto" : "Manual"}</strong></div>
-          <div><label>Last Poll</label><strong>${fmtDate(bridge.last_poll_at) || "Never"}</strong></div>
-        </div>
-        <div class="cloud-bridge-controls">
-          <label><input id="bridge-enabled" type="checkbox" ${bridge.enabled ? "checked" : ""}> Auto-pull cloud commands</label>
-          <label><input id="bridge-allow-cora" type="checkbox" ${bridge.allow_cora ? "checked" : ""}> Allow cloud to queue Cora runs</label>
-          <label>Poll seconds <input id="bridge-poll-interval" type="number" min="10" max="3600" value="${htmlEscape(bridge.poll_interval || 30)}"></label>
-          <button id="save-bridge-settings" type="button" class="secondary">Save Bridge</button>
-        </div>
-      </section>
+      ${renderCloudflareSyncPanel()}
       <section class="data-section">
         <h3>Recent Runs</h3>
         ${recentRuns.length ? table(["Keyword", "Project", "Imported", "Recommendations", "LSI"], recentRuns.map((run) => `
@@ -507,6 +479,73 @@ async function loadOverview() {
   renderOverview();
 }
 
+function renderCloudflareSyncPanel() {
+  const cloudflare = state.cloudflareSync || {};
+  const cloudflareRows = Object.values(cloudflare.counts || {}).reduce((sum, value) => sum + Number(value || 0), 0);
+  const cloudflareLast = (cloudflare.state || []).map((row) => row.last_success_at).filter(Boolean).sort().pop() || "";
+  const artifactState = cloudflare.artifacts || {};
+  const artifactFiles = Number(artifactState.total_files || 0);
+  const artifactBytes = Number(artifactState.total_bytes || 0);
+  const artifactLast = artifactState.last_uploaded_at || "";
+  const bridge = cloudflare.bridge || {};
+  return `
+    <section class="data-section cloud-sync-panel">
+      <div class="panel-head">
+        <div>
+          <h3>Cloudflare Production Sync</h3>
+          <p>${cloudflare.configured ? "Push local dashboard data to the configured Cloudflare Worker/D1 endpoint." : "Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN before pushing to production."}</p>
+        </div>
+        <div class="row-actions">
+          <button id="cloudflare-dry-run" type="button" class="secondary">Dry Run</button>
+          <button id="cloudflare-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push to Cloudflare</button>
+          <button id="cloudflare-files-dry-run" type="button" class="secondary">Dry Run Files</button>
+          <button id="cloudflare-files-sync-now" type="button" ${cloudflare.configured ? "" : "disabled"}>Push Report Files</button>
+          <button id="cloudflare-commands-pull" type="button" class="secondary" ${cloudflare.configured ? "" : "disabled"}>Pull Cloud Commands</button>
+        </div>
+      </div>
+      <div id="cloudflare-sync-status" class="cloudflare-sync-status">
+        <div><label>Endpoint</label><strong>${htmlEscape(cloudflare.sync_url || "Not configured")}</strong></div>
+        <div><label>Rows Prepared</label><strong>${fmtNum(cloudflareRows)}</strong></div>
+        <div><label>Batch Size</label><strong>${fmtNum(cloudflare.batch_size || 0)}</strong></div>
+        <div><label>Last Success</label><strong>${fmtDate(cloudflareLast) || "Never"}</strong></div>
+        <div><label>Report Files</label><strong>${fmtNum(artifactFiles)} synced</strong></div>
+        <div><label>File Bytes</label><strong>${fmtBytes(artifactBytes)}</strong></div>
+        <div><label>Last File Upload</label><strong>${fmtDate(artifactLast) || "Never"}</strong></div>
+        <div><label>Bridge</label><strong>${bridge.enabled ? "Auto" : "Manual"}</strong></div>
+        <div><label>Last Poll</label><strong>${fmtDate(bridge.last_poll_at) || "Never"}</strong></div>
+        <div><label>Cora Commands</label><strong>${bridge.allow_cora ? "Allowed" : "Blocked"}</strong></div>
+        <div><label>Paid/API Tools</label><strong>${bridge.allow_paid_tools ? "Allowed" : "Blocked"}</strong></div>
+      </div>
+      <div class="cloud-bridge-controls">
+        <label><input id="bridge-enabled" type="checkbox" ${bridge.enabled ? "checked" : ""}> Auto-pull cloud commands</label>
+        <label><input id="bridge-allow-cora" type="checkbox" ${bridge.allow_cora ? "checked" : ""}> Allow cloud to queue Cora runs</label>
+        <label><input id="bridge-allow-paid-tools" type="checkbox" ${bridge.allow_paid_tools ? "checked" : ""}> Allow cloud paid/API tool runs</label>
+        <label>Poll seconds <input id="bridge-poll-interval" type="number" min="10" max="3600" value="${htmlEscape(bridge.poll_interval || 30)}"></label>
+        <button id="save-bridge-settings" type="button" class="secondary">Save Bridge</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderCloudSyncPage() {
+  const root = el("cloud-sync-content");
+  if (!root) return;
+  const overviewRoot = el("overview-content");
+  if (overviewRoot) overviewRoot.innerHTML = "";
+  root.innerHTML = renderCloudflareSyncPanel();
+  bindCloudflareSyncControls();
+}
+
+async function loadCloudSyncPage() {
+  state.cloudflareSync = await api("/api/cloudflare/status").catch((err) => ({ configured: false, error: err.message }));
+  renderCloudSyncPage();
+}
+
+function renderCloudflareActiveView() {
+  if (state.activeView === "overview-view") renderOverview();
+  if (state.activeView === "cloud-sync-view") renderCloudSyncPage();
+}
+
 function bindCloudflareSyncControls() {
   el("cloudflare-dry-run")?.addEventListener("click", () => runCloudflareSync(true).catch((err) => toast(err.message)));
   el("cloudflare-sync-now")?.addEventListener("click", () => runCloudflareSync(false).catch((err) => toast(err.message)));
@@ -524,7 +563,7 @@ async function runCloudflareSync(dryRun = false) {
     body: JSON.stringify({ dry_run: dryRun }),
   });
   state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
-  renderOverview();
+  renderCloudflareActiveView();
   toast(dryRun ? `Dry run ready: ${fmtNum(result.total_rows)} rows.` : `Cloudflare sync pushed ${fmtNum(result.total_rows)} rows.`);
 }
 
@@ -537,7 +576,7 @@ async function runCloudflareArtifactSync(dryRun = false, reportIds = null, force
   });
   state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
   await loadShareReports(state.selectedClientId || state.selectedProjectId || "");
-  if (state.activeView === "overview-view") renderOverview();
+  renderCloudflareActiveView();
   if (state.activeView === "reports-view") renderReportGenerator();
   const changed = dryRun ? result.artifacts?.length || 0 : result.uploaded || 0;
   toast(dryRun ? `File dry run ready: ${fmtNum(changed)} artifacts.` : `Uploaded ${fmtNum(changed)} report files to Cloudflare.`);
@@ -555,6 +594,7 @@ async function pullCloudflareCommands() {
     loadJobs().catch(() => {}),
   ]);
   if (state.activeView === "overview-view") renderOverview();
+  if (state.activeView === "cloud-sync-view") renderCloudSyncPage();
   toast(`Processed ${fmtNum(result.processed || 0)} cloud commands.`);
 }
 
@@ -564,11 +604,12 @@ async function saveCloudBridgeSettings() {
     body: JSON.stringify({
       enabled: Boolean(el("bridge-enabled")?.checked),
       allow_cora: Boolean(el("bridge-allow-cora")?.checked),
+      allow_paid_tools: Boolean(el("bridge-allow-paid-tools")?.checked),
       poll_interval: Number(el("bridge-poll-interval")?.value || 30),
     }),
   });
   state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
-  renderOverview();
+  renderCloudflareActiveView();
   toast(result.enabled ? "Cloud bridge auto-polling enabled." : "Cloud bridge auto-polling disabled.");
 }
 
