@@ -78,6 +78,7 @@ try {
     await page.locator("text=Run Ranking Snapshot").waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#ranking-run-snapshot").isVisible(), "Ranking Snapshot run button renders");
     assert(await page.locator("#ranking-inline-status").count(), "Ranking Snapshot inline status area exists");
+    assert(await page.getByRole("heading", { name: "Last Snapshot" }).count(), "Ranking Snapshot last snapshot panel renders");
 
     await clickNav(page, "Entity Explorer");
     await page.getByRole("heading", { name: "Run Entity Explorer" }).waitFor({ state: "visible", timeout: 10000 });
