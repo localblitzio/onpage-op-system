@@ -109,6 +109,18 @@ CREATE TABLE IF NOT EXISTS tool_usage (
 );
 
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT);
+CREATE TABLE IF NOT EXISTS cora_domain_lists (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER,
+  profile_id INTEGER,
+  scope TEXT NOT NULL DEFAULT 'global',
+  list_type TEXT NOT NULL,
+  value TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  archived_at TEXT
+);
 CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY, profile_id INTEGER, name TEXT, client TEXT, site_domain TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS sites (id INTEGER PRIMARY KEY, project_id INTEGER, domain TEXT, name TEXT, created_at TEXT);
 CREATE TABLE IF NOT EXISTS pages (id INTEGER PRIMARY KEY, site_id INTEGER, url TEXT, title TEXT, created_at TEXT);

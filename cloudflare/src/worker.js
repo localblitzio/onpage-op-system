@@ -1,5 +1,6 @@
 const TABLE_COLUMNS = {
   profiles: ["id", "name", "client", "notes", "created_at", "updated_at", "archived_at"],
+  cora_domain_lists: ["id", "project_id", "profile_id", "scope", "list_type", "value", "notes", "created_at", "updated_at", "archived_at"],
   projects: ["id", "profile_id", "name", "client", "site_domain", "notes", "created_at", "updated_at"],
   sites: ["id", "project_id", "domain", "name", "created_at"],
   pages: ["id", "site_id", "url", "title", "created_at"],
@@ -208,7 +209,7 @@ async function assertCommandAccess(request, env, commandType, payload) {
   return scope;
 }
 
-const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "create_cora_domain_entry", "update_cora_domain_entry", "archive_cora_domain_entry", "apply_cora_domain_lists", "pull_cora_domain_lists", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
 const RANKING_TARGET_STATUSES = new Set(["new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"]);
 const CONTENT_PLAN_STATUSES = new Set(["planned", "in_progress", "drafting", "review", "published", "paused", "done", "archived"]);
 const ENTITY_DEPTH_LIMITS = {
@@ -303,6 +304,36 @@ async function upsertRows(db, table, rows) {
 
 function cleanText(value) {
   return String(value ?? "").trim();
+}
+
+const CORA_DOMAIN_LIST_TYPES = new Set(["tracked", "competitors", "banned", "slowRender", "stopWords"]);
+
+function normalizeCoraDomainListType(value) {
+  const raw = cleanText(value);
+  const aliases = {
+    competitor: "competitors",
+    slow_render: "slowRender",
+    "slow-render": "slowRender",
+    slowrender: "slowRender",
+    stop_words: "stopWords",
+    "stop-words": "stopWords",
+    stopwords: "stopWords"
+  };
+  const listType = aliases[raw] || raw;
+  if (!CORA_DOMAIN_LIST_TYPES.has(listType)) throw new Error("Unsupported Cora domain list type.");
+  return listType;
+}
+
+function normalizeCoraDomainValue(value) {
+  let text = cleanText(value).replace(/^https?:\/\//i, "");
+  text = text.includes("/") ? text.split("/", 1)[0] : text;
+  text = text.toLowerCase();
+  if (!text) throw new Error("Domain value is required.");
+  return text;
+}
+
+function normalizeDomainScope(value) {
+  return cleanText(value) || "global";
 }
 
 function numberOrNull(value) {
@@ -685,7 +716,7 @@ async function executeCloudCommand(commandType, payload, env) {
   const now = new Date().toISOString();
   const changedTables = [];
   const result = { command_type: commandType, execution_mode: "cloud", changed_tables: changedTables };
-  if (["run_cora", "apply_cora_profile", "push_cora_profile"].includes(commandType)) throw new Error("This action is local-only. Use the local bridge mode.");
+  if (["run_cora", "apply_cora_profile", "push_cora_profile", "apply_cora_domain_lists", "pull_cora_domain_lists"].includes(commandType)) throw new Error("This action is local-only. Use the local bridge mode.");
   if (commandType === "create_project") {
     const name = cleanText(payload.name);
     if (!name) throw new Error("Client name is required.");
@@ -809,6 +840,80 @@ async function executeCloudCommand(commandType, payload, env) {
     result.profile = await env.DB.prepare("SELECT * FROM profiles WHERE id = ?").bind(profileId).first();
     result.detached_clients = Number(profile.client_count || 0);
     changedTables.push("profiles", "projects");
+    return result;
+  }
+  if (commandType === "create_cora_domain_entry") {
+    const listType = normalizeCoraDomainListType(payload.list_type);
+    const value = normalizeCoraDomainValue(payload.value);
+    const scope = normalizeDomainScope(payload.scope);
+    const projectId = Number(payload.project_id || 0) || null;
+    const profileId = Number(payload.profile_id || 0) || null;
+    const existing = await env.DB.prepare(
+      `SELECT *
+       FROM cora_domain_lists
+       WHERE scope = ? AND list_type = ? AND lower(value) = lower(?)
+         AND COALESCE(project_id, 0) = COALESCE(?, 0)
+         AND COALESCE(profile_id, 0) = COALESCE(?, 0)
+       ORDER BY id LIMIT 1`
+    ).bind(scope, listType, value, projectId, profileId).first();
+    if (existing) {
+      if (existing.archived_at) {
+        await env.DB.prepare("UPDATE cora_domain_lists SET notes = COALESCE(?, notes), updated_at = ?, archived_at = NULL WHERE id = ?")
+          .bind(cleanText(payload.notes) || null, now, existing.id).run();
+        result.entry = await env.DB.prepare("SELECT * FROM cora_domain_lists WHERE id = ?").bind(existing.id).first();
+        changedTables.push("cora_domain_lists");
+        return result;
+      }
+      result.duplicate = true;
+      result.entry = existing;
+      return result;
+    }
+    const inserted = await env.DB.prepare(
+      `INSERT INTO cora_domain_lists
+       (project_id, profile_id, scope, list_type, value, notes, created_at, updated_at, archived_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+    ).bind(projectId, profileId, scope, listType, value, cleanText(payload.notes) || null, now, now).run();
+    result.entry = await env.DB.prepare("SELECT * FROM cora_domain_lists WHERE id = ?").bind(inserted.meta.last_row_id).first();
+    changedTables.push("cora_domain_lists");
+    return result;
+  }
+  if (commandType === "update_cora_domain_entry") {
+    const entryId = Number(payload.entry_id || 0);
+    const listType = normalizeCoraDomainListType(payload.list_type);
+    const value = normalizeCoraDomainValue(payload.value);
+    const scope = normalizeDomainScope(payload.scope);
+    const projectId = Number(payload.project_id || 0) || null;
+    const profileId = Number(payload.profile_id || 0) || null;
+    if (!entryId) throw new Error("Domain list entry is required.");
+    const existing = await env.DB.prepare("SELECT * FROM cora_domain_lists WHERE id = ?").bind(entryId).first();
+    if (!existing) throw new Error("Domain list entry not found.");
+    const duplicate = await env.DB.prepare(
+      `SELECT id
+       FROM cora_domain_lists
+       WHERE id != ? AND archived_at IS NULL
+         AND scope = ? AND list_type = ? AND lower(value) = lower(?)
+         AND COALESCE(project_id, 0) = COALESCE(?, 0)
+         AND COALESCE(profile_id, 0) = COALESCE(?, 0)
+       LIMIT 1`
+    ).bind(entryId, scope, listType, value, projectId, profileId).first();
+    if (duplicate) throw new Error("That domain list entry already exists.");
+    await env.DB.prepare(
+      `UPDATE cora_domain_lists
+       SET project_id = ?, profile_id = ?, scope = ?, list_type = ?, value = ?, notes = ?, updated_at = ?, archived_at = NULL
+       WHERE id = ?`
+    ).bind(projectId, profileId, scope, listType, value, cleanText(payload.notes) || null, now, entryId).run();
+    result.entry = await env.DB.prepare("SELECT * FROM cora_domain_lists WHERE id = ?").bind(entryId).first();
+    changedTables.push("cora_domain_lists");
+    return result;
+  }
+  if (commandType === "archive_cora_domain_entry") {
+    const entryId = Number(payload.entry_id || 0);
+    if (!entryId) throw new Error("Domain list entry is required.");
+    const existing = await env.DB.prepare("SELECT * FROM cora_domain_lists WHERE id = ?").bind(entryId).first();
+    if (!existing) throw new Error("Domain list entry not found.");
+    await env.DB.prepare("UPDATE cora_domain_lists SET archived_at = ?, updated_at = ? WHERE id = ?").bind(now, now, entryId).run();
+    result.entry = await env.DB.prepare("SELECT * FROM cora_domain_lists WHERE id = ?").bind(entryId).first();
+    changedTables.push("cora_domain_lists");
     return result;
   }
   if (commandType === "add_keyword") {
@@ -1040,7 +1145,7 @@ async function handleSyncExport(request, env) {
     .split(",")
     .map((table) => table.trim())
     .filter(Boolean);
-  const tables = selected.length ? selected : ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"];
+  const tables = selected.length ? selected : ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"];
   const limit = Math.min(Number(url.searchParams.get("limit") || 5000), 25000);
   const exported = [];
   for (const table of tables) {
@@ -1476,7 +1581,7 @@ async function syncStatusData(env) {
   ).all();
   const tableRows = rows.results || [];
   const seen = new Set(tableRows.map((row) => row.table_name));
-  const coreTables = ["profiles", "projects", "sites", "pages", "keywords", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "entity_sets", "entity_set_terms"];
+  const coreTables = ["profiles", "cora_domain_lists", "projects", "sites", "pages", "keywords", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "entity_sets", "entity_set_terms"];
   for (const table of coreTables) {
     if (!seen.has(table)) tableRows.push({ table_name: table, rows_received: 0, batch_count: 0, last_received_at: null });
   }
@@ -1608,7 +1713,9 @@ async function handleDashboardMirrorData(request, env) {
   const overview = await handleDashboardData(request, env).then((response) => response.json());
   const profileScope = scopeClause(scope, "p.id");
   const profileWhere = scope.scoped && profileScope.sql ? `WHERE ${profileScope.sql}` : "";
-  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, keywordRows, commands, audits] = await Promise.all([
+  const domainScope = scopeClause(scope, "dl.project_id");
+  const domainWhere = scope.scoped && domainScope.sql ? `AND (dl.project_id IS NULL OR ${domainScope.sql})` : "";
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, domainLists, keywordRows, commands, audits] = await Promise.all([
     env.DB.prepare(
       `SELECT r.id, r.project_id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
@@ -1697,6 +1804,15 @@ async function handleDashboardMirrorData(request, env) {
        LIMIT 150`
     ).bind(...profileScope.binds).all(),
     env.DB.prepare(
+      `SELECT dl.*, p.name AS project_name, pr.name AS profile_name
+       FROM cora_domain_lists dl
+       LEFT JOIN projects p ON p.id = dl.project_id
+       LEFT JOIN profiles pr ON pr.id = dl.profile_id
+       WHERE dl.archived_at IS NULL ${domainWhere}
+       ORDER BY dl.updated_at DESC, dl.id DESC
+       LIMIT 300`
+    ).bind(...domainScope.binds).all(),
+    env.DB.prepare(
       `SELECT k.id, k.project_id, k.keyword, k.intent, k.priority, k.created_at, p.name AS project_name
        FROM keywords k
        LEFT JOIN projects p ON p.id = k.project_id
@@ -1718,6 +1834,7 @@ async function handleDashboardMirrorData(request, env) {
     entity_sets: filterScope(entitySets.results || [], scope),
     content_plans: filterScope(contentPlans.results || [], scope),
     profiles: profileRows.results || [],
+    domain_lists: domainLists.results || [],
     keywords: filterScope(keywordRows.results || [], scope),
     commands: filterScope(normalizedCommands.map((command) => ({ ...command, project_id: command.payload?.project_id || command.result?.project?.id || command.result?.snapshot?.project_id || null })), scope),
     audit_events: scope.scoped ? [] : audits
@@ -2618,7 +2735,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", domainEditId: "", domainListType: "all", commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
@@ -2628,6 +2745,7 @@ function cloudMirrorHtml() {
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
       ["cora-profiles", "Cora Profiles"],
+      ["cora-domains", "Domain Lists"],
       ["ranking", "Ranking Snapshots"],
       ["targets", "Optimization Targets"],
       ["entities", "Entity Explorer"],
@@ -2642,7 +2760,7 @@ function cloudMirrorHtml() {
     ];
     const navGroups = [
       ["Clients", [["clients", "Client Dashboard"],["new-client", "New Client"]]],
-      ["Cora", [["cora", "Run Cora"],["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
+      ["Cora", [["cora", "Run Cora"],["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["cora-domains", "Domain Lists"],["reports", "Cora Reports"]]],
       ["Entity Explorer", [["entities", "Entity Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
       ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
       ["Planning", [["plans", "Content Plans"]]],
@@ -2891,6 +3009,27 @@ function cloudMirrorHtml() {
         + setupPanel
         + managePanel
         + '<section><div class="head"><h3>Cora Profiles</h3><span class="muted">Synced profile metadata. Native Cora profile editing still happens through the local Cora bridge.</span></div>' + profilesTable(profiles) + '</section>';
+    }
+    function coraDomainListsView(data) {
+      const allEntries = data.domain_lists || [];
+      const entries = allEntries.filter((entry) => state.domainListType === "all" || entry.list_type === state.domainListType);
+      const clients = data.clients || [];
+      const profiles = data.profiles || [];
+      const selectedEntry = allEntries.find((entry) => String(entry.id) === String(state.domainEditId)) || {};
+      const listTypes = [["tracked", "Tracked Domain"],["competitors", "Competitor"],["banned", "Banned Domain"],["slowRender", "Slow Render"],["stopWords", "Stop Word"]];
+      const typeOptions = listTypes.map(([value, label]) => '<option value="' + esc(value) + '"' + ((selectedEntry.list_type || "tracked") === value ? ' selected' : '') + '>' + esc(label) + '</option>').join("");
+      const filterOptions = '<option value="all">All list types</option>' + listTypes.map(([value, label]) => '<option value="' + esc(value) + '"' + (state.domainListType === value ? ' selected' : '') + '>' + esc(label) + '</option>').join("");
+      const clientOptions = '<option value="">Global / no client</option>' + clients.map((client) => '<option value="' + esc(client.id) + '"' + (String(selectedEntry.project_id || "") === String(client.id || "") ? ' selected' : '') + '>' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
+      const profileOptions = '<option value="">No profile scope</option>' + profiles.map((profile) => '<option value="' + esc(profile.id) + '"' + (String(selectedEntry.profile_id || "") === String(profile.id || "") ? ' selected' : '') + '>' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
+      const rowsHtml = entries.map((entry) => '<tr><td><span class="pill">' + esc(entry.list_type || "") + '</span></td><td><strong>' + esc(entry.value || "") + '</strong><br><span class="muted">' + esc(entry.notes || "") + '</span></td><td>' + esc(entry.scope || "global") + '<br><span class="muted">' + esc(entry.project_name || entry.profile_name || "Global") + '</span></td><td>' + esc(fmtDate(entry.updated_at || entry.created_at)) + '</td><td><button class="domain-edit-row mini-btn" data-entry-id="' + esc(entry.id || "") + '">Edit</button><button class="domain-archive-row mini-btn secondary" data-entry-id="' + esc(entry.id || "") + '">Archive</button></td></tr>').join("");
+      const editTitle = selectedEntry.id ? "Edit Domain Entry" : "Add Domain Entry";
+      const form = '<section><div class="head"><h3>' + esc(editTitle) + '</h3><span class="muted">Synced dashboard list. Apply to native Cora through the local bridge.</span></div><div class="status-list"><div class="field-row"><select id="domain-list-type">' + typeOptions + '</select><input id="domain-list-value" placeholder="domain.com" value="' + esc(selectedEntry.value || "") + '"><input id="domain-list-notes" placeholder="Notes" value="' + esc(selectedEntry.notes || "") + '"></div><div class="field-row"><select id="domain-list-client">' + clientOptions + '</select><select id="domain-list-profile">' + profileOptions + '</select><button id="domain-list-save">' + esc(selectedEntry.id ? "Save Entry" : "Add Entry") + '</button><button id="domain-list-clear" class="secondary">Clear</button></div><div id="domains-inline-status">' + toolFeedbackHtml(state.toolFeedback?.domains) + '</div></div></section>';
+      const bridge = '<section><div class="head"><h3>Native Cora Bridge</h3><span class="muted">Windows Cora stores these lists globally.</span></div><div class="status-list"><div class="muted">Apply pushes active cloud Domain Lists into the running Cora app. Pull reads current native Cora lists into this synced table.</div><div class="toolbar"><button id="domain-apply-cora">Apply Lists in Cora</button><button id="domain-pull-cora" class="secondary">Pull Lists from Cora</button><button class="client-open-page secondary" data-page-target="cora-profiles" data-project-id="all">Cora Profiles</button></div></div></section>';
+      const filters = '<div class="filters"><select id="domain-type-filter">' + filterOptions + '</select><span class="muted">' + esc(entries.length) + ' of ' + esc(allEntries.length) + ' active entries</span></div>';
+      return cards([["Active Entries", allEntries.length],["Tracked", allEntries.filter((entry) => entry.list_type === "tracked").length],["Competitors", allEntries.filter((entry) => entry.list_type === "competitors").length],["Profiles", profiles.length]])
+        + form
+        + bridge
+        + '<section><div class="head"><h3>Cora Domain Lists</h3><span class="muted">Tracked domains, competitors, and supporting crawl lists.</span></div>' + filters + detailTable(["Type","Value","Scope","Updated","Actions"], rowsHtml, "No active Cora domain list entries yet.") + '</section>';
     }
     function runsTable(items) {
       return table(["Keyword", "Client", "Target", "Imported", "Data", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open Run</button><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(r.project_id || "") + '">Open Client</button></td></tr>'));
@@ -3218,6 +3357,11 @@ function cloudMirrorHtml() {
         archive_profile: "Archive Cora Profile",
         apply_cora_profile: "Apply Cora Profile",
         push_cora_profile: "Push Cora Profile",
+        create_cora_domain_entry: "Add Cora Domain Entry",
+        update_cora_domain_entry: "Update Cora Domain Entry",
+        archive_cora_domain_entry: "Archive Cora Domain Entry",
+        apply_cora_domain_lists: "Apply Cora Domain Lists",
+        pull_cora_domain_lists: "Pull Cora Domain Lists",
         add_keyword: "Add Keyword",
         create_content_plan: "Content Plan",
         create_share_report: "Customer Report",
@@ -3245,7 +3389,7 @@ function cloudMirrorHtml() {
     }
     function commandRisk(command_type, payload) {
       if (command_type === "run_cora") return "Needs local bridge with Cora enabled.";
-      if (["apply_cora_profile", "push_cora_profile"].includes(command_type)) return "Native Cora profile action. This waits for the local Windows bridge.";
+      if (["apply_cora_profile", "push_cora_profile", "apply_cora_domain_lists", "pull_cora_domain_lists"].includes(command_type)) return "Native Cora action. This waits for the local Windows bridge.";
       if (payload?.execution_mode === "cloud") return "Runs in Cloudflare and then needs cloud-to-local sync for local parity.";
       if (isPaidLiveCommand(command_type, payload)) return "Paid/API run. This can use DataForSEO or LLM credits.";
       if (["create_ranking_snapshot", "run_entity_lsi"].includes(command_type)) return "Dry run only. No paid/API execution.";
@@ -3316,7 +3460,7 @@ function cloudMirrorHtml() {
       });
       document.getElementById("sync-review-pull")?.addEventListener("click", () => {
         setPage("commands");
-        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
+        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
       });
       document.getElementById("sync-review-files")?.addEventListener("click", () => {
         setPage("commands");
@@ -3926,6 +4070,11 @@ function cloudMirrorHtml() {
       if (command_type === "archive_profile") return 'Archive Cora profile ID ' + (payload.profile_id || "") + ' and detach it from clients.';
       if (command_type === "apply_cora_profile") return 'Ask the local bridge to apply Cora profile "' + (payload.profile_name || payload.profile_id || "") + '" in Cora.';
       if (command_type === "push_cora_profile") return 'Ask the local bridge to save current Cora settings into profile "' + (payload.profile_name || payload.profile_id || "") + '".';
+      if (command_type === "create_cora_domain_entry") return 'Add ' + (payload.list_type || "domain") + ' entry "' + (payload.value || "") + '".';
+      if (command_type === "update_cora_domain_entry") return 'Update Cora domain list entry ID ' + (payload.entry_id || "") + ' to "' + (payload.value || "") + '".';
+      if (command_type === "archive_cora_domain_entry") return 'Archive Cora domain list entry ID ' + (payload.entry_id || "") + '.';
+      if (command_type === "apply_cora_domain_lists") return 'Ask the local bridge to apply cloud Cora Domain Lists into native Cora.';
+      if (command_type === "pull_cora_domain_lists") return 'Ask the local bridge to pull native Cora Domain Lists into synced dashboard data.';
       if (command_type === "add_keyword") return 'Add or reuse keyword "' + (payload.keyword || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_content_plan") return 'Create or reuse content plan "' + (payload.title || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
@@ -3954,6 +4103,9 @@ function cloudMirrorHtml() {
       if (command_type === "detach_profile" && !payload.project_id) return "Select an attached client to detach.";
       if (command_type === "archive_profile" && !payload.profile_id) return "Select a profile to archive.";
       if (["apply_cora_profile", "push_cora_profile"].includes(command_type) && (!payload.profile_id || !(payload.profile_name || "").trim())) return "Select a Cora profile first.";
+      if (command_type === "create_cora_domain_entry" && (!(payload.list_type || "").trim() || !(payload.value || "").trim())) return "Select a list type and enter a domain/list value.";
+      if (command_type === "update_cora_domain_entry" && (!payload.entry_id || !(payload.list_type || "").trim() || !(payload.value || "").trim())) return "Select a domain entry, list type, and value.";
+      if (command_type === "archive_cora_domain_entry" && !payload.entry_id) return "Select a domain entry to archive.";
       if (command_type === "add_keyword" && (!(payload.project_id) || !(payload.keyword || "").trim())) return "Select a client and enter a keyword.";
       if (command_type === "create_content_plan" && (!(payload.project_id) || !(payload.title || "").trim())) return "Select a client and enter a plan title.";
       if (command_type === "create_share_report" && !payload.run_id) return "Select a Cora run for the report.";
@@ -4120,7 +4272,7 @@ function cloudMirrorHtml() {
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
-      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, clients, keywords, plans, ranking snapshots, saved targets, entity sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,projects,sites,keywords,content_plans,ranking_snapshots,ranking_optimization_targets,entity_sets,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
+      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,cora_domain_lists,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, Cora domain lists, clients, keywords, plans, ranking snapshots, saved targets, entity sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,cora_domain_lists,projects,sites,keywords,content_plans,ranking_snapshots,ranking_optimization_targets,entity_sets,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions(prefillProject) + '</select><input id="cmd-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions(prefillProject) + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
       const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions(prefillProject) + '</select><input id="cmd-cora-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-cora-url" placeholder="Target URL" value="' + esc(prefillTarget) + '"><input id="cmd-cora-profile" placeholder="Optional Cora profile" value="' + esc(prefillProfile) + '"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions(prefillProject) + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com" value="' + esc(prefillTarget) + '"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions(prefillProject) + '</select><input id="cmd-entity-seed" placeholder="Seed keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
       const commandTypes = [...new Set((data.commands || []).map((c) => c.command_type).filter(Boolean))];
@@ -4498,6 +4650,126 @@ function cloudMirrorHtml() {
         throw error;
       }
     }
+    function bindCoraDomainControls() {
+      document.getElementById("domain-type-filter")?.addEventListener("change", (event) => {
+        state.domainListType = event.target.value || "all";
+        render();
+      });
+      document.getElementById("domain-list-clear")?.addEventListener("click", () => {
+        state.domainEditId = "";
+        render();
+      });
+      document.querySelectorAll(".domain-edit-row").forEach((button) => {
+        button.addEventListener("click", () => {
+          state.domainEditId = button.dataset.entryId || "";
+          render();
+          setTimeout(() => document.getElementById("domain-list-value")?.focus(), 0);
+        });
+      });
+      document.querySelectorAll(".domain-archive-row").forEach((button) => {
+        button.addEventListener("click", () => archiveCloudDomainEntry(Number(button.dataset.entryId || 0), button).catch((error) => {
+          setToolFeedback("domains", { status: "failed", title: "Archive Failed", message: error.message || String(error) });
+        }));
+      });
+      document.getElementById("domain-list-save")?.addEventListener("click", (event) => saveCloudDomainEntry(event.currentTarget).catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Domain List Save Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("domain-apply-cora")?.addEventListener("click", (event) => queueCoraDomainBridgeAction(event.currentTarget, "apply_cora_domain_lists").catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Apply Lists Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("domain-pull-cora")?.addEventListener("click", (event) => queueCoraDomainBridgeAction(event.currentTarget, "pull_cora_domain_lists").catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Pull Lists Failed", message: error.message || String(error) });
+      }));
+    }
+    function domainEntryPayload() {
+      const projectId = Number(document.getElementById("domain-list-client")?.value || 0) || null;
+      const profileId = projectId ? null : (Number(document.getElementById("domain-list-profile")?.value || 0) || null);
+      return {
+        entry_id: Number(state.domainEditId || 0) || null,
+        execution_mode: "cloud",
+        list_type: document.getElementById("domain-list-type")?.value || "tracked",
+        value: document.getElementById("domain-list-value")?.value || "",
+        notes: document.getElementById("domain-list-notes")?.value || "",
+        scope: projectId ? "client" : profileId ? "profile" : "global",
+        project_id: projectId,
+        profile_id: profileId
+      };
+    }
+    async function saveCloudDomainEntry(button) {
+      const originalLabel = button?.textContent || "Save Entry";
+      const payload = domainEntryPayload();
+      if (!(payload.value || "").trim()) throw new Error("Enter a domain or list value.");
+      const commandType = payload.entry_id ? "update_cora_domain_entry" : "create_cora_domain_entry";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Saving...";
+      }
+      setToolFeedback("domains", { status: "running", title: "Saving Domain List Entry", message: "Updating synced Cora domain lists in Cloudflare." });
+      try {
+        const result = await postCommand(commandType, payload);
+        await load({ preserveScroll: true });
+        const entry = result.command?.result?.entry || {};
+        state.domainEditId = String(entry.id || "");
+        setToolFeedback("domains", {
+          status: "complete",
+          title: "Domain List Entry Saved",
+          message: (entry.value || payload.value) + " saved. Use Apply Lists in Cora when ready to push native Cora settings."
+        }, true);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function archiveCloudDomainEntry(entryId, button) {
+      if (!entryId) throw new Error("Domain list entry is required.");
+      if (!confirm("Archive this domain list entry?")) return;
+      const originalLabel = button?.textContent || "Archive";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Archiving...";
+      }
+      setToolFeedback("domains", { status: "running", title: "Archiving Domain Entry", message: "Archiving synced Cora domain list entry." });
+      try {
+        await postCommand("archive_cora_domain_entry", { execution_mode: "cloud", entry_id: entryId });
+        if (String(state.domainEditId) === String(entryId)) state.domainEditId = "";
+        await load({ preserveScroll: true });
+        setToolFeedback("domains", { status: "complete", title: "Domain Entry Archived", message: "Entry archived. Apply Lists in Cora to update native Cora settings." }, true);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function queueCoraDomainBridgeAction(button, commandType) {
+      const originalLabel = button?.textContent || "Queue";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Queueing...";
+      }
+      const title = commandType === "apply_cora_domain_lists" ? "Queueing Apply Lists" : "Queueing Pull Lists";
+      setToolFeedback("domains", { status: "running", title, message: "Sending Cora domain list action to the local bridge." });
+      try {
+        await postCommand(commandType, { execution_mode: "local", scope: "global" });
+        await load({ preserveScroll: true });
+        setToolFeedback("domains", {
+          status: "complete",
+          title: "Cora Domain Bridge Command Queued",
+          message: (commandType === "apply_cora_domain_lists" ? "Apply" : "Pull") + " command queued for the local Windows Cora bridge."
+        }, true);
+        startToolAutoRefresh("domains", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
     function bindCoraListControls() {
       const runClient = document.getElementById("run-client-filter");
       if (runClient) runClient.onchange = (event) => { state.runClient = event.target.value || "all"; render(); };
@@ -4648,7 +4920,7 @@ function cloudMirrorHtml() {
             setPage("entities");
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
-            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
+            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
           }
         };
       });
@@ -4731,6 +5003,7 @@ function cloudMirrorHtml() {
         runs: () => coraRunsView(data),
         jobs: () => coraJobsView(data),
         "cora-profiles": () => coraProfilesView(data),
+        "cora-domains": () => coraDomainListsView(data),
         ranking: () => rankingView(data),
         targets: () => targetsView(data),
         entities: () => entityExplorerView(data),
@@ -4747,6 +5020,7 @@ function cloudMirrorHtml() {
       if (state.page === "new-client") setTimeout(bindNewClientControls, 0);
       if (state.page === "cora") setTimeout(bindCoraControls, 0);
       if (state.page === "cora-profiles") setTimeout(bindCoraProfileControls, 0);
+      if (state.page === "cora-domains") setTimeout(bindCoraDomainControls, 0);
       if (["runs", "jobs"].includes(state.page)) setTimeout(bindCoraListControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);

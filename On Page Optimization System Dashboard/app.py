@@ -394,6 +394,19 @@ def init_db() -> None:
                 archived_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS cora_domain_lists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+                scope TEXT NOT NULL DEFAULT 'global',
+                list_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                archived_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS projects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
@@ -667,6 +680,15 @@ def init_db() -> None:
         ensure_column(con, "runs", "page_id", "INTEGER")
         ensure_column(con, "runs", "keyword_id", "INTEGER")
         ensure_column(con, "profiles", "archived_at", "TEXT")
+        ensure_column(con, "cora_domain_lists", "project_id", "INTEGER")
+        ensure_column(con, "cora_domain_lists", "profile_id", "INTEGER")
+        ensure_column(con, "cora_domain_lists", "scope", "TEXT NOT NULL DEFAULT 'global'")
+        ensure_column(con, "cora_domain_lists", "list_type", "TEXT")
+        ensure_column(con, "cora_domain_lists", "value", "TEXT")
+        ensure_column(con, "cora_domain_lists", "notes", "TEXT")
+        ensure_column(con, "cora_domain_lists", "created_at", "TEXT")
+        ensure_column(con, "cora_domain_lists", "updated_at", "TEXT")
+        ensure_column(con, "cora_domain_lists", "archived_at", "TEXT")
         ensure_column(con, "projects", "profile_id", "INTEGER")
         ensure_column(con, "managed_jobs", "cora_profile", "TEXT")
         ensure_column(con, "managed_jobs", "project_id", "INTEGER")
@@ -703,6 +725,9 @@ def init_db() -> None:
             """
         )
         con.execute("CREATE INDEX IF NOT EXISTS idx_projects_profile ON projects(profile_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_cora_domain_lists_scope ON cora_domain_lists(scope, list_type, archived_at)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_cora_domain_lists_project ON cora_domain_lists(project_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_cora_domain_lists_profile ON cora_domain_lists(profile_id)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_managed_jobs_project ON managed_jobs(project_id)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_managed_jobs_keyword ON managed_jobs(keyword_id)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_entity_lsi_runs_batch ON entity_lsi_runs(batch_id)")
@@ -716,6 +741,7 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 CLOUDFLARE_SYNC_TABLES = [
     "profiles",
+    "cora_domain_lists",
     "projects",
     "sites",
     "pages",
@@ -886,7 +912,7 @@ def prepare_cloudflare_row_for_local(table: str, row: dict[str, Any]) -> dict[st
 
 
 def pull_cloudflare_sync(tables: list[str] | None = None, limit: int = 5000) -> dict[str, Any]:
-    selected = [table for table in (tables or ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"]) if table]
+    selected = [table for table in (tables or ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"]) if table]
     table_query = quote(",".join(selected))
     data = cloudflare_get_json(f"/api/sync/export?tables={table_query}&limit={int(limit)}")
     exported = data.get("tables") if isinstance(data.get("tables"), list) else []
@@ -1135,6 +1161,38 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("Profile not found")
         result["profile"] = row_to_dict(profile)
         result["cora"] = create_cora_profile(profile["name"])
+    elif command_type == "create_cora_domain_entry":
+        entry = create_cora_domain_list_entry(
+            payload.get("list_type", ""),
+            payload.get("value", ""),
+            payload.get("scope") or "global",
+            int(payload["project_id"]) if payload.get("project_id") else None,
+            int(payload["profile_id"]) if payload.get("profile_id") else None,
+            payload.get("notes"),
+        )
+        result["entry"] = entry
+        changed_tables.add("cora_domain_lists")
+    elif command_type == "update_cora_domain_entry":
+        entry = update_cora_domain_list_entry(
+            int(payload.get("entry_id") or 0),
+            payload.get("list_type", ""),
+            payload.get("value", ""),
+            payload.get("scope") or "global",
+            int(payload["project_id"]) if payload.get("project_id") else None,
+            int(payload["profile_id"]) if payload.get("profile_id") else None,
+            payload.get("notes"),
+        )
+        result["entry"] = entry
+        changed_tables.add("cora_domain_lists")
+    elif command_type == "archive_cora_domain_entry":
+        entry = archive_cora_domain_list_entry(int(payload.get("entry_id") or 0))
+        result["entry"] = entry
+        changed_tables.add("cora_domain_lists")
+    elif command_type == "pull_cora_domain_lists":
+        result["domains"] = pull_native_cora_domain_lists()
+        changed_tables.add("cora_domain_lists")
+    elif command_type == "apply_cora_domain_lists":
+        result["domains"] = apply_cora_domain_lists_to_native(payload.get("scope") or "global")
     elif command_type == "add_keyword":
         project_id = int(payload.get("project_id") or 0)
         keyword_text = clean_text(payload.get("keyword")) or ""
@@ -1215,7 +1273,7 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         tables = payload.get("tables")
         selected_tables = [str(table) for table in tables if table] if isinstance(tables, list) else None
         if bool(payload.get("dry_run")):
-            result["sync"] = {"ok": True, "direction": "cloud_to_local", "dry_run": True, "tables": selected_tables or ["profiles", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"]}
+            result["sync"] = {"ok": True, "direction": "cloud_to_local", "dry_run": True, "tables": selected_tables or ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"]}
         else:
             result["sync"] = pull_cloudflare_sync(tables=selected_tables, limit=int(payload.get("limit") or 5000))
     elif command_type == "sync_report_artifacts":
@@ -1636,6 +1694,208 @@ def clean_text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+CORA_DOMAIN_LIST_TYPES = {"tracked", "competitors", "banned", "slowRender", "stopWords"}
+
+
+def normalize_cora_domain_list_type(value: Any) -> str:
+    list_type = clean_text(value) or ""
+    aliases = {
+        "competitor": "competitors",
+        "slow_render": "slowRender",
+        "slow-render": "slowRender",
+        "slowrender": "slowRender",
+        "stop_words": "stopWords",
+        "stop-words": "stopWords",
+        "stopwords": "stopWords",
+    }
+    list_type = aliases.get(list_type, list_type)
+    if list_type not in CORA_DOMAIN_LIST_TYPES:
+        raise ValueError("Unsupported Cora domain list type")
+    return list_type
+
+
+def normalize_cora_domain_value(value: Any) -> str:
+    text = clean_text(value) or ""
+    text = re.sub(r"^https?://", "", text, flags=re.I)
+    text = text.split("/", 1)[0] if "/" in text else text
+    text = text.strip().lower()
+    if not text:
+        raise ValueError("Domain list value is required")
+    return text
+
+
+def parse_cora_domain_values(value: Any) -> list[str]:
+    if isinstance(value, list):
+        parts = [str(item) for item in value]
+    else:
+        parts = re.split(r"[\n,]+", str(value or ""))
+    values: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        try:
+            normalized = normalize_cora_domain_value(part)
+        except ValueError:
+            continue
+        if normalized not in seen:
+            seen.add(normalized)
+            values.append(normalized)
+    return values
+
+
+def create_cora_domain_list_entry(
+    list_type: str,
+    value: str,
+    scope: str = "global",
+    project_id: int | None = None,
+    profile_id: int | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    list_type = normalize_cora_domain_list_type(list_type)
+    value = normalize_cora_domain_value(value)
+    scope = clean_text(scope) or "global"
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        existing = con.execute(
+            """
+            SELECT *
+            FROM cora_domain_lists
+            WHERE scope = ? AND list_type = ? AND lower(value) = lower(?)
+              AND COALESCE(project_id, 0) = COALESCE(?, 0)
+              AND COALESCE(profile_id, 0) = COALESCE(?, 0)
+            ORDER BY id
+            LIMIT 1
+            """,
+            (scope, list_type, value, project_id, profile_id),
+        ).fetchone()
+        if existing:
+            if existing["archived_at"]:
+                con.execute(
+                    """
+                    UPDATE cora_domain_lists
+                    SET notes = COALESCE(?, notes), updated_at = ?, archived_at = NULL
+                    WHERE id = ?
+                    """,
+                    (clean_text(notes), now, existing["id"]),
+                )
+                return row_to_dict(con.execute("SELECT * FROM cora_domain_lists WHERE id = ?", (existing["id"],)).fetchone()) or {}
+            return row_to_dict(existing) or {}
+        cur = con.execute(
+            """
+            INSERT INTO cora_domain_lists
+            (project_id, profile_id, scope, list_type, value, notes, created_at, updated_at, archived_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+            """,
+            (project_id, profile_id, scope, list_type, value, clean_text(notes), now, now),
+        )
+        return row_to_dict(con.execute("SELECT * FROM cora_domain_lists WHERE id = ?", (cur.lastrowid,)).fetchone()) or {}
+
+
+def update_cora_domain_list_entry(
+    entry_id: int,
+    list_type: str,
+    value: str,
+    scope: str = "global",
+    project_id: int | None = None,
+    profile_id: int | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    list_type = normalize_cora_domain_list_type(list_type)
+    value = normalize_cora_domain_value(value)
+    scope = clean_text(scope) or "global"
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        existing = con.execute("SELECT * FROM cora_domain_lists WHERE id = ?", (entry_id,)).fetchone()
+        if not existing:
+            raise ValueError("Cora domain list entry not found")
+        duplicate = con.execute(
+            """
+            SELECT id
+            FROM cora_domain_lists
+            WHERE id != ? AND archived_at IS NULL
+              AND scope = ? AND list_type = ? AND lower(value) = lower(?)
+              AND COALESCE(project_id, 0) = COALESCE(?, 0)
+              AND COALESCE(profile_id, 0) = COALESCE(?, 0)
+            LIMIT 1
+            """,
+            (entry_id, scope, list_type, value, project_id, profile_id),
+        ).fetchone()
+        if duplicate:
+            raise ValueError("That domain list entry already exists")
+        con.execute(
+            """
+            UPDATE cora_domain_lists
+            SET project_id = ?, profile_id = ?, scope = ?, list_type = ?, value = ?, notes = ?,
+                updated_at = ?, archived_at = NULL
+            WHERE id = ?
+            """,
+            (project_id, profile_id, scope, list_type, value, clean_text(notes), now, entry_id),
+        )
+        return row_to_dict(con.execute("SELECT * FROM cora_domain_lists WHERE id = ?", (entry_id,)).fetchone()) or {}
+
+
+def archive_cora_domain_list_entry(entry_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        row = con.execute("SELECT * FROM cora_domain_lists WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            raise ValueError("Cora domain list entry not found")
+        con.execute("UPDATE cora_domain_lists SET archived_at = ?, updated_at = ? WHERE id = ?", (now, now, entry_id))
+        return row_to_dict(con.execute("SELECT * FROM cora_domain_lists WHERE id = ?", (entry_id,)).fetchone()) or {}
+
+
+def cora_domain_list_rows(scope: str | None = None) -> list[dict[str, Any]]:
+    params: list[Any] = []
+    where = "WHERE archived_at IS NULL"
+    if scope:
+        where += " AND scope = ?"
+        params.append(scope)
+    with connect() as con:
+        rows = con.execute(
+            f"""
+            SELECT *
+            FROM cora_domain_lists
+            {where}
+            ORDER BY list_type, value COLLATE NOCASE
+            """,
+            params,
+        ).fetchall()
+    return [row_to_dict(row) or {} for row in rows]
+
+
+def cora_domain_payload_from_rows(rows: list[dict[str, Any]]) -> dict[str, str]:
+    grouped: dict[str, list[str]] = {key: [] for key in CORA_DOMAIN_LIST_TYPES}
+    for row in rows:
+        list_type = row.get("list_type")
+        value = clean_text(row.get("value"))
+        if list_type in grouped and value:
+            grouped[list_type].append(value)
+    return {key: "\n".join(values) for key, values in grouped.items()}
+
+
+def pull_native_cora_domain_lists() -> dict[str, Any]:
+    data = query_cora("/api/domains")
+    if isinstance(data, dict) and data.get("error"):
+        raise ValueError(data.get("error"))
+    if not isinstance(data, dict):
+        raise ValueError("Unexpected Cora domain response")
+    created = 0
+    for list_type in ("tracked", "competitors", "banned", "slowRender", "stopWords"):
+        for value in parse_cora_domain_values(data.get(list_type)):
+            before = create_cora_domain_list_entry(list_type, value, scope="global", notes="Pulled from native Cora settings")
+            if before:
+                created += 1
+    return {"ok": True, "source": "native_cora", "rows": created, "domains": data}
+
+
+def apply_cora_domain_lists_to_native(scope: str = "global") -> dict[str, Any]:
+    rows = cora_domain_list_rows(scope=scope)
+    payload = cora_domain_payload_from_rows(rows)
+    result = post_cora("/api/domains", payload)
+    if isinstance(result, dict) and result.get("error"):
+        raise ValueError(result.get("error"))
+    return {"ok": True, "scope": scope, "rows": len(rows), "payload": payload, "cora": result}
 
 
 def as_float(value: Any) -> float | None:
@@ -6259,6 +6519,8 @@ class AppHandler(BaseHTTPRequestHandler):
                 json_response(self, activity_log_tail(limit, kind))
             elif path == "/api/cora/domains":
                 json_response(self, query_cora("/api/domains"))
+            elif path == "/api/cora/domain-lists":
+                json_response(self, {"entries": cora_domain_list_rows()})
             elif path == "/api/jobs":
                 self.api_jobs(query)
             elif path == "/api/jobs/queue":
@@ -6336,6 +6598,37 @@ class AppHandler(BaseHTTPRequestHandler):
                 json_response(self, result, 200 if result.get("ok") else 500)
             elif parsed.path == "/api/cora/domains":
                 result = post_cora("/api/domains", body)
+                json_response(self, result)
+            elif parsed.path == "/api/cora/domain-lists":
+                if body.get("action") == "pull_native":
+                    result = pull_native_cora_domain_lists()
+                elif body.get("action") == "apply_native":
+                    result = apply_cora_domain_lists_to_native(body.get("scope") or "global")
+                elif body.get("action") == "archive":
+                    result = {"entry": archive_cora_domain_list_entry(int(body.get("entry_id") or 0))}
+                elif body.get("entry_id"):
+                    result = {
+                        "entry": update_cora_domain_list_entry(
+                            int(body.get("entry_id") or 0),
+                            body.get("list_type", ""),
+                            body.get("value", ""),
+                            body.get("scope") or "global",
+                            int(body["project_id"]) if body.get("project_id") else None,
+                            int(body["profile_id"]) if body.get("profile_id") else None,
+                            body.get("notes"),
+                        )
+                    }
+                else:
+                    result = {
+                        "entry": create_cora_domain_list_entry(
+                            body.get("list_type", ""),
+                            body.get("value", ""),
+                            body.get("scope") or "global",
+                            int(body["project_id"]) if body.get("project_id") else None,
+                            int(body["profile_id"]) if body.get("profile_id") else None,
+                            body.get("notes"),
+                        )
+                    }
                 json_response(self, result)
             elif parsed.path == "/api/cora/settings":
                 result = post_cora("/api/settings", body)

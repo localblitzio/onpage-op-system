@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import app
 
@@ -1122,6 +1123,40 @@ class DashboardSmokeTests(unittest.TestCase):
             visible = con.execute("SELECT COUNT(*) FROM profiles WHERE archived_at IS NULL").fetchone()[0]
         self.assertIsNone(project_row["profile_id"])
         self.assertEqual(visible, 0)
+
+    def test_cora_domain_list_crud_archives_entries(self) -> None:
+        entry = app.create_cora_domain_list_entry("tracked", "https://Example.com/path", notes="Main")
+
+        self.assertEqual(entry["list_type"], "tracked")
+        self.assertEqual(entry["value"], "example.com")
+
+        updated = app.update_cora_domain_list_entry(entry["id"], "competitors", "competitor.com")
+        self.assertEqual(updated["list_type"], "competitors")
+        self.assertEqual(updated["value"], "competitor.com")
+
+        archived = app.archive_cora_domain_list_entry(entry["id"])
+        self.assertIsNotNone(archived["archived_at"])
+        self.assertEqual(app.cora_domain_list_rows(), [])
+
+    def test_cora_domain_list_bridge_apply_and_pull(self) -> None:
+        app.create_cora_domain_list_entry("tracked", "example.com")
+        app.create_cora_domain_list_entry("competitors", "competitor.com")
+
+        with patch.object(app, "post_cora", return_value={"ok": True}) as post:
+            result = app.apply_cora_domain_lists_to_native()
+
+        self.assertTrue(result["ok"])
+        payload = post.call_args.args[1]
+        self.assertEqual(payload["tracked"], "example.com")
+        self.assertEqual(payload["competitors"], "competitor.com")
+
+        with patch.object(app, "query_cora", return_value={"tracked": ["pulled.com"], "competitors": ["rival.com"]}):
+            pulled = app.pull_native_cora_domain_lists()
+
+        self.assertTrue(pulled["ok"])
+        values = {row["value"] for row in app.cora_domain_list_rows()}
+        self.assertIn("pulled.com", values)
+        self.assertIn("rival.com", values)
 
     def test_placeholder_tool_accepts_selected_client_keywords(self) -> None:
         project = app.create_project("Client", site_domain="https://example.com")
