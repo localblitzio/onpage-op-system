@@ -2745,7 +2745,6 @@ function cloudMirrorHtml() {
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
       ["cora-profiles", "Cora Profiles"],
-      ["cora-domains", "Domain Lists"],
       ["ranking", "Ranking Snapshots"],
       ["targets", "Optimization Targets"],
       ["entities", "Entity Explorer"],
@@ -2760,7 +2759,7 @@ function cloudMirrorHtml() {
     ];
     const navGroups = [
       ["Clients", [["clients", "Client Dashboard"],["new-client", "New Client"]]],
-      ["Cora", [["cora", "Run Cora"],["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["cora-domains", "Domain Lists"],["reports", "Cora Reports"]]],
+      ["Cora", [["cora", "Run Cora"],["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
       ["Entity Explorer", [["entities", "Entity Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
       ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
       ["Planning", [["plans", "Content Plans"]]],
@@ -3008,9 +3007,10 @@ function cloudMirrorHtml() {
       return cards([["Profiles", profiles.length],["Attached Clients", attached],["Unattached", profiles.filter((profile) => !Number(profile.client_count || 0)).length]])
         + setupPanel
         + managePanel
+        + coraDomainListsPanel(data)
         + '<section><div class="head"><h3>Cora Profiles</h3><span class="muted">Synced profile metadata. Native Cora profile editing still happens through the local Cora bridge.</span></div>' + profilesTable(profiles) + '</section>';
     }
-    function coraDomainListsView(data) {
+    function coraDomainListsPanel(data) {
       const allEntries = data.domain_lists || [];
       const entries = allEntries.filter((entry) => state.domainListType === "all" || entry.list_type === state.domainListType);
       const clients = data.clients || [];
@@ -3026,8 +3026,7 @@ function cloudMirrorHtml() {
       const form = '<section><div class="head"><h3>' + esc(editTitle) + '</h3><span class="muted">Synced dashboard list. Apply to native Cora through the local bridge.</span></div><div class="status-list"><div class="field-row"><select id="domain-list-type">' + typeOptions + '</select><input id="domain-list-value" placeholder="domain.com" value="' + esc(selectedEntry.value || "") + '"><input id="domain-list-notes" placeholder="Notes" value="' + esc(selectedEntry.notes || "") + '"></div><div class="field-row"><select id="domain-list-client">' + clientOptions + '</select><select id="domain-list-profile">' + profileOptions + '</select><button id="domain-list-save">' + esc(selectedEntry.id ? "Save Entry" : "Add Entry") + '</button><button id="domain-list-clear" class="secondary">Clear</button></div><div id="domains-inline-status">' + toolFeedbackHtml(state.toolFeedback?.domains) + '</div></div></section>';
       const bridge = '<section><div class="head"><h3>Native Cora Bridge</h3><span class="muted">Windows Cora stores these lists globally.</span></div><div class="status-list"><div class="muted">Apply pushes active cloud Domain Lists into the running Cora app. Pull reads current native Cora lists into this synced table.</div><div class="toolbar"><button id="domain-apply-cora">Apply Lists in Cora</button><button id="domain-pull-cora" class="secondary">Pull Lists from Cora</button><button class="client-open-page secondary" data-page-target="cora-profiles" data-project-id="all">Cora Profiles</button></div></div></section>';
       const filters = '<div class="filters"><select id="domain-type-filter">' + filterOptions + '</select><span class="muted">' + esc(entries.length) + ' of ' + esc(allEntries.length) + ' active entries</span></div>';
-      return cards([["Active Entries", allEntries.length],["Tracked", allEntries.filter((entry) => entry.list_type === "tracked").length],["Competitors", allEntries.filter((entry) => entry.list_type === "competitors").length],["Profiles", profiles.length]])
-        + form
+      return form
         + bridge
         + '<section><div class="head"><h3>Cora Domain Lists</h3><span class="muted">Tracked domains, competitors, and supporting crawl lists.</span></div>' + filters + detailTable(["Type","Value","Scope","Updated","Actions"], rowsHtml, "No active Cora domain list entries yet.") + '</section>';
     }
@@ -5003,7 +5002,6 @@ function cloudMirrorHtml() {
         runs: () => coraRunsView(data),
         jobs: () => coraJobsView(data),
         "cora-profiles": () => coraProfilesView(data),
-        "cora-domains": () => coraDomainListsView(data),
         ranking: () => rankingView(data),
         targets: () => targetsView(data),
         entities: () => entityExplorerView(data),
@@ -5020,7 +5018,7 @@ function cloudMirrorHtml() {
       if (state.page === "new-client") setTimeout(bindNewClientControls, 0);
       if (state.page === "cora") setTimeout(bindCoraControls, 0);
       if (state.page === "cora-profiles") setTimeout(bindCoraProfileControls, 0);
-      if (state.page === "cora-domains") setTimeout(bindCoraDomainControls, 0);
+      if (state.page === "cora-profiles") setTimeout(bindCoraDomainControls, 0);
       if (["runs", "jobs"].includes(state.page)) setTimeout(bindCoraListControls, 0);
       setTimeout(bindDetailControls, 0);
       if (["entities", "entity-crossover", "entity-sets"].includes(state.page)) setTimeout(bindEntityPageControls, 0);

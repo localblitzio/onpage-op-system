@@ -95,8 +95,8 @@ Implemented:
 - Cloud Cora Profiles can update profile metadata, detach a profile from a client, and archive a profile without deleting historical run/report references.
 - Cloud Cora Profiles can queue local bridge commands to apply a profile in Windows Cora or push current Windows Cora settings into a profile.
 - Local Cora Profiles now support archive behavior through the profile editor; archived profiles are hidden from normal profile lists.
-- `Cora > Domain Lists` is now a cloud page for synced Cora tracked domains, competitors, banned domains, slow-render domains, and stop words.
-- Cloud Domain Lists support add, update, archive, filtering by list type, and bridge commands to apply cloud lists into native Windows Cora or pull native Windows Cora lists back into synced dashboard data.
+- `Cora > Cora Profiles` now includes Domain Lists for synced Cora tracked domains, competitors, banned domains, slow-render domains, and stop words.
+- Cloud Cora Profile setup now keeps profile metadata, profile bridge actions, and Domain List CRUD/apply/pull controls together in one workflow.
 - `cora_domain_lists` is part of local/cloud sync defaults.
 - Cloud-to-local pull sync includes `profiles` by default so profile/client links mirror back locally.
 - Cloud-created report metadata is immediate, but customer HTML/source XLSX artifacts still come from the local bridge/report file sync.
@@ -168,8 +168,8 @@ Authenticated smoke currently checks:
 - No unexpected browser/page errors.
 - Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer, Entity Crossover, Entity Sets.
 - Cora page renders.
-- Cora Profiles setup panel renders, including create, attach, update, detach, archive, and local apply controls.
-- Cora Domain Lists page renders with save, apply-to-Cora, pull-from-Cora, and inline status controls.
+- Cora Profiles setup panel renders, including create, attach, update, detach, archive, local apply, and embedded Domain List controls.
+- Embedded Cora Domain Lists render with save, apply-to-Cora, pull-from-Cora, and inline status controls.
 - Cora Reports create panel renders, including the Optimization Targets picker.
 - Ranking Snapshot run button renders.
 - Ranking Snapshot detail renders Save Optimization Targets and the target save button when snapshots exist.

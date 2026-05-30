@@ -4,7 +4,7 @@ const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
 const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
 const headless = String(process.env.OPOS_SMOKE_HEADLESS || "").toLowerCase() === "true";
-const requiredNav = ["Run Cora", "Cora Profiles", "Domain Lists", "Cora Reports", "Ranking Snapshot", "Entity Explorer", "Entity Crossover", "Entity Sets"];
+const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity Explorer", "Entity Crossover", "Entity Sets"];
 const checks = [];
 const errors = [];
 
@@ -83,13 +83,11 @@ try {
     assert(await page.locator("#profile-archive-submit").count(), "Cora Profiles archive button renders");
     assert(await page.locator("#profile-apply-cora").count(), "Cora Profiles local apply button renders");
     assert(await page.locator("#profiles-inline-status").count(), "Cora Profiles inline status area exists");
-
-    await clickNav(page, "Domain Lists");
     await page.getByRole("heading", { name: "Cora Domain Lists" }).waitFor({ state: "visible", timeout: 10000 });
-    assert(await page.locator("#domain-list-save").count(), "Domain Lists save button renders");
-    assert(await page.locator("#domain-apply-cora").count(), "Domain Lists apply bridge button renders");
-    assert(await page.locator("#domain-pull-cora").count(), "Domain Lists pull bridge button renders");
-    assert(await page.locator("#domains-inline-status").count(), "Domain Lists inline status area exists");
+    assert(await page.locator("#domain-list-save").count(), "Cora Profiles domain list save button renders");
+    assert(await page.locator("#domain-apply-cora").count(), "Cora Profiles domain list apply bridge button renders");
+    assert(await page.locator("#domain-pull-cora").count(), "Cora Profiles domain list pull bridge button renders");
+    assert(await page.locator("#domains-inline-status").count(), "Cora Profiles domain list inline status area exists");
 
     await clickNav(page, "Cora Reports");
     await page.getByRole("heading", { name: "Create Customer Report" }).waitFor({ state: "visible", timeout: 10000 });
