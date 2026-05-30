@@ -2,6 +2,7 @@ import { chromium } from "playwright";
 
 const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
+const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
 const requiredNav = ["Run Cora", "Ranking Snapshot", "Entity Explorer"];
 const checks = [];
 const errors = [];
@@ -19,7 +20,18 @@ async function clickNav(page, label) {
 
 const browser = await chromium.launch({ headless: true });
 try {
-  const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  if (sessionToken) {
+    await context.addCookies([{
+      name: "opos_session",
+      value: sessionToken,
+      url: baseUrl,
+      httpOnly: true,
+      secure: new URL(baseUrl).protocol === "https:",
+      sameSite: "Lax"
+    }]);
+  }
+  const page = await context.newPage();
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(`console: ${message.text()}`);
@@ -43,7 +55,7 @@ try {
   if (locked) {
     const unexpectedErrors = errors.filter((message) => !message.includes("status of 401"));
     assert(unexpectedErrors.length === 0, `no unexpected browser console/page errors: ${unexpectedErrors.join("; ")}`);
-    assert(!token, "locked view is expected when no smoke token is supplied");
+    assert(!token && !sessionToken, "locked view is expected when no smoke token is supplied");
     console.log(JSON.stringify({ ok: true, mode: "locked", checks }, null, 2));
   } else {
     assert(errors.length === 0, `no browser console/page errors: ${errors.join("; ")}`);
@@ -60,7 +72,7 @@ try {
     assert(await page.locator("#ranking-run-snapshot").isVisible(), "Ranking Snapshot run button renders");
 
     await clickNav(page, "Entity Explorer");
-    await page.locator("text=Run Entity Explorer").waitFor({ state: "visible", timeout: 10000 });
+    await page.getByRole("heading", { name: "Run Entity Explorer" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#entity-run-start").isVisible(), "Entity Explorer run button renders");
 
     console.log(JSON.stringify({ ok: true, mode: "authenticated", checks }, null, 2));
