@@ -85,6 +85,7 @@ Smoke tests are visible by default so the browser window can be observed.
 ```powershell
 Set-Location "D:\CC-Cora 7.2\cloudflare"
 npm run smoke:cloud
+npm run smoke:cloud:auth
 ```
 
 To force headless:
@@ -104,6 +105,8 @@ The smoke test supports:
   - `OPOS_SMOKE_SESSION`
 
 We have been using a temporary D1 `cloud_users` + `cloud_sessions` row for authenticated smoke tests, then deleting it after the run. Do not print real tokens.
+
+`npm run smoke:cloud:auth` now handles temporary D1 session setup and cleanup automatically. It does not print the generated session token.
 
 Authenticated smoke currently checks:
 
