@@ -18,6 +18,15 @@ The desired workflow is client-first and tool-first:
 4. See inline status/progress on that same page.
 5. Keep `System > Command Review` as an admin/debug view, not the normal workflow.
 
+## Feature Parity Rule
+
+Use `FEATURE_PARITY.md` before calling any new feature complete. The rule is:
+
+- Local UI, cloud UI, backend/API, data ownership, sync direction, execution location, tests, and handoff impact must all be accounted for.
+- A feature may execute only locally, such as Cora, but the cloud workflow still needs a matching user path through the bridge.
+- A feature may execute in the cloud, such as Ranking Snapshot or Entity Explorer, but local workflow and data compatibility still need to be reviewed.
+- Do not let local and cloud become separate products. Labels, menu placement, client selection, run status, and report access should match unless a difference is intentional and documented.
+
 ## Important Paths
 
 ```text
@@ -202,6 +211,8 @@ Live status refresh on the tool pages has been started:
 
 ## Next Phase
 
-- Replace Entity Explorer raw provider/model textarea with provider model selectors.
-- Improve Ranking Snapshot run form and last snapshot display.
-- Add a repeatable authenticated smoke command that creates and cleans up a temporary D1 smoke session.
+- Apply the parity checklist to the live codebase and close the highest-impact gaps:
+  - Confirm Entity Explorer local/cloud workflow parity.
+  - Confirm Ranking Snapshot local/cloud workflow parity.
+  - Confirm Cora Reports local/cloud workflow parity.
+  - Document any intentional local-only or cloud-only execution differences.
