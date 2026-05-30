@@ -83,6 +83,8 @@ try {
     await page.getByRole("heading", { name: "Run Entity Explorer" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#entity-run-start").isVisible(), "Entity Explorer run button renders");
     assert(await page.locator("#entity-inline-status").count(), "Entity Explorer inline status area exists");
+    assert(await page.locator(".provider-card").count() >= 5, "Entity Explorer provider cards render");
+    assert(await page.locator(".entity-model-check:checked").count() >= 3, "Entity Explorer recommended models are selected");
 
     console.log(JSON.stringify({ ok: true, mode: "authenticated", checks }, null, 2));
   }

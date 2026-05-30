@@ -2365,10 +2365,17 @@ function cloudMirrorHtml() {
     .tool-card { border:1px solid var(--line); border-radius:8px; padding:11px; background:rgba(29,38,48,.45); display:grid; gap:8px; align-content:start; min-height:116px; }
     .tool-card strong { font-size:14px; }
     .tool-card button { justify-self:start; background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; font-size:12px; }
+    .provider-grid { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:10px; }
+    .provider-card { border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(29,38,48,.45); display:grid; gap:7px; align-content:start; }
+    .provider-card h4 { margin:0; font-size:13px; }
+    .provider-card label { display:flex; gap:7px; align-items:flex-start; color:var(--text); font-size:12px; line-height:1.25; }
+    .provider-card input { min-width:auto; margin-top:1px; }
+    .provider-card small { display:block; color:var(--muted); }
     .scroll-table { overflow:auto; max-height:520px; }
     .scroll-table table { min-width:860px; }
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
-    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
+    @media (max-width: 1200px) { .provider-grid { grid-template-columns:repeat(3,minmax(150px,1fr)); } }
+    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
   </style>
 </head>
 <body>
@@ -2436,6 +2443,14 @@ function cloudMirrorHtml() {
     const adminToken = () => localStorage.getItem("opos_admin_token") || "";
     const canWrite = () => Boolean(readToken()) || ["read", "write", "admin", "owner"].includes(String(state.data?.user?.role || "").toLowerCase());
     const authHeaders = (token) => token ? { "authorization": "Bearer " + token } : {};
+    const entityProviderCatalog = [
+      { key: "openai", label: "OpenAI", models: [["gpt-5.5", "Latest flagship"], ["gpt-5.4", "Strong reasoning"], ["gpt-5.1-mini", "Fast utility"]] },
+      { key: "anthropic", label: "Anthropic", models: [["claude-opus-4-8", "Deep analysis"], ["claude-sonnet-4-6", "Balanced"], ["claude-haiku-4-5-20251001", "Fast"]] },
+      { key: "google", label: "Google", models: [["gemini-3.1-pro-preview", "Pro reasoning"], ["gemini-3.5-flash", "Fast"]] },
+      { key: "xai", label: "xAI / Grok", models: [["grok-4.3", "General"], ["grok-build-0.1", "Experimental"]] },
+      { key: "perplexity", label: "Perplexity", models: [["perplexity/sonar", "Search-grounded"]] }
+    ];
+    const recommendedEntityTargets = new Set(["openai:gpt-5.4", "anthropic:claude-sonnet-4-6", "google:gemini-3.5-flash", "perplexity:perplexity/sonar"]);
     const writeHeaders = () => {
       const headers = { "content-type": "application/json" };
       const token = adminToken() || readToken();
@@ -2771,6 +2786,11 @@ function cloudMirrorHtml() {
       const clientKeywords = (data.keywords || []).filter((keyword) => String(keyword.project_id || "") === String(selectedClient.id || ""));
       const keywordOptions = clientKeywords.map((keyword) => '<option value="' + esc(keyword.keyword || "") + '">').join("");
       const defaultSeed = (state.commandPrefill || {}).seed_keyword || (state.commandPrefill || {}).keyword || clientKeywords[0]?.keyword || "";
+      const providerCards = entityProviderCatalog.map((provider) => '<div class="provider-card"><h4>' + esc(provider.label) + '</h4>' + provider.models.map(([model, note]) => {
+        const value = provider.key + ":" + model;
+        const checked = recommendedEntityTargets.has(value) ? " checked" : "";
+        return '<label><input class="entity-model-check" type="checkbox" data-provider="' + esc(provider.key) + '" data-model="' + esc(model) + '"' + checked + '><span>' + esc(model) + '<small>' + esc(note) + '</small></span></label>';
+      }).join("") + '</div>').join("");
       const batches = allBatches.filter((batch) => state.entityClient === "all" || String(batch.project_id || "") === state.entityClient);
       const runs = allRuns.filter((run) => state.entityClient === "all" || String(run.project_id || "") === state.entityClient);
       const sets = allSets.filter((set) => state.entityClient === "all" || String(set.project_id || "") === state.entityClient);
@@ -2778,7 +2798,7 @@ function cloudMirrorHtml() {
       const batchRows = batches.map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong><br><span class="muted">' + esc(fmtDate(b.created_at)) + '</span></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + entityBatchProgress(b) + '</td><td><span class="pill ' + entityBatchStatusClass(b.status) + '">' + esc(b.status || "") + '</span></td><td><button class="entity-batch-select detail-btn" data-batch-id="' + esc(b.id) + '">Open Crossover</button><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(b.id) + '">Detail</button></td></tr>');
       const runRows = runs.slice(0, 60).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '<br><span class="muted">' + esc(r.project_name || "") + '</span></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill ' + (r.status === "complete" ? "ok" : r.status === "failed" ? "warn" : "") + '">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const actions = '<div class="filters"><select id="entity-client-filter">' + clientOptions + '</select><span class="muted">' + esc(batches.length) + ' of ' + esc(allBatches.length) + ' batches</span></div><div class="toolbar"><button class="entity-page-link" data-entity-page="entity-crossover">Entity Crossover</button><button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button></div>';
-      const runPanel = '<section><div class="head"><h3>Run Entity Explorer</h3><span class="pill ok">Cloud LLM APIs</span></div><div class="status-list"><div class="field-row"><select id="entity-run-client">' + runClientOptions + '</select><input id="entity-run-seed" list="entity-keyword-list" placeholder="Seed keyword" value="' + esc(defaultSeed) + '"><datalist id="entity-keyword-list">' + keywordOptions + '</datalist><select id="entity-run-depth"><option value="1">1 - Light</option><option value="2">2 - Focused</option><option value="3" selected>3 - Standard</option><option value="4">4 - Deep</option><option value="5">5 - Comprehensive</option></select></div><textarea id="entity-run-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8&#10;google:gemini-3.1-pro-preview&#10;perplexity:perplexity/sonar"></textarea><div class="toolbar"><label class="muted"><input id="entity-run-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="entity-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="entity-run-start">Run Entity Explorer</button><div id="entity-inline-status">' + toolFeedbackHtml(state.toolFeedback?.entity) + '</div></div></section>';
+      const runPanel = '<section><div class="head"><h3>Run Entity Explorer</h3><span class="pill ok">Cloud LLM APIs</span></div><div class="status-list"><div class="field-row"><select id="entity-run-client">' + runClientOptions + '</select><input id="entity-run-seed" list="entity-keyword-list" placeholder="Seed keyword" value="' + esc(defaultSeed) + '"><datalist id="entity-keyword-list">' + keywordOptions + '</datalist><select id="entity-run-depth"><option value="1">1 - Light</option><option value="2">2 - Focused</option><option value="3" selected>3 - Standard</option><option value="4">4 - Deep</option><option value="5">5 - Comprehensive</option></select></div><div class="toolbar"><button id="entity-select-recommended" class="secondary">Select Recommended</button><button id="entity-clear-models" class="secondary">Clear Models</button><span id="entity-model-count" class="muted"></span></div><div class="provider-grid">' + providerCards + '</div><details><summary class="muted">Advanced provider:model input</summary><textarea id="entity-run-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8&#10;google:gemini-3.1-pro-preview&#10;perplexity:perplexity/sonar"></textarea></details><div class="toolbar"><label class="muted"><input id="entity-run-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="entity-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="entity-run-start">Run Entity Explorer</button><div id="entity-inline-status">' + toolFeedbackHtml(state.toolFeedback?.entity) + '</div></div></section>';
       setTimeout(bindEntityPageControls, 0);
       return cards([["Entity Batches", allBatches.length],["Visible Batches", batches.length],["Visible Model Runs", runs.length],["Visible Entity Sets", sets.length],["Latest Batch", latest ? latest.seed_keyword : "None"]])
         + runPanel
@@ -3124,6 +3144,37 @@ function cloudMirrorHtml() {
       await load();
     }
     function bindEntityPageControls() {
+      const selectedEntityTargets = () => {
+        const checkedTargets = [...document.querySelectorAll(".entity-model-check:checked")].map((box) => ({ provider: box.dataset.provider || "", model: box.dataset.model || "" })).filter((target) => target.provider && target.model);
+        const advancedTargets = parseEntityTargets(document.getElementById("entity-run-targets")?.value || "");
+        const seen = new Set();
+        return checkedTargets.concat(advancedTargets).filter((target) => {
+          const key = (target.provider || target.api_key_id || "") + ":" + target.model;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+      };
+      const updateEntityModelCount = () => {
+        const count = selectedEntityTargets().length;
+        const target = document.getElementById("entity-model-count");
+        if (target) target.textContent = count + " model" + (count === 1 ? "" : "s") + " selected";
+      };
+      document.querySelectorAll(".entity-model-check").forEach((box) => {
+        box.onchange = updateEntityModelCount;
+      });
+      document.getElementById("entity-run-targets")?.addEventListener("input", updateEntityModelCount);
+      document.getElementById("entity-select-recommended")?.addEventListener("click", () => {
+        document.querySelectorAll(".entity-model-check").forEach((box) => {
+          box.checked = recommendedEntityTargets.has((box.dataset.provider || "") + ":" + (box.dataset.model || ""));
+        });
+        updateEntityModelCount();
+      });
+      document.getElementById("entity-clear-models")?.addEventListener("click", () => {
+        document.querySelectorAll(".entity-model-check").forEach((box) => { box.checked = false; });
+        updateEntityModelCount();
+      });
+      updateEntityModelCount();
       document.querySelectorAll(".entity-page-link").forEach((button) => {
         button.onclick = () => setPage(button.dataset.entityPage || "entities");
       });
@@ -3144,15 +3195,15 @@ function cloudMirrorHtml() {
           const button = event.currentTarget;
           if (button.disabled) return;
           const originalLabel = button.textContent;
-          const payload = {
-            execution_mode: "cloud",
-            project_id: Number(document.getElementById("entity-run-client")?.value || 0),
-            seed_keyword: document.getElementById("entity-run-seed")?.value || "",
-            depth: Number(document.getElementById("entity-run-depth")?.value || 3),
-            targets: parseEntityTargets(document.getElementById("entity-run-targets")?.value || ""),
-            run_async: Boolean(document.getElementById("entity-run-async")?.checked),
-            dry_run: Boolean(document.getElementById("entity-run-dry")?.checked)
-          };
+            const payload = {
+              execution_mode: "cloud",
+              project_id: Number(document.getElementById("entity-run-client")?.value || 0),
+              seed_keyword: document.getElementById("entity-run-seed")?.value || "",
+              depth: Number(document.getElementById("entity-run-depth")?.value || 3),
+              targets: selectedEntityTargets(),
+              run_async: Boolean(document.getElementById("entity-run-async")?.checked),
+              dry_run: Boolean(document.getElementById("entity-run-dry")?.checked)
+            };
           button.disabled = true;
           button.textContent = "Starting...";
           setToolFeedback("entity", {
