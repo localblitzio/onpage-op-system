@@ -4754,7 +4754,7 @@ function cloudMirrorHtml() {
       const title = commandType === "apply_cora_domain_lists" ? "Queueing Apply Lists" : "Queueing Pull Lists";
       setToolFeedback("domains", { status: "running", title, message: "Sending Cora domain list action to the local bridge." });
       try {
-        await postCommand(commandType, { execution_mode: "local", scope: "global" });
+        await postCommand(commandType, { execution_mode: "local", scope: "all", sync_before_apply: commandType === "apply_cora_domain_lists" });
         await load({ preserveScroll: true });
         setToolFeedback("domains", {
           status: "complete",

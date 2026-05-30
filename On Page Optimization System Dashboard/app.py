@@ -1192,7 +1192,9 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         result["domains"] = pull_native_cora_domain_lists()
         changed_tables.add("cora_domain_lists")
     elif command_type == "apply_cora_domain_lists":
-        result["domains"] = apply_cora_domain_lists_to_native(payload.get("scope") or "global")
+        if cloudflare_sync_configured() and payload.get("sync_before_apply") is not False:
+            result["sync_before_apply"] = pull_cloudflare_sync(tables=["cora_domain_lists"], limit=int(payload.get("limit") or 5000))
+        result["domains"] = apply_cora_domain_lists_to_native(payload.get("scope") or "all")
     elif command_type == "add_keyword":
         project_id = int(payload.get("project_id") or 0)
         keyword_text = clean_text(payload.get("keyword")) or ""
@@ -1889,13 +1891,14 @@ def pull_native_cora_domain_lists() -> dict[str, Any]:
     return {"ok": True, "source": "native_cora", "rows": created, "domains": data}
 
 
-def apply_cora_domain_lists_to_native(scope: str = "global") -> dict[str, Any]:
-    rows = cora_domain_list_rows(scope=scope)
+def apply_cora_domain_lists_to_native(scope: str | None = None) -> dict[str, Any]:
+    normalized_scope = (clean_text(scope) or "").lower()
+    rows = cora_domain_list_rows(scope=normalized_scope) if normalized_scope and normalized_scope != "all" else cora_domain_list_rows()
     payload = cora_domain_payload_from_rows(rows)
     result = post_cora("/api/domains", payload)
     if isinstance(result, dict) and result.get("error"):
         raise ValueError(result.get("error"))
-    return {"ok": True, "scope": scope, "rows": len(rows), "payload": payload, "cora": result}
+    return {"ok": True, "scope": normalized_scope or "all", "rows": len(rows), "payload": payload, "cora": result}
 
 
 def as_float(value: Any) -> float | None:
@@ -6603,7 +6606,7 @@ class AppHandler(BaseHTTPRequestHandler):
                 if body.get("action") == "pull_native":
                     result = pull_native_cora_domain_lists()
                 elif body.get("action") == "apply_native":
-                    result = apply_cora_domain_lists_to_native(body.get("scope") or "global")
+                    result = apply_cora_domain_lists_to_native(body.get("scope") or "all")
                 elif body.get("action") == "archive":
                     result = {"entry": archive_cora_domain_list_entry(int(body.get("entry_id") or 0))}
                 elif body.get("entry_id"):

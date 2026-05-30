@@ -1139,15 +1139,17 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertEqual(app.cora_domain_list_rows(), [])
 
     def test_cora_domain_list_bridge_apply_and_pull(self) -> None:
+        project = app.create_project("Domain Client", site_domain="client-example.com")
         app.create_cora_domain_list_entry("tracked", "example.com")
         app.create_cora_domain_list_entry("competitors", "competitor.com")
+        app.create_cora_domain_list_entry("tracked", "client-example.com", scope="client", project_id=project["id"])
 
         with patch.object(app, "post_cora", return_value={"ok": True}) as post:
             result = app.apply_cora_domain_lists_to_native()
 
         self.assertTrue(result["ok"])
         payload = post.call_args.args[1]
-        self.assertEqual(payload["tracked"], "example.com")
+        self.assertEqual(set(payload["tracked"].splitlines()), {"example.com", "client-example.com"})
         self.assertEqual(payload["competitors"], "competitor.com")
 
         with patch.object(app, "query_cora", return_value={"tracked": ["pulled.com"], "competitors": ["rival.com"]}):
@@ -1157,6 +1159,23 @@ class DashboardSmokeTests(unittest.TestCase):
         values = {row["value"] for row in app.cora_domain_list_rows()}
         self.assertIn("pulled.com", values)
         self.assertIn("rival.com", values)
+
+    def test_cora_domain_list_apply_command_syncs_cloud_rows_first(self) -> None:
+        app.create_cora_domain_list_entry("tracked", "local.com")
+
+        with (
+            patch.object(app, "cloudflare_sync_configured", return_value=True),
+            patch.object(app, "pull_cloudflare_sync", return_value={"ok": True, "tables": [{"table": "cora_domain_lists", "rows": 1}]}) as pull,
+            patch.object(app, "post_cora", return_value={"ok": True}) as post,
+        ):
+            result = app.apply_cloudflare_command({
+                "command_type": "apply_cora_domain_lists",
+                "payload": {"execution_mode": "local", "scope": "all"},
+            })
+
+        self.assertTrue(result["domains"]["ok"])
+        pull.assert_called_once()
+        self.assertEqual(post.call_args.args[1]["tracked"], "local.com")
 
     def test_placeholder_tool_accepts_selected_client_keywords(self) -> None:
         project = app.create_project("Client", site_domain="https://example.com")
