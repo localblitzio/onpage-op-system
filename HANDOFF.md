@@ -81,8 +81,12 @@ Implemented:
 - Client workspace opens tool pages directly instead of routing normal users through `Command Review`.
 - Cora runs queue to the local Windows bridge; the UI states that execution happens on the remote/local Cora machine.
 - Ranking Snapshot and Entity Explorer run through cloud/API command paths.
+- `Cora > Cora Reports` now includes a cloud-side Create Customer Report panel.
+- Cloud-created report metadata is immediate, but customer HTML/source XLSX artifacts still come from the local bridge/report file sync.
+- Cloud reports without uploaded artifacts show `Files pending` and route the user to sync report files instead of opening a missing artifact URL.
 - Inline status/progress cards exist for:
   - Cora queueing, including per-keyword status.
+  - Cora Report creation.
   - Ranking Snapshot started/duplicate/failed.
   - Entity Explorer model run started/duplicate/failed.
 - Duplicate cloud commands are now handled idempotently instead of surfacing D1 unique-constraint errors.
@@ -146,6 +150,7 @@ Authenticated smoke currently checks:
 - No unexpected browser/page errors.
 - Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer.
 - Cora page renders.
+- Cora Reports create panel renders.
 - Ranking Snapshot run button renders.
 - Entity Explorer run button renders.
 - Inline status containers exist.

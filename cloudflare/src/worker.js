@@ -2403,7 +2403,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
@@ -2498,7 +2498,7 @@ function cloudMirrorHtml() {
     }
     function startToolAutoRefresh(key, durationMs) {
       if (toolRefreshTimer) clearInterval(toolRefreshTimer);
-      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"] }[key] || [];
+      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"], reports: ["reports"] }[key] || [];
       const until = Date.now() + (durationMs || 120000);
       toolRefreshTimer = setInterval(async () => {
         if (Date.now() > until || !allowedPages.includes(state.page)) {
@@ -2563,19 +2563,37 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Recent Sync Batches</h3></div>' + detailTable(["Table","Rows","Source","Received"], recentHtml, "No recent sync batches.") + '</section>';
     }
     function reportTable(items) {
-      return table(["Report", "Client", "Keyword / URL", "Level", "Created", "Files", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">Run #' + esc(r.run_id || "") + '</span></td><td>' + esc(r.project_name || r.client_name || "") + '<br><span class="muted">' + esc(r.site_domain || "") + '</span></td><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.target_domain || r.target_url || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '<br><span class="muted">Uploaded ' + esc(fmtDate(r.last_uploaded_at)) + '</span></td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><div class="actions"><a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a><a class="action-link" href="' + downloadUrl(r.token) + '">XLSX</a><button class="copy-btn" data-copy="' + esc(absoluteUrl(reportUrl(r.token))) + '">Copy report</button><button class="copy-btn" data-copy="' + esc(absoluteUrl(downloadUrl(r.token))) + '">Copy XLSX</button></div></td></tr>'), "No cloud reports synced yet.");
+      return table(["Report", "Client", "Keyword / URL", "Level", "Created", "Files", "Actions"], rows(items).map((r) => {
+        const hasHtml = Boolean(r.cloud_url);
+        const actions = hasHtml
+          ? '<a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a><a class="action-link" href="' + downloadUrl(r.token) + '">XLSX</a><button class="copy-btn" data-copy="' + esc(absoluteUrl(reportUrl(r.token))) + '">Copy report</button><button class="copy-btn" data-copy="' + esc(absoluteUrl(downloadUrl(r.token))) + '">Copy XLSX</button>'
+          : '<span class="pill warn">Files pending</span><button class="copy-btn report-sync-files" data-report-id="' + esc(r.id || "") + '">Sync files</button>';
+        return '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">Run #' + esc(r.run_id || "") + '</span></td><td>' + esc(r.project_name || r.client_name || "") + '<br><span class="muted">' + esc(r.site_domain || "") + '</span></td><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.target_domain || r.target_url || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '<br><span class="muted">Uploaded ' + esc(fmtDate(r.last_uploaded_at)) + '</span></td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><div class="actions">' + actions + '</div></td></tr>';
+      }), "No cloud reports synced yet.");
     }
     function reportPortal(data) {
       const allReports = data.reports || [];
-      const clients = [...new Map(allReports.map((r) => [String(r.project_id || r.project_name || ""), r.project_name || r.client_name || "Unassigned"]).filter(([id]) => id)).entries()];
+      const clientRows = data.clients || [];
+      const clients = clientRows.length
+        ? clientRows.map((client) => [String(client.id || ""), client.name || ("Client " + client.id)]).filter(([id]) => id)
+        : [...new Map(allReports.map((r) => [String(r.project_id || r.project_name || ""), r.project_name || r.client_name || "Unassigned"]).filter(([id]) => id)).entries()];
       const levels = ["basic", "medium", "comprehensive"];
       const filtered = allReports.filter((r) => (state.reportClient === "all" || String(r.project_id || r.project_name || "") === state.reportClient) && (state.reportLevel === "all" || String(r.level || "").toLowerCase() === state.reportLevel));
       const latest = filtered.map((r) => r.created_at).filter(Boolean).sort().pop();
       const files = filtered.reduce((sum, r) => sum + Number(r.artifact_count || 0), 0);
       const bytes = filtered.reduce((sum, r) => sum + Number(r.total_bytes || 0), 0);
       const filters = '<div class="filters"><select id="report-client-filter"><option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.reportClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="report-level-filter"><option value="all">All report levels</option>' + levels.map((level) => '<option value="' + level + '"' + (state.reportLevel === level ? ' selected' : '') + '>' + esc(level[0].toUpperCase() + level.slice(1)) + '</option>').join("") + '</select><span class="muted">Use the search box above for keyword, URL, or report title.</span></div>';
+      const selectedCreateClient = clients.some(([id]) => id === state.reportCreateClient) ? state.reportCreateClient : (clients[0]?.[0] || "all");
+      const clientRuns = (data.runs || []).filter((run) => selectedCreateClient === "all" || String(run.project_id || "") === selectedCreateClient);
+      const clientSnapshots = (data.snapshots || []).filter((snapshot) => selectedCreateClient === "all" || String(snapshot.project_id || "") === selectedCreateClient);
+      const clientEntitySets = (data.entity_sets || []).filter((set) => selectedCreateClient === "all" || String(set.project_id || "") === selectedCreateClient);
+      const runOptions = clientRuns.map((run) => '<option value="' + esc(run.id) + '">' + esc((run.keyword || "Run " + run.id) + " | " + (run.target_domain || run.target_url || "") + " | " + fmtDate(run.imported_at)) + '</option>').join("");
+      const snapshotOptions = '<option value="">No Ranking Snapshot</option>' + clientSnapshots.map((snapshot) => '<option value="' + esc(snapshot.id) + '">' + esc((snapshot.target || "Snapshot " + snapshot.id) + " | " + fmtDate(snapshot.created_at)) + '</option>').join("");
+      const entitySetOptions = '<option value="">No Entity Set</option>' + clientEntitySets.map((set) => '<option value="' + esc(set.id) + '">' + esc((set.name || "Entity Set " + set.id) + " | " + fmtNum(set.term_count || 0) + " terms") + '</option>').join("");
+      const createPanel = '<section><div class="head"><h3>Create Customer Report</h3><span class="pill ok">Cloud metadata</span></div><div class="status-list"><div class="field-row"><select id="report-create-client">' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (selectedCreateClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="report-create-run">' + (runOptions || '<option value="">No synced Cora runs for this client</option>') + '</select><select id="report-create-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select></div><div class="field-row"><input id="report-create-title" placeholder="Optional report title"><input id="report-create-notes" placeholder="Optional notes"></div><div class="field-row"><select id="report-create-snapshot">' + snapshotOptions + '</select><select id="report-create-entity-set">' + entitySetOptions + '</select><button id="report-create-submit"' + (runOptions ? "" : " disabled") + '>Create Report</button></div><div class="muted">Cloud can create the report record now. Source XLSX and customer HTML are generated/uploaded by the local bridge with Sync Report Files.</div><div id="reports-inline-status">' + toolFeedbackHtml(state.toolFeedback?.reports) + '</div></div></section>';
       setTimeout(bindReportControls, 0);
       return cards([["Visible Reports", filtered.length],["Report Files", files],["Report Storage", fmtBytes(bytes)],["Latest Report", fmtDate(latest) || "None"]])
+        + createPanel
         + '<section><div class="head"><h3>Cora Reports</h3><span class="pill ok">Share-ready</span></div>' + filters + reportTable(filtered) + '</section>';
     }
     function clientsTable(items) {
@@ -3730,7 +3748,20 @@ function cloudMirrorHtml() {
       const level = document.getElementById("report-level-filter");
       if (client) client.onchange = (event) => { state.reportClient = event.target.value || "all"; render(); };
       if (level) level.onchange = (event) => { state.reportLevel = event.target.value || "all"; render(); };
+      const createClient = document.getElementById("report-create-client");
+      if (createClient) createClient.onchange = (event) => { state.reportCreateClient = event.target.value || "all"; render(); };
+      document.getElementById("report-create-submit")?.addEventListener("click", (event) => createCloudReport(event.currentTarget).catch((error) => {
+        setToolFeedback("reports", { status: "failed", title: "Report Creation Failed", message: error.message || String(error) });
+      }));
+      document.querySelectorAll(".report-sync-files").forEach((button) => {
+        button.addEventListener("click", () => {
+          const id = Number(button.dataset.reportId || 0);
+          setPage("commands");
+          setPendingCommand("sync_report_artifacts", { report_ids: id ? [id] : [], dry_run: false, force: true });
+        });
+      });
       document.querySelectorAll(".copy-btn").forEach((button) => {
+        if (button.classList.contains("report-sync-files")) return;
         button.onclick = async () => {
           const value = button.dataset.copy || "";
           try {
@@ -3742,6 +3773,48 @@ function cloudMirrorHtml() {
           }
         };
       });
+    }
+    async function createCloudReport(button) {
+      const originalLabel = button?.textContent || "Create Report";
+      const payload = {
+        execution_mode: "cloud",
+        run_id: Number(document.getElementById("report-create-run")?.value || 0),
+        level: document.getElementById("report-create-level")?.value || "medium",
+        title: document.getElementById("report-create-title")?.value || "",
+        notes: document.getElementById("report-create-notes")?.value || "",
+        ranking_snapshot_id: Number(document.getElementById("report-create-snapshot")?.value || 0) || null,
+        entity_set_id: Number(document.getElementById("report-create-entity-set")?.value || 0) || null
+      };
+      if (!payload.run_id) throw new Error("Select a synced Cora run for the report.");
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Creating...";
+      }
+      setToolFeedback("reports", {
+        status: "running",
+        title: "Creating Customer Report",
+        message: "Creating " + payload.level + " report metadata in Cloudflare."
+      });
+      try {
+        const result = await postCommand("create_share_report", payload);
+        await load({ preserveScroll: true });
+        const report = result.command?.result?.report || {};
+        const message = result.duplicate
+          ? "A matching report command already exists."
+          : "Report metadata created" + (report.id ? " as report #" + report.id : "") + ". Use Sync Report Files to upload HTML/XLSX artifacts.";
+        setToolFeedback("reports", {
+          status: "complete",
+          title: "Customer Report Created",
+          message
+        }, true);
+        startToolAutoRefresh("reports", 90000);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
     }
     function bindCoraListControls() {
       const runClient = document.getElementById("run-client-filter");
