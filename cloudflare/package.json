@@ -6,9 +6,11 @@
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "d1:init": "wrangler d1 execute OPOS_DB --file ./schema.sql",
-    "d1:init:remote": "wrangler d1 execute OPOS_DB --remote --file ./schema.sql"
+    "d1:init:remote": "wrangler d1 execute OPOS_DB --remote --file ./schema.sql",
+    "smoke:cloud": "node scripts/smoke-cloud-dashboard.mjs"
   },
   "devDependencies": {
+    "playwright": "^1.60.0",
     "wrangler": "^4.0.0"
   }
 }

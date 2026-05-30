@@ -22,8 +22,11 @@
 !cloudflare/
 !cloudflare/README.md
 !cloudflare/package.json
+!cloudflare/package-lock.json
 !cloudflare/wrangler.toml.example
 !cloudflare/schema.sql
+!cloudflare/scripts/
+!cloudflare/scripts/**
 !cloudflare/src/
 !cloudflare/src/worker.js
 
