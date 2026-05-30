@@ -2397,6 +2397,7 @@ function cloudMirrorHtml() {
   </div>
   <script>
     let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
       ["new-client", "New Client"],
@@ -2475,6 +2476,28 @@ function cloudMirrorHtml() {
       const target = document.getElementById(key + "-inline-status");
       if (target) target.innerHTML = toolFeedbackHtml(feedback);
       if (renderNow) render();
+    }
+    function userIsEditing() {
+      const el = document.activeElement;
+      return Boolean(el && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+    }
+    function startToolAutoRefresh(key, durationMs) {
+      if (toolRefreshTimer) clearInterval(toolRefreshTimer);
+      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"] }[key] || [];
+      const until = Date.now() + (durationMs || 120000);
+      toolRefreshTimer = setInterval(async () => {
+        if (Date.now() > until || !allowedPages.includes(state.page)) {
+          clearInterval(toolRefreshTimer);
+          toolRefreshTimer = null;
+          return;
+        }
+        if (userIsEditing()) return;
+        try {
+          await load({ preserveScroll: true });
+        } catch (error) {
+          console.warn("Tool status refresh failed", error);
+        }
+      }, 8000);
     }
     function overview(data) {
       const counts = data.counts || {};
@@ -2964,6 +2987,7 @@ function cloudMirrorHtml() {
               message: commandResultSummary(command) || (payload.dry_run ? "Dry run completed." : "Snapshot command is active."),
               rows: [{ label: payload.target, status: commandStatusLabel(command.status || (result.duplicate ? "duplicate" : "queued")) }]
             }, true);
+            startToolAutoRefresh("ranking", 120000);
           } catch (error) {
             runButton.disabled = false;
             runButton.textContent = originalLabel;
@@ -3155,6 +3179,7 @@ function cloudMirrorHtml() {
               total: payload.targets.length,
               rows: runs.length ? runs.map((run) => ({ label: (run.provider || "") + " / " + (run.model || ""), status: run.status || "" })) : payload.targets.map((target) => ({ label: (target.provider || target.api_key_id || "model") + " / " + target.model, status: "queued" }))
             }, true);
+            startToolAutoRefresh("entity", 120000);
           } catch (error) {
             button.disabled = false;
             button.textContent = originalLabel;
@@ -3743,6 +3768,7 @@ function cloudMirrorHtml() {
               total: keywords.length,
               rows
             }, true);
+            startToolAutoRefresh("cora", 180000);
           } catch (error) {
             button.disabled = false;
             button.textContent = originalLabel;
@@ -3910,13 +3936,17 @@ function cloudMirrorHtml() {
       document.getElementById("page-note").textContent = "Enter an email login code or read/admin token to view cloud dashboard data.";
       document.getElementById("app").innerHTML = '<section><div class="head"><h3>Dashboard Locked</h3><span class="pill warn">Auth required</span></div><div class="empty">' + esc(message || "Cloud dashboard data is protected. Public customer report links still work without login.") + '</div></section>';
     }
-    async function load() {
+    async function load(options = {}) {
+      const previousScrollY = window.scrollY;
       const token = readToken();
       const response = await fetch("/api/dashboard/mirror", { headers: authHeaders(token) });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || "Mirror load failed");
       state.data = data;
       render();
+      if (options.preserveScroll) {
+        requestAnimationFrame(() => window.scrollTo(0, previousScrollY));
+      }
     }
     async function requestLoginCode() {
       const email = document.getElementById("login-email").value || "";
