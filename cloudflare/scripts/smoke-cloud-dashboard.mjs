@@ -83,6 +83,8 @@ try {
     await clickNav(page, "Cora Reports");
     await page.getByRole("heading", { name: "Create Customer Report" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#report-create-submit").count(), "Cora Reports create button renders");
+    assert(await page.getByRole("heading", { name: "Optimization Targets" }).count(), "Cora Reports target picker renders");
+    assert(await page.locator("#report-select-targets").count(), "Cora Reports target select button renders");
     assert(await page.locator("#reports-inline-status").count(), "Cora Reports inline status area exists");
 
     await clickNav(page, "Ranking Snapshot");

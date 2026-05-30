@@ -88,6 +88,8 @@ Implemented:
 - Cora runs queue to the local Windows bridge; the UI states that execution happens on the remote/local Cora machine.
 - Ranking Snapshot and Entity Explorer run through cloud/API command paths.
 - `Cora > Cora Reports` now includes a cloud-side Create Customer Report panel.
+- Cloud Cora Reports can attach a Ranking Snapshot, saved Optimization Targets, and an Entity Set to report metadata.
+- Cloud validates report attachments against the selected Cora run client before creating the report.
 - `Cora > Cora Profiles` now includes a cloud-side Profile Setup panel.
 - Cloud can create/reuse Cora profile metadata and attach a profile to a client.
 - Cloud-to-local pull sync includes `profiles` by default so profile/client links mirror back locally.
@@ -161,7 +163,7 @@ Authenticated smoke currently checks:
 - Nav items exist for Run Cora, Ranking Snapshot, Entity Explorer, Entity Crossover, Entity Sets.
 - Cora page renders.
 - Cora Profiles setup panel renders.
-- Cora Reports create panel renders.
+- Cora Reports create panel renders, including the Optimization Targets picker.
 - Ranking Snapshot run button renders.
 - Ranking Snapshot detail renders Save Optimization Targets and the target save button when snapshots exist.
 - Entity Explorer run button renders.
@@ -255,6 +257,7 @@ Live status refresh on the tool pages has been started:
 
 - Apply the parity checklist to the live codebase and close the next highest-impact gaps:
   - Confirm Ranking Snapshot local/cloud run and result parity.
-  - Confirm Cora Reports local/cloud workflow parity.
+  - Confirm real bridge generation/upload for cloud-created Cora report artifacts.
+  - Verify attached Ranking Snapshot, Optimization Targets, and Entity Set metadata appear in generated customer reports.
   - Confirm cloud-to-local sync for cloud-created Ranking Targets and Entity Sets in a real bridge pull.
   - Document any intentional local-only or cloud-only execution differences.

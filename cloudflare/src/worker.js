@@ -797,9 +797,43 @@ async function executeCloudCommand(commandType, payload, env) {
     const level = cleanText(payload.level) || "medium";
     const title = cleanText(payload.title);
     if (!runId) throw new Error("Run is required for a report.");
+    const run = await env.DB.prepare("SELECT * FROM runs WHERE id = ?").bind(runId).first();
+    if (!run) throw new Error("Cora run not found.");
+    const snapshotId = Number(payload.ranking_snapshot_id || 0) || null;
+    const entitySetId = Number(payload.entity_set_id || 0) || null;
+    const optimizationTargetIds = Array.isArray(payload.optimization_target_ids)
+      ? payload.optimization_target_ids.map((value) => Number(value)).filter(Boolean).slice(0, 250)
+      : [];
+    if (snapshotId) {
+      const snapshot = await env.DB.prepare("SELECT id, project_id FROM ranking_snapshots WHERE id = ?").bind(snapshotId).first();
+      if (!snapshot) throw new Error("Ranking Snapshot not found.");
+      if (snapshot.project_id && run.project_id && Number(snapshot.project_id) !== Number(run.project_id)) throw new Error("Ranking Snapshot must belong to the same client as the Cora run.");
+    }
+    if (entitySetId) {
+      const entitySet = await env.DB.prepare("SELECT id, project_id FROM entity_sets WHERE id = ?").bind(entitySetId).first();
+      if (!entitySet) throw new Error("Entity Set not found.");
+      if (entitySet.project_id && run.project_id && Number(entitySet.project_id) !== Number(run.project_id)) throw new Error("Entity Set must belong to the same client as the Cora run.");
+    }
+    if (optimizationTargetIds.length) {
+      const placeholders = optimizationTargetIds.map(() => "?").join(",");
+      const rows = await env.DB.prepare(
+        `SELECT id, project_id, snapshot_id FROM ranking_optimization_targets WHERE id IN (${placeholders})`
+      ).bind(...optimizationTargetIds).all();
+      const found = rows.results || [];
+      if (found.length !== optimizationTargetIds.length) throw new Error("One or more Optimization Targets were not found.");
+      if (found.some((target) => run.project_id && target.project_id && Number(target.project_id) !== Number(run.project_id))) throw new Error("Optimization Targets must belong to the same client as the Cora run.");
+      if (snapshotId && found.some((target) => Number(target.snapshot_id || 0) !== Number(snapshotId))) throw new Error("Optimization Targets must belong to the attached Ranking Snapshot.");
+    }
+    const optimizationTargetIdsJson = JSON.stringify(optimizationTargetIds);
     const existing = await env.DB.prepare(
-      "SELECT * FROM share_reports WHERE run_id = ? AND level = ? AND lower(COALESCE(title, '')) = lower(?) AND revoked_at IS NULL ORDER BY id LIMIT 1"
-    ).bind(runId, level, title).first();
+      `SELECT * FROM share_reports
+       WHERE run_id = ? AND level = ? AND lower(COALESCE(title, '')) = lower(?)
+         AND COALESCE(ranking_snapshot_id, 0) = COALESCE(?, 0)
+         AND COALESCE(entity_set_id, 0) = COALESCE(?, 0)
+         AND COALESCE(optimization_target_ids_json, '[]') = ?
+         AND revoked_at IS NULL
+       ORDER BY id LIMIT 1`
+    ).bind(runId, level, title, snapshotId, entitySetId, optimizationTargetIdsJson).first();
     if (existing) {
       result.duplicate = true;
       result.report = existing;
@@ -808,7 +842,7 @@ async function executeCloudCommand(commandType, payload, env) {
     const token = crypto.randomUUID().replaceAll("-", "");
     const inserted = await env.DB.prepare(
       "INSERT INTO share_reports (token, run_id, level, title, notes, ranking_snapshot_id, entity_set_id, optimization_target_ids_json, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)"
-    ).bind(token, runId, level, title || null, cleanText(payload.notes) || null, payload.ranking_snapshot_id || null, payload.entity_set_id || null, JSON.stringify(payload.optimization_target_ids || []), now).run();
+    ).bind(token, runId, level, title || null, cleanText(payload.notes) || null, snapshotId, entitySetId, optimizationTargetIdsJson, now).run();
     result.report = await env.DB.prepare("SELECT * FROM share_reports WHERE id = ?").bind(inserted.meta.last_row_id).first();
     result.artifact_note = "Cloud-created report metadata will get shareable artifacts after local report generation/upload sync.";
     changedTables.push("share_reports");
@@ -2527,7 +2561,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
@@ -2709,12 +2743,22 @@ function cloudMirrorHtml() {
       const filters = '<div class="filters"><select id="report-client-filter"><option value="all">All clients</option>' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.reportClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="report-level-filter"><option value="all">All report levels</option>' + levels.map((level) => '<option value="' + level + '"' + (state.reportLevel === level ? ' selected' : '') + '>' + esc(level[0].toUpperCase() + level.slice(1)) + '</option>').join("") + '</select><span class="muted">Use the search box above for keyword, URL, or report title.</span></div>';
       const selectedCreateClient = clients.some(([id]) => id === state.reportCreateClient) ? state.reportCreateClient : (clients[0]?.[0] || "all");
       const clientRuns = (data.runs || []).filter((run) => selectedCreateClient === "all" || String(run.project_id || "") === selectedCreateClient);
-      const clientSnapshots = (data.snapshots || []).filter((snapshot) => selectedCreateClient === "all" || String(snapshot.project_id || "") === selectedCreateClient);
-      const clientEntitySets = (data.entity_sets || []).filter((set) => selectedCreateClient === "all" || String(set.project_id || "") === selectedCreateClient);
-      const runOptions = clientRuns.map((run) => '<option value="' + esc(run.id) + '">' + esc((run.keyword || "Run " + run.id) + " | " + (run.target_domain || run.target_url || "") + " | " + fmtDate(run.imported_at)) + '</option>').join("");
-      const snapshotOptions = '<option value="">No Ranking Snapshot</option>' + clientSnapshots.map((snapshot) => '<option value="' + esc(snapshot.id) + '">' + esc((snapshot.target || "Snapshot " + snapshot.id) + " | " + fmtDate(snapshot.created_at)) + '</option>').join("");
+      const selectedCreateRun = clientRuns.some((run) => String(run.id) === String(state.reportCreateRun)) ? String(state.reportCreateRun) : String(clientRuns[0]?.id || "");
+      const selectedRun = clientRuns.find((run) => String(run.id) === selectedCreateRun) || null;
+      const attachmentProjectId = selectedRun?.project_id ? String(selectedRun.project_id) : (selectedCreateClient === "all" ? "" : selectedCreateClient);
+      const clientSnapshots = (data.snapshots || []).filter((snapshot) => !attachmentProjectId || String(snapshot.project_id || "") === attachmentProjectId);
+      const clientEntitySets = (data.entity_sets || []).filter((set) => !attachmentProjectId || String(set.project_id || "") === attachmentProjectId);
+      const selectedSnapshot = clientSnapshots.some((snapshot) => String(snapshot.id) === String(state.reportCreateSnapshot)) ? String(state.reportCreateSnapshot) : "";
+      const clientTargets = (data.targets || []).filter((target) =>
+        (!attachmentProjectId || String(target.project_id || "") === attachmentProjectId) &&
+        (!selectedSnapshot || String(target.snapshot_id || target.snapshotId || "") === selectedSnapshot)
+      ).slice(0, 80);
+      const runOptions = clientRuns.map((run) => '<option value="' + esc(run.id) + '"' + (String(run.id) === selectedCreateRun ? ' selected' : '') + '>' + esc((run.keyword || "Run " + run.id) + " | " + (run.target_domain || run.target_url || "") + " | " + fmtDate(run.imported_at)) + '</option>').join("");
+      const snapshotOptions = '<option value="">No Ranking Snapshot</option>' + clientSnapshots.map((snapshot) => '<option value="' + esc(snapshot.id) + '"' + (String(snapshot.id) === selectedSnapshot ? ' selected' : '') + '>' + esc((snapshot.target || "Snapshot " + snapshot.id) + " | " + fmtDate(snapshot.created_at)) + '</option>').join("");
       const entitySetOptions = '<option value="">No Entity Set</option>' + clientEntitySets.map((set) => '<option value="' + esc(set.id) + '">' + esc((set.name || "Entity Set " + set.id) + " | " + fmtNum(set.term_count || 0) + " terms") + '</option>').join("");
-      const createPanel = '<section><div class="head"><h3>Create Customer Report</h3><span class="pill ok">Cloud metadata</span></div><div class="status-list"><div class="field-row"><select id="report-create-client">' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (selectedCreateClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="report-create-run">' + (runOptions || '<option value="">No synced Cora runs for this client</option>') + '</select><select id="report-create-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select></div><div class="field-row"><input id="report-create-title" placeholder="Optional report title"><input id="report-create-notes" placeholder="Optional notes"></div><div class="field-row"><select id="report-create-snapshot">' + snapshotOptions + '</select><select id="report-create-entity-set">' + entitySetOptions + '</select><button id="report-create-submit"' + (runOptions ? "" : " disabled") + '>Create Report</button></div><div class="muted">Cloud can create the report record now. Source XLSX and customer HTML are generated/uploaded by the local bridge with Sync Report Files.</div><div id="reports-inline-status">' + toolFeedbackHtml(state.toolFeedback?.reports) + '</div></div></section>';
+      const targetRows = clientTargets.map((target) => '<label class="check-item"><input class="report-target-check" type="checkbox" value="' + esc(target.id || "") + '"' + (state.reportTargetSelection[String(target.id || "")] ? ' checked' : '') + '><span><strong>' + esc(target.keyword || target.url || "Optimization target") + '</strong><br><small class="muted">' + esc((target.url || "") + " | " + (target.status || "new") + " | score " + fmtNum(target.opportunity_score || target.opportunityScore || 0)) + '</small></span></label>').join("");
+      const targetPicker = '<div><div class="head" style="padding:0 0 8px;border:0;"><h3>Optimization Targets</h3><button id="report-select-targets" class="secondary"' + (clientTargets.length ? "" : " disabled") + '>Select Visible</button></div><div class="check-list">' + (targetRows || '<div class="empty">No saved Optimization Targets for this client/snapshot. Save targets from Ranking Snapshot first.</div>') + '</div></div>';
+      const createPanel = '<section><div class="head"><h3>Create Customer Report</h3><span class="pill ok">Cloud metadata</span></div><div class="status-list"><div class="field-row"><select id="report-create-client">' + clients.map(([id, name]) => '<option value="' + esc(id) + '"' + (selectedCreateClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="report-create-run">' + (runOptions || '<option value="">No synced Cora runs for this client</option>') + '</select><select id="report-create-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select></div><div class="field-row"><input id="report-create-title" placeholder="Optional report title"><input id="report-create-notes" placeholder="Optional notes"></div><div class="field-row"><select id="report-create-snapshot">' + snapshotOptions + '</select><select id="report-create-entity-set">' + entitySetOptions + '</select><button id="report-create-submit"' + (runOptions ? "" : " disabled") + '>Create Report</button></div>' + targetPicker + '<div class="muted">Cloud can create the report record now. Source XLSX and customer HTML are generated/uploaded by the local bridge with Sync Report Files.</div><div id="reports-inline-status">' + toolFeedbackHtml(state.toolFeedback?.reports) + '</div></div></section>';
       setTimeout(bindReportControls, 0);
       return cards([["Visible Reports", filtered.length],["Report Files", files],["Report Storage", fmtBytes(bytes)],["Latest Report", fmtDate(latest) || "None"]])
         + createPanel
@@ -4051,7 +4095,37 @@ function cloudMirrorHtml() {
       if (client) client.onchange = (event) => { state.reportClient = event.target.value || "all"; render(); };
       if (level) level.onchange = (event) => { state.reportLevel = event.target.value || "all"; render(); };
       const createClient = document.getElementById("report-create-client");
-      if (createClient) createClient.onchange = (event) => { state.reportCreateClient = event.target.value || "all"; render(); };
+      if (createClient) createClient.onchange = (event) => {
+        state.reportCreateClient = event.target.value || "all";
+        state.reportCreateRun = "";
+        state.reportCreateSnapshot = "";
+        state.reportTargetSelection = {};
+        render();
+      };
+      const createRun = document.getElementById("report-create-run");
+      if (createRun) createRun.onchange = (event) => {
+        state.reportCreateRun = event.target.value || "";
+        state.reportCreateSnapshot = "";
+        state.reportTargetSelection = {};
+        render();
+      };
+      const createSnapshot = document.getElementById("report-create-snapshot");
+      if (createSnapshot) createSnapshot.onchange = (event) => {
+        state.reportCreateSnapshot = event.target.value || "";
+        state.reportTargetSelection = {};
+        render();
+      };
+      document.querySelectorAll(".report-target-check").forEach((box) => {
+        box.onchange = () => {
+          state.reportTargetSelection[String(box.value || "")] = Boolean(box.checked);
+        };
+      });
+      document.getElementById("report-select-targets")?.addEventListener("click", () => {
+        document.querySelectorAll(".report-target-check").forEach((box) => {
+          if (box.value) state.reportTargetSelection[String(box.value)] = true;
+        });
+        render();
+      });
       document.getElementById("report-create-submit")?.addEventListener("click", (event) => createCloudReport(event.currentTarget).catch((error) => {
         setToolFeedback("reports", { status: "failed", title: "Report Creation Failed", message: error.message || String(error) });
       }));
@@ -4085,7 +4159,11 @@ function cloudMirrorHtml() {
         title: document.getElementById("report-create-title")?.value || "",
         notes: document.getElementById("report-create-notes")?.value || "",
         ranking_snapshot_id: Number(document.getElementById("report-create-snapshot")?.value || 0) || null,
-        entity_set_id: Number(document.getElementById("report-create-entity-set")?.value || 0) || null
+        entity_set_id: Number(document.getElementById("report-create-entity-set")?.value || 0) || null,
+        optimization_target_ids: Object.entries(state.reportTargetSelection || {})
+          .filter(([, selected]) => selected)
+          .map(([id]) => Number(id))
+          .filter(Boolean)
       };
       if (!payload.run_id) throw new Error("Select a synced Cora run for the report.");
       if (button) {
