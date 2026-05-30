@@ -66,14 +66,17 @@ try {
     await clickNav(page, "Run Cora");
     await page.locator("text=Remote Cora Bridge").waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("text=Run Cora").count(), "Cora run page renders");
+    assert(await page.locator("#cora-inline-status").count(), "Cora inline status area exists");
 
     await clickNav(page, "Ranking Snapshot");
     await page.locator("text=Run Ranking Snapshot").waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#ranking-run-snapshot").isVisible(), "Ranking Snapshot run button renders");
+    assert(await page.locator("#ranking-inline-status").count(), "Ranking Snapshot inline status area exists");
 
     await clickNav(page, "Entity Explorer");
     await page.getByRole("heading", { name: "Run Entity Explorer" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#entity-run-start").isVisible(), "Entity Explorer run button renders");
+    assert(await page.locator("#entity-inline-status").count(), "Entity Explorer inline status area exists");
 
     console.log(JSON.stringify({ ok: true, mode: "authenticated", checks }, null, 2));
   }

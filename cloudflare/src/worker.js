@@ -2344,6 +2344,10 @@ function cloudMirrorHtml() {
     .bridge-flags { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; padding:12px; }
     .bridge-flag { border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(29,38,48,.45); }
     .bridge-flag strong { display:block; font-size:15px; }
+    .inline-status { border:1px solid rgba(110,231,220,.35); border-radius:8px; padding:10px; background:rgba(77,182,172,.08); display:grid; gap:8px; }
+    .inline-status.warn { border-color:rgba(255,123,114,.45); background:rgba(255,123,114,.08); }
+    .progress-track { height:8px; border-radius:999px; background:var(--soft); overflow:hidden; border:1px solid var(--line); }
+    .progress-fill { height:100%; background:var(--accent); width:0; }
     .filters { display:flex; gap:8px; flex-wrap:wrap; align-items:center; padding:12px; border-bottom:1px solid var(--line); background:rgba(29,38,48,.55); }
     .filters select { min-width:180px; }
     .actions { display:flex; gap:6px; flex-wrap:wrap; }
@@ -2392,7 +2396,7 @@ function cloudMirrorHtml() {
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, commandPrefill: null, detail: null };
     const pages = [
       ["clients", "Client Dashboard"],
       ["new-client", "New Client"],
@@ -2457,6 +2461,20 @@ function cloudMirrorHtml() {
     }
     function cards(items) {
       return '<div class="cards">' + items.map(([label, value]) => '<div class="card"><strong>' + esc(typeof value === "number" ? fmtNum(value) : value) + '</strong><span>' + esc(label) + '</span></div>').join("") + '</div>';
+    }
+    function toolFeedbackHtml(feedback) {
+      if (!feedback) return "";
+      const total = Number(feedback.total || 0);
+      const done = Number(feedback.done || 0);
+      const percent = total ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
+      const rows = (feedback.rows || []).map((row) => '<div class="status-row"><span>' + esc(row.label || "") + '</span><strong class="' + esc(row.status === "failed" ? "warn" : row.status === "complete" || row.status === "queued" ? "ok" : "") + '">' + esc(row.status || "") + '</strong></div>').join("");
+      return '<div class="inline-status ' + (feedback.status === "failed" ? "warn" : "") + '"><div class="status-row"><span><strong>' + esc(feedback.title || "Tool Status") + '</strong><br><small class="muted">' + esc(feedback.message || "") + '</small></span><strong class="' + (feedback.status === "failed" ? "warn" : feedback.status === "complete" ? "ok" : "") + '">' + esc(feedback.status || "") + '</strong></div>' + (total ? '<div class="progress-track"><div class="progress-fill" style="width:' + esc(percent) + '%"></div></div><div class="muted">' + esc(done) + ' of ' + esc(total) + ' complete</div>' : '') + rows + '</div>';
+    }
+    function setToolFeedback(key, feedback, renderNow) {
+      state.toolFeedback = { ...(state.toolFeedback || {}), [key]: feedback };
+      const target = document.getElementById(key + "-inline-status");
+      if (target) target.innerHTML = toolFeedbackHtml(feedback);
+      if (renderNow) render();
     }
     function overview(data) {
       const counts = data.counts || {};
@@ -2569,6 +2587,7 @@ function cloudMirrorHtml() {
         + '<div><div class="head" style="padding:0 0 8px;border:0;"><h3>Keywords</h3><span class="muted">Select one or more</span></div><div class="check-list">' + (keywordChecks || '<div class="empty">No synced keywords for this client.</div>') + '</div></div>'
         + '<input id="cora-extra-keyword" placeholder="Optional extra keyword">'
         + '<div class="toolbar"><button id="cora-run-selected">' + esc(bridgeReady ? 'Run Selected Keywords' : 'Queue for Remote Cora') + '</button><button id="cora-refresh" class="secondary">Refresh</button></div>'
+        + '<div id="cora-inline-status">' + toolFeedbackHtml(state.toolFeedback?.cora) + '</div>'
         + '</div></section><section><div class="head"><h3>Remote Cora Bridge</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.bridge_id || "No bridge") + '</strong><span class="muted">Machine</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? "Enabled" : "Off") + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(fmtDate(bridge.last_seen_at) || "Never") + '</strong><span class="muted">Last seen</span></div></div><div class="status-list">' + (commandRows || '<div class="muted">No Cora launch commands for this client yet.</div>') + '</div></section></div>'
         + '<section><div class="head"><h3>Recent Cora Jobs</h3><span class="muted">Synced from the local dashboard.</span></div>' + detailTable(["Keyword","Profile","Status","Updated"], jobRows, "No Cora jobs synced for this client.") + '</section>';
     }
@@ -2658,7 +2677,7 @@ function cloudMirrorHtml() {
       }).join("");
       const runClientOptions = clientRows.map((client) => '<option value="' + esc(client.id) + '"' + (String(client.id || "") === String(selectedClient.id || "") ? ' selected' : '') + '>' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
       const filters = '<div class="filters"><select id="ranking-client-filter">' + clientOptions + '</select><span class="muted">' + esc(snapshots.length) + ' of ' + esc(allSnapshots.length) + ' snapshots</span></div>';
-      const runPanel = '<section><div class="head"><h3>Run Ranking Snapshot</h3><span class="pill ok">DataForSEO Labs</span></div><div class="status-list"><div class="field-row"><select id="ranking-run-client">' + runClientOptions + '</select><input id="ranking-run-target" placeholder="domain.com" value="' + esc(target) + '"></div><div class="field-row"><input id="ranking-run-location" placeholder="Location code" value="2840"><input id="ranking-run-language" placeholder="Language" value="en"><input id="ranking-run-limit" placeholder="Limit" value="1000"></div><div class="toolbar"><label class="muted"><input id="ranking-run-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="ranking-run-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="ranking-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="ranking-run-snapshot">Run Snapshot</button><div class="muted">DataForSEO Labs data is a weekly snapshot, not live rank tracking.</div></div></section>';
+      const runPanel = '<section><div class="head"><h3>Run Ranking Snapshot</h3><span class="pill ok">DataForSEO Labs</span></div><div class="status-list"><div class="field-row"><select id="ranking-run-client">' + runClientOptions + '</select><input id="ranking-run-target" placeholder="domain.com" value="' + esc(target) + '"></div><div class="field-row"><input id="ranking-run-location" placeholder="Location code" value="2840"><input id="ranking-run-language" placeholder="Language" value="en"><input id="ranking-run-limit" placeholder="Limit" value="1000"></div><div class="toolbar"><label class="muted"><input id="ranking-run-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="ranking-run-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="ranking-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="ranking-run-snapshot">Run Snapshot</button><div class="muted">DataForSEO Labs data is a weekly snapshot, not live rank tracking.</div><div id="ranking-inline-status">' + toolFeedbackHtml(state.toolFeedback?.ranking) + '</div></div></section>';
       const form = '<section><div class="head"><h3>Compare Snapshots</h3><span class="muted">Compare weekly DataForSEO Labs snapshots from the same client.</span></div>' + filters + '<div class="field-row" style="padding:12px;"><select id="ranking-compare-base"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><select id="ranking-compare-to"' + (snapshots.length >= 2 ? "" : " disabled") + '>' + options + '</select><button id="ranking-compare-run"' + (snapshots.length >= 2 ? "" : " disabled") + '>Compare</button></div>' + (snapshots.length < 2 ? '<div class="empty">Run or sync at least two snapshots for this client to compare movement.</div>' : '') + '</section>';
       setTimeout(() => {
         const base = document.getElementById("ranking-compare-base");
@@ -2736,7 +2755,7 @@ function cloudMirrorHtml() {
       const batchRows = batches.map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong><br><span class="muted">' + esc(fmtDate(b.created_at)) + '</span></td><td>' + esc(b.project_name || "") + '</td><td>' + esc(b.depth || "") + '</td><td>' + entityBatchProgress(b) + '</td><td><span class="pill ' + entityBatchStatusClass(b.status) + '">' + esc(b.status || "") + '</span></td><td><button class="entity-batch-select detail-btn" data-batch-id="' + esc(b.id) + '">Open Crossover</button><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(b.id) + '">Detail</button></td></tr>');
       const runRows = runs.slice(0, 60).map((r) => '<tr><td>' + esc(r.seed_keyword || "") + '<br><span class="muted">' + esc(r.project_name || "") + '</span></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill ' + (r.status === "complete" ? "ok" : r.status === "failed" ? "warn" : "") + '">' + esc(r.status || "") + '</span><br><span class="muted">' + esc(r.error || r.summary || "") + '</span></td><td>' + esc(fmtDate(r.completed_at || r.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const actions = '<div class="filters"><select id="entity-client-filter">' + clientOptions + '</select><span class="muted">' + esc(batches.length) + ' of ' + esc(allBatches.length) + ' batches</span></div><div class="toolbar"><button class="entity-page-link" data-entity-page="entity-crossover">Entity Crossover</button><button class="entity-page-link secondary" data-entity-page="entity-sets">Entity Sets</button></div>';
-      const runPanel = '<section><div class="head"><h3>Run Entity Explorer</h3><span class="pill ok">Cloud LLM APIs</span></div><div class="status-list"><div class="field-row"><select id="entity-run-client">' + runClientOptions + '</select><input id="entity-run-seed" list="entity-keyword-list" placeholder="Seed keyword" value="' + esc(defaultSeed) + '"><datalist id="entity-keyword-list">' + keywordOptions + '</datalist><select id="entity-run-depth"><option value="1">1 - Light</option><option value="2">2 - Focused</option><option value="3" selected>3 - Standard</option><option value="4">4 - Deep</option><option value="5">5 - Comprehensive</option></select></div><textarea id="entity-run-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8&#10;google:gemini-3.1-pro-preview&#10;perplexity:perplexity/sonar"></textarea><div class="toolbar"><label class="muted"><input id="entity-run-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="entity-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="entity-run-start">Run Entity Explorer</button></div></section>';
+      const runPanel = '<section><div class="head"><h3>Run Entity Explorer</h3><span class="pill ok">Cloud LLM APIs</span></div><div class="status-list"><div class="field-row"><select id="entity-run-client">' + runClientOptions + '</select><input id="entity-run-seed" list="entity-keyword-list" placeholder="Seed keyword" value="' + esc(defaultSeed) + '"><datalist id="entity-keyword-list">' + keywordOptions + '</datalist><select id="entity-run-depth"><option value="1">1 - Light</option><option value="2">2 - Focused</option><option value="3" selected>3 - Standard</option><option value="4">4 - Deep</option><option value="5">5 - Comprehensive</option></select></div><textarea id="entity-run-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8&#10;google:gemini-3.1-pro-preview&#10;perplexity:perplexity/sonar"></textarea><div class="toolbar"><label class="muted"><input id="entity-run-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="entity-run-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="entity-run-start">Run Entity Explorer</button><div id="entity-inline-status">' + toolFeedbackHtml(state.toolFeedback?.entity) + '</div></div></section>';
       setTimeout(bindEntityPageControls, 0);
       return cards([["Entity Batches", allBatches.length],["Visible Batches", batches.length],["Visible Model Runs", runs.length],["Visible Entity Sets", sets.length],["Latest Batch", latest ? latest.seed_keyword : "None"]])
         + runPanel
@@ -2921,28 +2940,36 @@ function cloudMirrorHtml() {
         (async () => {
           if (runButton.disabled) return;
           const originalLabel = runButton.textContent;
+          const payload = {
+            execution_mode: "cloud",
+            project_id: Number(document.getElementById("ranking-run-client")?.value || 0),
+            target: document.getElementById("ranking-run-target")?.value || "",
+            location_code: Number(document.getElementById("ranking-run-location")?.value || 2840),
+            language_code: document.getElementById("ranking-run-language")?.value || "en",
+            limit: Number(document.getElementById("ranking-run-limit")?.value || 1000),
+            include_subdomains: Boolean(document.getElementById("ranking-run-subdomains")?.checked),
+            force_refresh: Boolean(document.getElementById("ranking-run-force")?.checked),
+            dry_run: Boolean(document.getElementById("ranking-run-dry")?.checked)
+          };
           runButton.disabled = true;
           runButton.textContent = "Running...";
+          setToolFeedback("ranking", { status: "running", title: "Ranking Snapshot", message: "Starting DataForSEO Labs snapshot for " + payload.target + "." });
           try {
-            const result = await postCommand("create_ranking_snapshot", {
-              execution_mode: "cloud",
-              project_id: Number(document.getElementById("ranking-run-client")?.value || 0),
-              target: document.getElementById("ranking-run-target")?.value || "",
-              location_code: Number(document.getElementById("ranking-run-location")?.value || 2840),
-              language_code: document.getElementById("ranking-run-language")?.value || "en",
-              limit: Number(document.getElementById("ranking-run-limit")?.value || 1000),
-              include_subdomains: Boolean(document.getElementById("ranking-run-subdomains")?.checked),
-              force_refresh: Boolean(document.getElementById("ranking-run-force")?.checked),
-              dry_run: Boolean(document.getElementById("ranking-run-dry")?.checked)
-            });
+            const result = await postCommand("create_ranking_snapshot", payload);
+            const command = result.command || {};
             await load();
-            alert(result.duplicate ? "Matching ranking snapshot command already exists." : "Ranking snapshot started.");
+            setToolFeedback("ranking", {
+              status: command.status || (result.duplicate ? "duplicate" : "queued"),
+              title: result.duplicate ? "Ranking Snapshot Already Queued" : "Ranking Snapshot Started",
+              message: commandResultSummary(command) || (payload.dry_run ? "Dry run completed." : "Snapshot command is active."),
+              rows: [{ label: payload.target, status: commandStatusLabel(command.status || (result.duplicate ? "duplicate" : "queued")) }]
+            }, true);
           } catch (error) {
             runButton.disabled = false;
             runButton.textContent = originalLabel;
-            throw error;
+            setToolFeedback("ranking", { status: "failed", title: "Ranking Snapshot Failed", message: error.message || String(error) });
           }
-        })().catch((error) => alert(error.message || error));
+        })();
       };
       const button = document.getElementById("ranking-compare-run");
       if (!button) return;
@@ -3093,27 +3120,47 @@ function cloudMirrorHtml() {
           const button = event.currentTarget;
           if (button.disabled) return;
           const originalLabel = button.textContent;
+          const payload = {
+            execution_mode: "cloud",
+            project_id: Number(document.getElementById("entity-run-client")?.value || 0),
+            seed_keyword: document.getElementById("entity-run-seed")?.value || "",
+            depth: Number(document.getElementById("entity-run-depth")?.value || 3),
+            targets: parseEntityTargets(document.getElementById("entity-run-targets")?.value || ""),
+            run_async: Boolean(document.getElementById("entity-run-async")?.checked),
+            dry_run: Boolean(document.getElementById("entity-run-dry")?.checked)
+          };
           button.disabled = true;
           button.textContent = "Starting...";
+          setToolFeedback("entity", {
+            status: "running",
+            title: "Entity Explorer",
+            message: "Starting " + payload.targets.length + " model run(s) for " + payload.seed_keyword + ".",
+            done: 0,
+            total: payload.targets.length,
+            rows: payload.targets.map((target) => ({ label: (target.provider || target.api_key_id || "model") + " / " + target.model, status: "queued" }))
+          });
           try {
-            const result = await postCommand("run_entity_lsi", {
-              execution_mode: "cloud",
-              project_id: Number(document.getElementById("entity-run-client")?.value || 0),
-              seed_keyword: document.getElementById("entity-run-seed")?.value || "",
-              depth: Number(document.getElementById("entity-run-depth")?.value || 3),
-              targets: parseEntityTargets(document.getElementById("entity-run-targets")?.value || ""),
-              run_async: Boolean(document.getElementById("entity-run-async")?.checked),
-              dry_run: Boolean(document.getElementById("entity-run-dry")?.checked)
-            });
+            const result = await postCommand("run_entity_lsi", payload);
+            const command = result.command || {};
+            const runs = command.result?.runs || [];
+            const completeCount = runs.filter((run) => run.status === "complete").length;
+            const failedCount = runs.filter((run) => run.status === "failed").length;
             state.commandPrefill = null;
             await load();
-            alert(result.duplicate ? "Matching Entity Explorer command already exists." : "Entity Explorer started.");
+            setToolFeedback("entity", {
+              status: failedCount ? "failed" : command.status || (result.duplicate ? "duplicate" : "queued"),
+              title: result.duplicate ? "Entity Explorer Already Queued" : "Entity Explorer Started",
+              message: commandResultSummary(command) || "Entity Explorer command is active.",
+              done: runs.length ? completeCount + failedCount : 0,
+              total: payload.targets.length,
+              rows: runs.length ? runs.map((run) => ({ label: (run.provider || "") + " / " + (run.model || ""), status: run.status || "" })) : payload.targets.map((target) => ({ label: (target.provider || target.api_key_id || "model") + " / " + target.model, status: "queued" }))
+            }, true);
           } catch (error) {
             button.disabled = false;
             button.textContent = originalLabel;
-            throw error;
+            setToolFeedback("entity", { status: "failed", title: "Entity Explorer Failed", message: error.message || String(error) });
           }
-        })().catch((error) => alert(error.message || error));
+        })();
       });
       const setClient = document.getElementById("entity-set-client-filter");
       if (setClient) setClient.onchange = (event) => { state.entitySetClient = event.target.value || "all"; render(); };
@@ -3642,9 +3689,27 @@ function cloudMirrorHtml() {
           button.disabled = true;
           let queued = 0;
           let duplicates = 0;
+          const rows = keywords.map((keyword) => ({ label: keyword, status: "waiting" }));
+          setToolFeedback("cora", {
+            status: "running",
+            title: "Queueing Cora Runs",
+            message: "Preparing " + keywords.length + " keyword(s) for the remote Cora bridge.",
+            done: 0,
+            total: keywords.length,
+            rows
+          });
           try {
             for (let index = 0; index < keywords.length; index += 1) {
               button.textContent = "Queueing " + (index + 1) + " of " + keywords.length + "...";
+              rows[index].status = "queueing";
+              setToolFeedback("cora", {
+                status: "running",
+                title: "Queueing Cora Runs",
+                message: "Queueing " + (index + 1) + " of " + keywords.length + ": " + keywords[index],
+                done: index,
+                total: keywords.length,
+                rows
+              });
               const result = await postCommand("run_cora", {
                 project_id: projectId,
                 keyword: keywords[index],
@@ -3652,18 +3717,45 @@ function cloudMirrorHtml() {
                 cora_profile: profile,
                 execution_mode: "local"
               });
-              if (result.duplicate) duplicates += 1;
-              else queued += 1;
+              if (result.duplicate) {
+                duplicates += 1;
+                rows[index].status = "duplicate";
+              } else {
+                queued += 1;
+                rows[index].status = "queued";
+              }
+              setToolFeedback("cora", {
+                status: "running",
+                title: "Queueing Cora Runs",
+                message: "Queued " + (index + 1) + " of " + keywords.length + " keyword(s).",
+                done: index + 1,
+                total: keywords.length,
+                rows
+              });
             }
             state.commandPrefill = null;
             await load();
-            alert((queued ? queued + " Cora run(s) queued." : "No new Cora runs queued.") + (duplicates ? " " + duplicates + " matching run(s) already existed." : ""));
+            setToolFeedback("cora", {
+              status: "complete",
+              title: "Cora Queue Updated",
+              message: (queued ? queued + " Cora run(s) queued." : "No new Cora runs queued.") + (duplicates ? " " + duplicates + " matching run(s) already existed." : "") + " The remote bridge will claim queued work.",
+              done: keywords.length,
+              total: keywords.length,
+              rows
+            }, true);
           } catch (error) {
             button.disabled = false;
             button.textContent = originalLabel;
-            throw error;
+            setToolFeedback("cora", {
+              status: "failed",
+              title: "Cora Queue Failed",
+              message: error.message || String(error),
+              done: queued + duplicates,
+              total: keywords.length,
+              rows
+            });
           }
-        })().catch((error) => alert(error.message || error));
+        })();
       });
     }
     function bindNewClientControls() {
