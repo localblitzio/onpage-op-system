@@ -2795,7 +2795,8 @@ function cloudMirrorHtml() {
       return (items || []).filter((item) => !q || JSON.stringify(item).toLowerCase().includes(q)).filter(predicate || (() => true));
     }
     function table(headers, body, empty) {
-      return body.length ? '<table><thead><tr>' + headers.map((h) => '<th>' + esc(h) + '</th>').join("") + '</tr></thead><tbody>' + body.join("") + '</tbody></table>' : '<div class="empty">' + esc(empty || "No synced data found.") + '</div>';
+      const rowHtml = Array.isArray(body) ? body : (body ? [String(body)] : []);
+      return rowHtml.length ? '<table><thead><tr>' + headers.map((h) => '<th>' + esc(h) + '</th>').join("") + '</tr></thead><tbody>' + rowHtml.join("") + '</tbody></table>' : '<div class="empty">' + esc(empty || "No synced data found.") + '</div>';
     }
     function setPage(page) {
       state.page = page;
