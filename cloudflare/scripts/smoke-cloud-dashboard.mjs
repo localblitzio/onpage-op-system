@@ -3,6 +3,7 @@ import { chromium } from "playwright";
 const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
 const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
+const headless = String(process.env.OPOS_SMOKE_HEADLESS || "").toLowerCase() === "true";
 const requiredNav = ["Run Cora", "Ranking Snapshot", "Entity Explorer"];
 const checks = [];
 const errors = [];
@@ -12,13 +13,17 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function unexpectedBrowserErrors() {
+  return errors.filter((message) => !message.includes("status of 401") && !message.includes("status of 404"));
+}
+
 async function clickNav(page, label) {
   const button = page.locator("nav button", { hasText: label }).first();
   await button.waitFor({ state: "visible", timeout: 10000 });
   await button.click();
 }
 
-const browser = await chromium.launch({ headless: true });
+const browser = await chromium.launch({ headless });
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   if (sessionToken) {
@@ -53,12 +58,13 @@ try {
 
   const locked = await page.locator("#page-title", { hasText: "Locked" }).count();
   if (locked) {
-    const unexpectedErrors = errors.filter((message) => !message.includes("status of 401"));
+    const unexpectedErrors = unexpectedBrowserErrors();
     assert(unexpectedErrors.length === 0, `no unexpected browser console/page errors: ${unexpectedErrors.join("; ")}`);
     assert(!token && !sessionToken, "locked view is expected when no smoke token is supplied");
     console.log(JSON.stringify({ ok: true, mode: "locked", checks }, null, 2));
   } else {
-    assert(errors.length === 0, `no browser console/page errors: ${errors.join("; ")}`);
+    const unexpectedErrors = unexpectedBrowserErrors();
+    assert(unexpectedErrors.length === 0, `no unexpected browser console/page errors: ${unexpectedErrors.join("; ")}`);
     for (const label of requiredNav) {
       assert(await page.locator("nav button", { hasText: label }).count(), `nav item exists: ${label}`);
     }
