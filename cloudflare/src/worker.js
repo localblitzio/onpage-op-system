@@ -2708,6 +2708,16 @@ function cloudMirrorHtml() {
     .tool-card { border:1px solid var(--line); border-radius:8px; padding:11px; background:rgba(29,38,48,.45); display:grid; gap:8px; align-content:start; min-height:116px; }
     .tool-card strong { font-size:14px; }
     .tool-card button { justify-self:start; background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; font-size:12px; }
+    .editable-list-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:12px; }
+    .editable-list-panel { border:1px solid var(--line); border-radius:8px; background:var(--panel-soft); padding:12px; display:grid; gap:10px; }
+    .editable-list-panel h4 { margin:0; font-size:14px; }
+    .inline-add { display:flex; gap:8px; align-items:center; }
+    .inline-add input { min-width:0; flex:1; }
+    .editable-list { display:grid; gap:7px; }
+    .editable-list-row { display:flex; justify-content:space-between; gap:10px; align-items:center; border:1px solid var(--line); border-radius:7px; background:var(--panel); padding:7px 9px; }
+    .editable-list-row span { overflow-wrap:anywhere; }
+    .domain-textareas { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; padding:0 12px 12px; }
+    .domain-textareas label { display:grid; gap:6px; color:var(--muted); font-weight:700; font-size:12px; text-transform:uppercase; }
     .provider-grid { display:grid; grid-template-columns:repeat(5,minmax(150px,1fr)); gap:10px; }
     .provider-card { border:1px solid var(--line); border-radius:8px; padding:10px; background:rgba(29,38,48,.45); display:grid; gap:7px; align-content:start; }
     .provider-card h4 { margin:0; font-size:13px; }
@@ -2729,7 +2739,7 @@ function cloudMirrorHtml() {
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
     @media (max-width: 1200px) { .provider-grid { grid-template-columns:repeat(3,minmax(150px,1fr)); } }
     #app { padding:0 20px; }
-    @media (max-width: 920px) { .app-shell { grid-template-columns:1fr; } .app-sidebar { position:static; } .topbar { align-items:flex-start; flex-direction:column; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid,.ranking-overview-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } #app { padding:0 12px; } }
+    @media (max-width: 920px) { .app-shell { grid-template-columns:1fr; } .app-sidebar { position:static; } .topbar { align-items:flex-start; flex-direction:column; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid,.ranking-overview-grid,.editable-list-grid,.domain-textareas { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } #app { padding:0 12px; } }
   </style>
 </head>
 <body>
@@ -3137,16 +3147,20 @@ function cloudMirrorHtml() {
     function coraProfilesView(data) {
       const profiles = data.profiles || [];
       const clients = data.clients || [];
+      const selectedClient = clients.find((client) => String(client.id || "") === String(state.activeClient)) || clients[0] || {};
+      const selectedClientId = String(selectedClient.id || "");
       const attached = profiles.reduce((sum, profile) => sum + Number(profile.client_count || 0), 0);
-      const clientOptions = clients.map((client) => '<option value="' + esc(client.id) + '">' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
+      const clientOptions = clients.map((client) => '<option value="' + esc(client.id) + '"' + (String(client.id || "") === selectedClientId ? ' selected' : '') + '>' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
       const profileOptions = '<option value="">Select existing Cora profile</option>' + profiles.map((profile) => '<option value="' + esc(profile.id) + '">' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
       const selectedProfile = profiles.find((profile) => String(profile.id) === String(state.profileEditId)) || profiles[0] || {};
       const selectedProfileId = String(selectedProfile.id || "");
       const editProfileOptions = profiles.map((profile) => '<option value="' + esc(profile.id) + '"' + (String(profile.id) === selectedProfileId ? ' selected' : '') + '>' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
       const attachedClientOptions = clients.filter((client) => String(client.profile_id || "") === selectedProfileId).map((client) => '<option value="' + esc(client.id) + '">' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
-      const setupPanel = '<section><div class="head"><h3>Profile Setup</h3><span class="muted">Cloud profile metadata syncs back to the local dashboard. Native Cora settings are still applied from local Cora.</span></div><div class="command-grid"><div class="command-card"><h4>Create Profile</h4><input id="profile-create-name" placeholder="Profile name"><input id="profile-create-client" placeholder="Optional client label"><input id="profile-create-notes" placeholder="Notes"><button id="profile-create-submit">Create Profile</button></div><div class="command-card"><h4>Attach to Client</h4><select id="profile-attach-client">' + (clientOptions || '<option value="">No clients synced</option>') + '</select><select id="profile-attach-existing">' + profileOptions + '</select><input id="profile-attach-new" placeholder="Or create profile name"><button id="profile-attach-submit"' + (clients.length ? "" : " disabled") + '>Attach Profile</button></div></div><div id="profiles-inline-status">' + toolFeedbackHtml(state.toolFeedback?.profiles) + '</div></section>';
+      const statusStrip = '<section class="profile-status-strip"><div class="status-list"><div class="status-row"><span>Client</span><strong>' + esc(selectedClient.name || "No client selected") + '</strong></div><div class="status-row"><span>Attached Cora Profile</span><strong>' + esc(selectedClient.profile_name || "No profile attached") + '</strong></div><div class="status-row"><span>Main URL</span><strong>' + esc(selectedClient.site_domain || "No URL synced") + '</strong></div></div></section>';
+      const setupPanel = '<section><div class="head"><h3>Profile Setup</h3><span class="muted">Attach Cora profiles to clients and manage shared Cora setup lists.</span></div><div class="command-grid"><div class="command-card"><h4>Create Profile</h4><input id="profile-create-name" placeholder="' + esc((selectedClient.name || "Client") + " Cora Profile") + '"><input id="profile-create-client" placeholder="Optional client label" value="' + esc(selectedClient.name || "") + '"><input id="profile-create-notes" placeholder="Notes"><button id="profile-create-submit">Create Profile</button></div><div class="command-card"><h4>Attach Profile</h4><select id="profile-attach-client">' + (clientOptions || '<option value="">No clients synced</option>') + '</select><select id="profile-attach-existing">' + profileOptions + '</select><input id="profile-attach-new" placeholder="' + esc((selectedClient.name || "Client") + " Cora Profile") + '"><button id="profile-attach-submit"' + (clients.length ? "" : " disabled") + '>Attach Profile</button><div class="muted">' + esc(selectedClient.profile_name ? "The attached profile is used by Cora runs for this client unless a run override is selected." : "Choose an existing profile or create a new one for this client.") + '</div></div></div><div id="profiles-inline-status">' + toolFeedbackHtml(state.toolFeedback?.profiles) + '</div></section>';
       const managePanel = '<section><div class="head"><h3>Manage Profile</h3><span class="muted">Edit metadata, detach clients, or queue native Cora actions for the local bridge.</span></div><div class="command-grid"><div class="command-card"><h4>Edit Metadata</h4><select id="profile-edit-select">' + (editProfileOptions || '<option value="">No profiles</option>') + '</select><input id="profile-edit-name" placeholder="Profile name" value="' + esc(selectedProfile.name || "") + '"><input id="profile-edit-client" placeholder="Optional client label" value="' + esc(selectedProfile.client || "") + '"><input id="profile-edit-notes" placeholder="Notes" value="' + esc(selectedProfile.notes || "") + '"><button id="profile-update-submit"' + (selectedProfileId ? "" : " disabled") + '>Save Profile</button></div><div class="command-card"><h4>Client Attachment</h4><select id="profile-detach-client">' + (attachedClientOptions || '<option value="">No clients attached to this profile</option>') + '</select><button id="profile-detach-submit"' + (attachedClientOptions ? "" : " disabled") + '>Detach Client</button><button id="profile-archive-submit" class="danger"' + (selectedProfileId ? "" : " disabled") + '>Archive Profile</button></div><div class="command-card"><h4>Native Cora Bridge</h4><div class="muted">These queue local bridge commands because Cloudflare cannot control the Windows Cora process directly.</div><button id="profile-apply-cora"' + (selectedProfileId ? "" : " disabled") + '>Apply in Cora</button><button id="profile-push-cora" class="secondary"' + (selectedProfileId ? "" : " disabled") + '>Push Current Cora Settings</button></div></div></section>';
       return cards([["Profiles", profiles.length],["Attached Clients", attached],["Unattached", profiles.filter((profile) => !Number(profile.client_count || 0)).length]])
+        + statusStrip
         + setupPanel
         + managePanel
         + coraDomainListsPanel(data)
@@ -3165,12 +3179,38 @@ function cloudMirrorHtml() {
       const profileOptions = '<option value="">No profile scope</option>' + profiles.map((profile) => '<option value="' + esc(profile.id) + '"' + (String(selectedEntry.profile_id || "") === String(profile.id || "") ? ' selected' : '') + '>' + esc(profile.name || ("Profile " + profile.id)) + '</option>').join("");
       const rowsHtml = entries.map((entry) => '<tr><td><span class="pill">' + esc(entry.list_type || "") + '</span></td><td><strong>' + esc(entry.value || "") + '</strong><br><span class="muted">' + esc(entry.notes || "") + '</span></td><td>' + esc(entry.scope || "global") + '<br><span class="muted">' + esc(entry.project_name || entry.profile_name || "Global") + '</span></td><td>' + esc(fmtDate(entry.updated_at || entry.created_at)) + '</td><td><button class="domain-edit-row mini-btn" data-entry-id="' + esc(entry.id || "") + '">Edit</button><button class="domain-archive-row mini-btn secondary" data-entry-id="' + esc(entry.id || "") + '">Archive</button></td></tr>').join("");
       const editTitle = selectedEntry.id ? "Edit Domain Entry" : "Add Domain Entry";
-      const form = '<section><div class="head"><h3>' + esc(editTitle) + '</h3><span class="muted">Synced dashboard list. Apply to native Cora through the local bridge.</span></div><div class="status-list"><div class="field-row"><select id="domain-list-type">' + typeOptions + '</select><input id="domain-list-value" placeholder="domain.com" value="' + esc(selectedEntry.value || "") + '"><input id="domain-list-notes" placeholder="Notes" value="' + esc(selectedEntry.notes || "") + '"></div><div class="field-row"><select id="domain-list-client">' + clientOptions + '</select><select id="domain-list-profile">' + profileOptions + '</select><button id="domain-list-save">' + esc(selectedEntry.id ? "Save Entry" : "Add Entry") + '</button><button id="domain-list-clear" class="secondary">Clear</button></div><div id="domains-inline-status">' + toolFeedbackHtml(state.toolFeedback?.domains) + '</div></div></section>';
+      const form = '<section><div class="head"><h3>' + esc(editTitle) + '</h3><span class="muted">Synced dashboard list. Apply to native Cora through the local bridge.</span></div><div class="status-list"><div class="field-row"><select id="domain-list-type">' + typeOptions + '</select><input id="domain-list-value" placeholder="domain.com" value="' + esc(selectedEntry.value || "") + '"><input id="domain-list-notes" placeholder="Notes" value="' + esc(selectedEntry.notes || "") + '"></div><div class="field-row"><select id="domain-list-client">' + clientOptions + '</select><select id="domain-list-profile">' + profileOptions + '</select><button id="domain-list-save">' + esc(selectedEntry.id ? "Save Entry" : "Add Entry") + '</button><button id="domain-list-clear" class="secondary">Clear</button></div></div></section>';
       const bridge = '<section><div class="head"><h3>Native Cora Bridge</h3><span class="muted">Windows Cora stores these lists globally.</span></div><div class="status-list"><div class="muted">Apply pushes active cloud Domain Lists into the running Cora app. Pull reads current native Cora lists into this synced table.</div><div class="toolbar"><button id="domain-apply-cora">Apply Lists in Cora</button><button id="domain-pull-cora" class="secondary">Pull Lists from Cora</button><button class="client-open-page secondary" data-page-target="cora-profiles" data-project-id="all">Cora Profiles</button></div></div></section>';
       const filters = '<div class="filters"><select id="domain-type-filter">' + filterOptions + '</select><span class="muted">' + esc(entries.length) + ' of ' + esc(allEntries.length) + ' active entries</span></div>';
-      return form
+      const localPanel = renderCloudDomainListEditor(allEntries);
+      return localPanel
+        + form
         + bridge
-        + '<section><div class="head"><h3>Cora Domain Lists</h3><span class="muted">Tracked domains, competitors, and supporting crawl lists.</span></div>' + filters + detailTable(["Type","Value","Scope","Updated","Actions"], rowsHtml, "No active Cora domain list entries yet.") + '</section>';
+        + '<section><div class="head"><h3>Advanced Domain Entry Management</h3><span class="muted">Use this table for scoped client/profile entries, notes, and archive actions.</span></div>' + filters + detailTable(["Type","Value","Scope","Updated","Actions"], rowsHtml, "No active Cora domain list entries yet.") + '</section>';
+    }
+    function activeDomainEntries(entries, type) {
+      return (entries || []).filter((entry) => !entry.archived_at && entry.list_type === type && (!entry.project_id && !entry.profile_id));
+    }
+    function renderEditableDomainRows(entries, type) {
+      return activeDomainEntries(entries, type).map((entry) => '<div class="editable-list-row"><span>' + esc(entry.value || "") + '</span><button type="button" class="secondary domain-archive-row" data-entry-id="' + esc(entry.id || "") + '">Delete</button></div>').join("") || '<div class="note-box">No entries.</div>';
+    }
+    function domainTextValue(entries, type) {
+      return activeDomainEntries(entries, type).map((entry) => entry.value || "").filter(Boolean).join("\\n");
+    }
+    function renderCloudDomainListEditor(entries) {
+      return '<section><div class="head"><h3>Cora Domain Lists</h3><span class="muted">Matches local Cora Settings: tracked domains, competitors, banned domains, slow render domains, and stop words.</span></div>'
+        + '<div class="editable-list-grid">'
+        + '<div class="editable-list-panel"><h4>Tracked Domains</h4><div class="inline-add"><input id="domain-quick-tracked" placeholder="domain.com"><button id="domain-add-tracked" type="button">Add</button></div><div class="editable-list">' + renderEditableDomainRows(entries, "tracked") + '</div></div>'
+        + '<div class="editable-list-panel"><h4>Competitors</h4><div class="inline-add"><input id="domain-quick-competitors" placeholder="competitor.com"><button id="domain-add-competitors" type="button">Add</button></div><div class="editable-list">' + renderEditableDomainRows(entries, "competitors") + '</div></div>'
+        + '</div>'
+        + '<div class="domain-textareas">'
+        + '<label>Banned Domains<textarea id="domain-banned-list" spellcheck="false">' + esc(domainTextValue(entries, "banned")) + '</textarea></label>'
+        + '<label>Slow Render Domains<textarea id="domain-slow-render-list" spellcheck="false">' + esc(domainTextValue(entries, "slowRender")) + '</textarea></label>'
+        + '<label>Stop Words<textarea id="domain-stop-words-list" spellcheck="false">' + esc(domainTextValue(entries, "stopWords")) + '</textarea></label>'
+        + '</div>'
+        + '<div class="toolbar" style="padding:0 12px 12px;"><button id="domain-save-lists" type="button">Save Cora Settings</button><button id="domain-apply-cora-inline" type="button" class="secondary">Apply Lists in Cora</button><button id="domain-pull-cora-inline" type="button" class="secondary">Pull Lists from Cora</button></div>'
+        + '<div id="domains-inline-status">' + toolFeedbackHtml(state.toolFeedback?.domains) + '</div>'
+        + '</section>';
     }
     function runsTable(items) {
       return table(["Keyword", "Client", "Target", "Imported", "Data", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open Run</button><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(r.project_id || "") + '">Open Client</button></td></tr>'));
@@ -4592,6 +4632,7 @@ function cloudMirrorHtml() {
           setTimeout(() => document.getElementById("profile-edit-name")?.focus(), 0);
         });
       });
+      document.getElementById("profile-attach-client")?.addEventListener("change", (event) => applyActiveClient(event.target.value || "all"));
       document.getElementById("profile-create-submit")?.addEventListener("click", (event) => createCloudProfile(event.currentTarget).catch((error) => {
         setToolFeedback("profiles", { status: "failed", title: "Profile Creation Failed", message: error.message || String(error) });
       }));
@@ -4828,10 +4869,35 @@ function cloudMirrorHtml() {
       document.getElementById("domain-list-save")?.addEventListener("click", (event) => saveCloudDomainEntry(event.currentTarget).catch((error) => {
         setToolFeedback("domains", { status: "failed", title: "Domain List Save Failed", message: error.message || String(error) });
       }));
+      document.getElementById("domain-add-tracked")?.addEventListener("click", (event) => saveQuickDomainEntry("tracked", "domain-quick-tracked", event.currentTarget).catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Tracked Domain Save Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("domain-add-competitors")?.addEventListener("click", (event) => saveQuickDomainEntry("competitors", "domain-quick-competitors", event.currentTarget).catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Competitor Save Failed", message: error.message || String(error) });
+      }));
+      ["domain-quick-tracked", "domain-quick-competitors"].forEach((id) => {
+        document.getElementById(id)?.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter") return;
+          event.preventDefault();
+          const type = id === "domain-quick-tracked" ? "tracked" : "competitors";
+          saveQuickDomainEntry(type, id, document.getElementById(type === "tracked" ? "domain-add-tracked" : "domain-add-competitors")).catch((error) => {
+            setToolFeedback("domains", { status: "failed", title: "Domain List Save Failed", message: error.message || String(error) });
+          });
+        });
+      });
+      document.getElementById("domain-save-lists")?.addEventListener("click", (event) => saveCloudDomainLists(event.currentTarget).catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Domain Lists Save Failed", message: error.message || String(error) });
+      }));
       document.getElementById("domain-apply-cora")?.addEventListener("click", (event) => queueCoraDomainBridgeAction(event.currentTarget, "apply_cora_domain_lists").catch((error) => {
         setToolFeedback("domains", { status: "failed", title: "Apply Lists Failed", message: error.message || String(error) });
       }));
       document.getElementById("domain-pull-cora")?.addEventListener("click", (event) => queueCoraDomainBridgeAction(event.currentTarget, "pull_cora_domain_lists").catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Pull Lists Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("domain-apply-cora-inline")?.addEventListener("click", (event) => queueCoraDomainBridgeAction(event.currentTarget, "apply_cora_domain_lists").catch((error) => {
+        setToolFeedback("domains", { status: "failed", title: "Apply Lists Failed", message: error.message || String(error) });
+      }));
+      document.getElementById("domain-pull-cora-inline")?.addEventListener("click", (event) => queueCoraDomainBridgeAction(event.currentTarget, "pull_cora_domain_lists").catch((error) => {
         setToolFeedback("domains", { status: "failed", title: "Pull Lists Failed", message: error.message || String(error) });
       }));
     }
@@ -4869,6 +4935,80 @@ function cloudMirrorHtml() {
           title: "Domain List Entry Saved",
           message: (entry.value || payload.value) + " saved. Use Apply Lists in Cora when ready to push native Cora settings."
         }, true);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function saveQuickDomainEntry(listType, inputId, button) {
+      const input = document.getElementById(inputId);
+      const value = input?.value || "";
+      if (!value.trim()) throw new Error("Enter a domain or list value.");
+      const originalLabel = button?.textContent || "Add";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Adding...";
+      }
+      setToolFeedback("domains", { status: "running", title: "Saving Domain List Entry", message: "Adding " + value + " to " + listType + "." });
+      try {
+        await postCommand("create_cora_domain_entry", { execution_mode: "cloud", list_type: listType, value, notes: "", scope: "global", project_id: null, profile_id: null });
+        if (input) input.value = "";
+        await load({ preserveScroll: true });
+        setToolFeedback("domains", { status: "complete", title: "Domain List Entry Saved", message: value + " saved. Use Apply Lists in Cora to push native Cora settings." }, true);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
+    }
+    async function saveCloudDomainLists(button) {
+      const originalLabel = button?.textContent || "Save Cora Settings";
+      const existing = state.data?.domain_lists || [];
+      const textEntries = [
+        ["tracked", activeDomainEntries(existing, "tracked").map((entry) => entry.value || "").filter(Boolean).join("\\n")],
+        ["competitors", activeDomainEntries(existing, "competitors").map((entry) => entry.value || "").filter(Boolean).join("\\n")],
+        ["banned", document.getElementById("domain-banned-list")?.value || ""],
+        ["slowRender", document.getElementById("domain-slow-render-list")?.value || ""],
+        ["stopWords", document.getElementById("domain-stop-words-list")?.value || ""]
+      ];
+      const existingGlobalRowsByType = (type) => existing.filter((entry) => !entry.archived_at && !entry.project_id && !entry.profile_id && entry.list_type === type);
+      const creates = [];
+      const archives = [];
+      textEntries.forEach(([type, value]) => {
+        const currentRows = existingGlobalRowsByType(type);
+        const currentByKey = new Map(currentRows.map((entry) => [String(entry.value || "").trim().toLowerCase(), entry]).filter(([key]) => key));
+        const desired = new Map();
+        String(value || "").split(/\\r?\\n|,/).map((item) => item.trim()).filter(Boolean).forEach((item) => {
+          const key = item.toLowerCase();
+          if (!desired.has(key)) desired.set(key, item);
+        });
+        for (const [key, item] of desired.entries()) {
+          if (!currentByKey.has(key)) creates.push({ type, value: item });
+        }
+        for (const [key, row] of currentByKey.entries()) {
+          if (!desired.has(key) && row.id) archives.push(row.id);
+        }
+      });
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Saving...";
+      }
+      const totalChanges = creates.length + archives.length;
+      setToolFeedback("domains", { status: "running", title: "Saving Cora Settings", message: totalChanges ? "Saving " + totalChanges + " list change" + (totalChanges === 1 ? "." : "s.") : "No multiline list changes to save." });
+      try {
+        for (const entry of creates) {
+          await postCommand("create_cora_domain_entry", { execution_mode: "cloud", list_type: entry.type, value: entry.value, notes: "", scope: "global", project_id: null, profile_id: null });
+        }
+        for (const entryId of archives) {
+          await postCommand("archive_cora_domain_entry", { execution_mode: "cloud", entry_id: entryId });
+        }
+        await load({ preserveScroll: true });
+        setToolFeedback("domains", { status: "complete", title: "Cora Settings Saved", message: totalChanges ? "Saved " + totalChanges + " list change" + (totalChanges === 1 ? "" : "s") + ". Apply Lists in Cora when ready." : "No changes were needed." }, true);
       } catch (error) {
         if (button) {
           button.disabled = false;
