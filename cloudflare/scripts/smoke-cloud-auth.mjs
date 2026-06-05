@@ -18,16 +18,25 @@ function sqlString(value) {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    const output = [];
     const child = spawn(command, args, {
       cwd: rootDir,
       env: { ...process.env, ...(options.env || {}) },
       shell: false,
       stdio: options.stdio || "inherit"
     });
+    if (options.stdio === "pipe") {
+      child.stdout?.on("data", (chunk) => output.push(String(chunk)));
+      child.stderr?.on("data", (chunk) => output.push(String(chunk)));
+    }
     child.on("error", reject);
     child.on("exit", (code) => {
       if (code === 0) resolve();
-      else reject(new Error(`${command} ${args.join(" ")} failed with exit code ${code}`));
+      else {
+        const visibleArgs = args.map((arg) => String(arg).replaceAll(sessionToken, "[session-token]"));
+        const details = output.join("").replaceAll(sessionToken, "[session-token]");
+        reject(new Error(`${command} ${visibleArgs.join(" ")} failed with exit code ${code}${details ? `\n${details}` : ""}`));
+      }
     });
   });
 }

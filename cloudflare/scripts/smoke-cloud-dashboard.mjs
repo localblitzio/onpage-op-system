@@ -4,7 +4,7 @@ const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
 const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
 const headless = String(process.env.OPOS_SMOKE_HEADLESS || "").toLowerCase() === "true";
-const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity Explorer", "Entity Crossover", "Entity Sets"];
+const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity & LSI Explorer", "Entity Crossover", "Entity Sets"];
 const checks = [];
 const errors = [];
 
@@ -70,7 +70,7 @@ try {
     }
 
     await clickNav(page, "Run Cora");
-    await page.locator("text=Remote Cora Bridge").waitFor({ state: "visible", timeout: 10000 });
+    await page.getByRole("heading", { name: "Remote Cora Bridge" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("text=Run Cora").count(), "Cora run page renders");
     assert(await page.locator("#cora-inline-status").count(), "Cora inline status area exists");
 
@@ -84,9 +84,16 @@ try {
     assert(await page.locator("#profile-apply-cora").count(), "Cora Profiles local apply button renders");
     assert(await page.locator("#profiles-inline-status").count(), "Cora Profiles inline status area exists");
     await page.getByRole("heading", { name: "Cora Domain Lists" }).waitFor({ state: "visible", timeout: 10000 });
+    assert(await page.locator("#domain-quick-tracked").count(), "Cora Profiles tracked-domain quick input renders");
+    assert(await page.locator("#domain-add-tracked").count(), "Cora Profiles tracked-domain quick add renders");
+    assert(await page.locator("#domain-quick-competitors").count(), "Cora Profiles competitor quick input renders");
+    assert(await page.locator("#domain-add-competitors").count(), "Cora Profiles competitor quick add renders");
+    assert(await page.locator("#domain-save-lists").count(), "Cora Profiles local-style domain list save button renders");
     assert(await page.locator("#domain-list-save").count(), "Cora Profiles domain list save button renders");
     assert(await page.locator("#domain-apply-cora").count(), "Cora Profiles domain list apply bridge button renders");
+    assert(await page.locator("#domain-apply-cora-inline").count(), "Cora Profiles local-style apply bridge button renders");
     assert(await page.locator("#domain-pull-cora").count(), "Cora Profiles domain list pull bridge button renders");
+    assert(await page.locator("#domain-pull-cora-inline").count(), "Cora Profiles local-style pull bridge button renders");
     assert(await page.locator("#domains-inline-status").count(), "Cora Profiles domain list inline status area exists");
 
     await clickNav(page, "Cora Reports");
@@ -101,18 +108,24 @@ try {
     assert(await page.locator("#ranking-run-snapshot").isVisible(), "Ranking Snapshot run button renders");
     assert(await page.locator("#ranking-inline-status").count(), "Ranking Snapshot inline status area exists");
     assert(await page.getByRole("heading", { name: "Last Snapshot" }).count(), "Ranking Snapshot last snapshot panel renders");
-    const snapshotOpenButton = page.locator("button.detail-btn", { hasText: "Open" }).first();
+    const snapshotOpenButton = page.locator('button.detail-btn[data-detail-type="snapshot"]', { hasText: "Open" }).first();
     if (await snapshotOpenButton.count()) {
       await snapshotOpenButton.click();
       await page.getByRole("heading", { name: "Ranking Snapshot Detail" }).waitFor({ state: "visible", timeout: 10000 });
-      assert(await page.getByRole("heading", { name: "Save Optimization Targets" }).count(), "Ranking Snapshot detail can save optimization targets");
+      try {
+        await page.locator("#snapshot-target-save").waitFor({ state: "attached", timeout: 10000 });
+      } catch {
+        const detailText = await page.locator(".detail-panel").textContent({ timeout: 3000 }).catch(() => "");
+        throw new Error(`Ranking Snapshot target save button renders. Detail text: ${detailText?.slice(0, 500) || "unavailable"}`);
+      }
+      assert((await page.locator(".detail-panel").textContent()).includes("Save Optimization Targets"), "Ranking Snapshot detail can save optimization targets");
       assert(await page.locator("#snapshot-target-save").count(), "Ranking Snapshot target save button renders");
       await page.locator(".close-detail").click();
     } else {
       checks.push({ ok: true, message: "Ranking Snapshot has no synced snapshots to open" });
     }
 
-    await clickNav(page, "Entity Explorer");
+    await clickNav(page, "Entity & LSI Explorer");
     await page.getByRole("heading", { name: "Run Entity Explorer" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("#entity-run-start").isVisible(), "Entity Explorer run button renders");
     assert(await page.locator("#entity-inline-status").count(), "Entity Explorer inline status area exists");
