@@ -124,6 +124,14 @@ Implemented:
   - Shared report HTML renders attached `Optimization Targets` and `Entity Set` sections.
   - End-to-end verifier uploaded report `17` artifacts to R2 and confirmed the public HTML contains the ranking/entity sections.
   - Public XLSX download for the attached report also returned the correct XLSX content type.
+- Live paid/API tool verification passed on 2026-06-05:
+  - Cloud DataForSEO Ranking Snapshot ran against `radiomobile.com` for client `2`.
+  - Snapshot `9` saved `25` keyword rows and `20` page rows with no endpoint errors.
+  - Cloud saved live Optimization Target `7`.
+  - Cloud Entity Explorer ran `xai:grok-4.3` at depth `1` for `fire station alerting system`.
+  - Entity batch `13` completed `1` model run with `0` failures and saved Entity Set `4` with `10` terms.
+  - Local bridge pulled the live paid rows into the local dashboard, and local APIs opened the synced snapshot, entity batch, and entity set.
+  - Attached public report `18` rendered at `https://onpage.localblitz.io/share/report/31225ea3c4b64b53a34907b30863b4d9` with the correct XLSX download content type.
 - Inline status/progress cards exist for:
   - Cora queueing, including per-keyword status.
   - Cora Report creation.
@@ -168,6 +176,7 @@ npm run verify:cora-profile-bridge
 npm run verify:cora-report-artifacts
 npm run verify:cloud-cora-run
 npm run verify:ranking-entity-parity
+npm run verify:live-paid-tools
 ```
 
 To force headless:
@@ -213,6 +222,7 @@ Bridge verification scripts currently check:
 - `verify:cora-report-artifacts`: cloud report metadata, local artifact sync, public report URL, and XLSX download.
 - `verify:cloud-cora-run`: cloud-launched Cora run, local bridge execution, native Cora run/import, cloud mirror sync, public report URL, and XLSX download.
 - `verify:ranking-entity-parity`: cloud-created Ranking Snapshot rows, saved Optimization Targets, Entity Crossover/Entity Set rows, attached report metadata, and real cloud-to-local pull verification.
+- `verify:live-paid-tools`: real cloud DataForSEO Ranking Snapshot, real cloud LLM Entity Explorer run, saved target/entity set, cloud-to-local pull, attached report artifact upload, and public report render check.
 
 ## Local Dashboard
 
@@ -303,5 +313,4 @@ Live status refresh on the tool pages has been started:
 ## Next Phase
 
 - Apply the parity checklist to the live codebase and close the next highest-impact gaps:
-  - Confirm real paid/API Ranking Snapshot and Entity Explorer executions when API spend is acceptable.
   - Document any intentional local-only or cloud-only execution differences.
