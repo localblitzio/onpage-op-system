@@ -101,6 +101,17 @@ Implemented:
 - Cloud-to-local pull sync includes `profiles` by default so profile/client links mirror back locally.
 - Cloud-created report metadata is immediate, but customer HTML/source XLSX artifacts still come from the local bridge/report file sync.
 - Cloud reports without uploaded artifacts show `Files pending` and route the user to sync report files instead of opening a missing artifact URL.
+- Full cloud-launched Cora run verification passed on 2026-06-05:
+  - Cloud queued `run_cora`.
+  - Local bridge created managed job `23`.
+  - Native Cora ran `fire station alerting system` for `https://radiomobile.com` with `Radio Mobile Cora Profile`.
+  - Local dashboard imported run `22`.
+  - Cloud mirror showed completed job/run/report.
+  - Public report and XLSX URLs both returned 200.
+- Cora report artifact verification passed on 2026-06-05:
+  - Cloud report metadata can be created.
+  - Local bridge can pull report metadata and upload `report_html` plus `source_xlsx` to R2.
+  - Public report and XLSX routes are live on `https://onpage.localblitz.io`.
 - Inline status/progress cards exist for:
   - Cora queueing, including per-keyword status.
   - Cora Report creation.
@@ -140,6 +151,10 @@ Smoke tests are visible by default so the browser window can be observed.
 Set-Location "D:\CC-Cora 7.2\cloudflare"
 npm run smoke:cloud
 npm run smoke:cloud:auth
+npm run verify:cora-domain-bridge
+npm run verify:cora-profile-bridge
+npm run verify:cora-report-artifacts
+npm run verify:cloud-cora-run
 ```
 
 To force headless:
@@ -177,6 +192,13 @@ Authenticated smoke currently checks:
 - Entity Crossover page renders the inline save workflow instead of requiring a separate detail prompt.
 - Entity Sets page renders saved-set context.
 - Inline status containers exist.
+
+Bridge verification scripts currently check:
+
+- `verify:cora-domain-bridge`: cloud Cora Domain Lists create/archive plus native Cora apply through local bridge.
+- `verify:cora-profile-bridge`: cloud Cora Profile metadata sync plus native Cora apply/push through local bridge.
+- `verify:cora-report-artifacts`: cloud report metadata, local artifact sync, public report URL, and XLSX download.
+- `verify:cloud-cora-run`: cloud-launched Cora run, local bridge execution, native Cora run/import, cloud mirror sync, public report URL, and XLSX download.
 
 ## Local Dashboard
 
@@ -243,6 +265,9 @@ git log --oneline --decorate -10
 
 Recent important commits:
 
+- `c08e350` Verify Cora report artifact sync
+- `e6679b2` Verify Cora profile bridge workflow
+- `400fff7` Verify Cora domain bridge workflow
 - `16621fc` Run cloud smoke tests visibly by default
 - `01962fa` Show inline cloud tool run status
 - `1e6515e` Support session-based cloud smoke tests
@@ -264,9 +289,6 @@ Live status refresh on the tool pages has been started:
 
 - Apply the parity checklist to the live codebase and close the next highest-impact gaps:
   - Confirm Ranking Snapshot local/cloud run and result parity.
-  - Confirm real bridge execution of cloud-queued Cora profile apply/push commands.
-  - Confirm real bridge execution of cloud-queued Cora Domain Lists apply/pull commands.
-  - Confirm real bridge generation/upload for cloud-created Cora report artifacts.
   - Verify attached Ranking Snapshot, Optimization Targets, and Entity Set metadata appear in generated customer reports.
   - Confirm cloud-to-local sync for cloud-created Ranking Targets and Entity Sets in a real bridge pull.
   - Document any intentional local-only or cloud-only execution differences.
