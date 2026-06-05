@@ -365,6 +365,66 @@ class DashboardSmokeTests(unittest.TestCase):
         self.assertEqual(payload["optimization_targets"][0]["url"], "https://example.com/a")
         self.assertEqual(payload["ranking_snapshot"]["id"], snapshot_id)
 
+    def test_shared_report_renders_ranking_and_entity_attachments(self) -> None:
+        project = app.create_project("Example", site_domain="example.com")
+        run_id = self.insert_run("alpha", "example.com", "sha-report-attachments", "2026-05-27T10:00:00")
+        app.assign_run(run_id, project["id"], None, None, None)
+        snapshot_id = app.save_ranking_snapshot(
+            project["id"],
+            "example.com",
+            2840,
+            "en",
+            1000,
+            False,
+            {
+                "organicKeywords": 12,
+                "organicTraffic": 345,
+                "rankingDistribution": {"top10": 4},
+            },
+            [{"keyword": "alpha", "rankingUrl": "https://example.com/a", "position": 7, "searchVolume": 500, "estimatedTraffic": 20}],
+            [{"url": "https://example.com/a", "organicKeywords": 3, "organicTraffic": 30, "top10": 2}],
+            {},
+        )
+        saved = app.save_ranking_optimization_targets(
+            {
+                "snapshot_id": snapshot_id,
+                "project_id": project["id"],
+                "targets": [
+                    {
+                        "url": "https://example.com/a",
+                        "keyword": "alpha",
+                        "bestPosition": 7,
+                        "opportunityScore": 72,
+                        "recommendedAction": "Improve page.",
+                    }
+                ],
+            }
+        )
+        entity_set = app.create_entity_set(
+            project["id"],
+            "Attached Entity Set",
+            [{"term": "dispatch automation", "type": "entity", "source_count": 2}],
+        )
+        report = app.create_share_report(
+            run_id,
+            "medium",
+            "Attachment report",
+            "Report attachment test.",
+            snapshot_id,
+            saved["saved_ids"],
+            entity_set["set"]["id"],
+        )
+
+        html = app.render_shared_report_html(app.shared_report_by_token(report["token"]), "https://onpage.localblitz.io").decode("utf-8")
+
+        self.assertIn("Ranking Snapshot", html)
+        self.assertIn("Weekly DataForSEO Labs snapshot", html)
+        self.assertIn("https://example.com/a", html)
+        self.assertIn("Optimization Targets", html)
+        self.assertIn("Improve page.", html)
+        self.assertIn("Entity Set", html)
+        self.assertIn("dispatch automation", html)
+
     def test_ranking_optimization_targets_reject_cross_client_save_and_report(self) -> None:
         project_a = app.create_project("Client A", site_domain="a.example")
         project_b = app.create_project("Client B", site_domain="b.example")

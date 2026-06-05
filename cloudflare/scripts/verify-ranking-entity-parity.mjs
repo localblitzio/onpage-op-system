@@ -198,6 +198,19 @@ async function localHas(pathname, matcher, label) {
   return data;
 }
 
+async function publicText(pathname) {
+  const response = await fetch(`${baseUrl}${pathname}`);
+  const text = await response.text().catch(() => "");
+  if (!response.ok) throw new Error(`${pathname} HTTP ${response.status}: ${text.slice(0, 500)}`);
+  return { text, status: response.status, contentType: response.headers.get("content-type") || "" };
+}
+
+async function publicHead(pathname) {
+  const response = await fetch(`${baseUrl}${pathname}`, { method: "HEAD" });
+  if (!response.ok) throw new Error(`${pathname} HEAD HTTP ${response.status}`);
+  return { status: response.status, contentType: response.headers.get("content-type") || "" };
+}
+
 const steps = [];
 
 try {
@@ -329,6 +342,41 @@ try {
       throw new Error(`Local report attachment IDs do not match: ${JSON.stringify(localReport)}`);
     }
     steps.push({ step: "local report metadata retained ranking/entity attachments", ok: true, report_id: report.id });
+
+    const artifactSync = await queueAndProcess("sync_report_artifacts", {
+      execution_mode: "local",
+      report_ids: [Number(report.id)],
+      dry_run: false,
+      force: true,
+    });
+    const artifactCommand = artifactSync.pulled?.commands?.find((item) => {
+      const itemId = item.command?.id ?? item.id;
+      return Number(itemId) === Number(artifactSync.queued?.id);
+    }) || artifactSync.pulled?.commands?.at(-1) || {};
+    const artifactResult = artifactCommand.result?.artifacts || {};
+    const uploaded = Number(artifactResult.uploaded || 0);
+    const skipped = Number(artifactResult.skipped || 0);
+    const failed = Number(artifactResult.failed || 0);
+    if (artifactSync.pulled?.ok !== true || failed || uploaded + skipped < 2) {
+      throw new Error(`Attached report artifact sync failed: ${JSON.stringify(artifactSync.pulled)}`);
+    }
+    steps.push({ step: "local bridge uploaded attached report artifacts", ok: true, report_id: report.id, uploaded, skipped });
+
+    const publicReport = await publicText(`/share/report/${encodeURIComponent(report.token)}`);
+    const requiredSnippets = [
+      "Ranking Snapshot",
+      "Weekly DataForSEO Labs snapshot",
+      targetDomain,
+      `${marker} ranking keyword`,
+      "Optimization Targets",
+      "Improve on-page optimization and internal links",
+      "Entity Set",
+      "station alerting",
+    ];
+    const missing = requiredSnippets.filter((snippet) => !publicReport.text.includes(snippet));
+    if (missing.length) throw new Error(`Public attached report is missing expected sections/snippets: ${missing.join(", ")}`);
+    const xlsx = await publicHead(`/share/report/${encodeURIComponent(report.token)}/download`);
+    steps.push({ step: "public attached report renders ranking/entity sections", ok: true, report_id: report.id, content_type: publicReport.contentType, xlsx_type: xlsx.contentType });
   }
 
   console.log(JSON.stringify({

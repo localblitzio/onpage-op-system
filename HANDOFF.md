@@ -119,6 +119,11 @@ Implemented:
   - Cloud report metadata `15` was created with Ranking Snapshot, Optimization Target, and Entity Set attachments.
   - Local bridge pulled the cloud-created ranking/entity/report rows into the local dashboard.
   - Local Ranking Snapshot detail, Optimization Targets, Entity Batch crossover, Entity Set detail, and attached report metadata all matched the cloud IDs.
+- Customer report attachment rendering verification passed on 2026-06-05:
+  - Shared report HTML now renders an attached `Ranking Snapshot` section with weekly snapshot label, top keywords, and top pages.
+  - Shared report HTML renders attached `Optimization Targets` and `Entity Set` sections.
+  - End-to-end verifier uploaded report `17` artifacts to R2 and confirmed the public HTML contains the ranking/entity sections.
+  - Public XLSX download for the attached report also returned the correct XLSX content type.
 - Inline status/progress cards exist for:
   - Cora queueing, including per-keyword status.
   - Cora Report creation.
@@ -299,5 +304,4 @@ Live status refresh on the tool pages has been started:
 
 - Apply the parity checklist to the live codebase and close the next highest-impact gaps:
   - Confirm real paid/API Ranking Snapshot and Entity Explorer executions when API spend is acceptable.
-  - Verify attached Ranking Snapshot, Optimization Targets, and Entity Set sections render inside uploaded customer report HTML, not just report metadata.
   - Document any intentional local-only or cloud-only execution differences.

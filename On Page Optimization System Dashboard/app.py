@@ -6210,7 +6210,8 @@ def report_payload(
     target_matches = target_url_matches(run, all_results)
     target_result = target_matches[0] if target_matches else None
     run_project_id = int(run["project_id"]) if run.get("project_id") else None
-    ranking_snapshot = get_ranking_snapshot(ranking_snapshot_id)["snapshot"] if ranking_snapshot_id else None
+    ranking_snapshot_detail = get_ranking_snapshot(ranking_snapshot_id) if ranking_snapshot_id else None
+    ranking_snapshot = ranking_snapshot_detail["snapshot"] if ranking_snapshot_detail else None
     if ranking_snapshot and run_project_id and ranking_snapshot.get("project_id") and int(ranking_snapshot["project_id"]) != run_project_id:
         raise ValueError("Ranking Snapshot must belong to the same client as the Cora run")
     optimization_targets = list_ranking_optimization_targets(target_ids=optimization_target_ids or []) if optimization_target_ids else []
@@ -6235,6 +6236,7 @@ def report_payload(
         "target_result": target_result,
         "target_matches": target_matches,
         "ranking_snapshot": ranking_snapshot,
+        "ranking_snapshot_detail": ranking_snapshot_detail,
         "optimization_targets": optimization_targets,
         "entity_set": entity_set,
         "workbook": workbook,
@@ -6444,6 +6446,20 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
         f"<tr><td>{html_escape(r.get('keyword') or '')}</td><td>{html_escape(fmt_report_num(r.get('tracked_value')))}</td><td>{html_escape(fmt_report_num(r.get('deficit')))}</td></tr>"
         for r in data["lsi"]
     )
+    ranking_detail = data.get("ranking_snapshot_detail") or {}
+    ranking_snapshot = ranking_detail.get("snapshot") or data.get("ranking_snapshot") or {}
+    ranking_overview = ranking_snapshot.get("overview") or {}
+    ranking_distribution = ranking_overview.get("rankingDistribution") or ranking_overview.get("ranking_distribution") or {}
+    ranking_keywords = ranking_detail.get("keywords") or []
+    ranking_pages = ranking_detail.get("pages") or []
+    ranking_keyword_rows = "\n".join(
+        f"<tr><td>{html_escape(r.get('keyword') or '')}</td><td>{html_escape(fmt_report_num(r.get('position')))}</td><td>{html_escape(r.get('rankingUrl') or '')}</td><td>{html_escape(fmt_report_num(r.get('searchVolume')))}</td><td>{html_escape(fmt_report_num(r.get('estimatedTraffic')))}</td></tr>"
+        for r in ranking_keywords[:12]
+    )
+    ranking_page_rows = "\n".join(
+        f"<tr><td>{html_escape(r.get('url') or '')}</td><td>{html_escape(fmt_report_num(r.get('organicKeywords')))}</td><td>{html_escape(fmt_report_num(r.get('organicTraffic')))}</td><td>{html_escape(fmt_report_num(r.get('top10')))}</td></tr>"
+        for r in ranking_pages[:8]
+    )
     optimization_target_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('url') or '')}</td><td>{html_escape(r.get('keyword') or '')}</td><td>{html_escape(fmt_report_num(r.get('bestPosition')))}</td><td>{html_escape(fmt_report_num(r.get('opportunityScore')))}</td><td>{html_escape(r.get('status') or '')}</td><td>{html_escape(r.get('recommendedAction') or '')}</td></tr>"
         for r in data.get("optimization_targets", [])
@@ -6456,6 +6472,22 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
     target_rank = fmt_report_num(target.get("rank")) if target else "Not found in top imported results"
     notes = html_escape(share.get("notes") or "")
     comprehensive_html = render_comprehensive_workbook_html(data)
+    ranking_html = f"""
+    <section class="card">
+      <h2>Ranking Snapshot</h2>
+      <p>Weekly DataForSEO Labs snapshot for {html_escape(ranking_snapshot.get('target') or '')}. This is not live rank tracking.</p>
+      <div class="metric-strip">
+        <div class="metric mini"><strong>{html_escape(fmt_report_num(ranking_overview.get('organicKeywords') or ranking_overview.get('organic_keywords')))}</strong><label>Organic Keywords</label></div>
+        <div class="metric mini"><strong>{html_escape(fmt_report_num(ranking_overview.get('organicTraffic') or ranking_overview.get('organic_traffic')))}</strong><label>Estimated Traffic</label></div>
+        <div class="metric mini"><strong>{html_escape(fmt_report_num(ranking_distribution.get('top10') or ranking_distribution.get('top_10')))}</strong><label>Top 10 Terms</label></div>
+        <div class="metric mini"><strong>{html_escape(fmt_report_num(ranking_snapshot.get('page_count')))}</strong><label>Ranking Pages</label></div>
+      </div>
+      <h3>Top Ranking Keywords</h3>
+      <table><thead><tr><th>Keyword</th><th>Position</th><th>Ranking URL</th><th>Search Volume</th><th>Est. Traffic</th></tr></thead><tbody>{ranking_keyword_rows or '<tr><td colspan="5">No ranking keywords were attached.</td></tr>'}</tbody></table>
+      <h3>Top Ranking Pages</h3>
+      <table><thead><tr><th>URL</th><th>Organic Keywords</th><th>Organic Traffic</th><th>Top 10</th></tr></thead><tbody>{ranking_page_rows or '<tr><td colspan="4">No ranking pages were attached.</td></tr>'}</tbody></table>
+    </section>
+    """ if ranking_snapshot else ""
     optimization_html = f"""
     <section class="card">
       <h2>Optimization Targets</h2>
@@ -6491,6 +6523,9 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
     .card {{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; }}
     .metric strong {{ display:block; font-size:24px; }}
     .metric label {{ color:var(--muted); font-size:12px; }}
+    .metric-strip {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; }}
+    .metric.mini {{ border:1px solid var(--line); border-radius:6px; padding:10px; background:#f8fafc; }}
+    .metric.mini strong {{ font-size:20px; }}
     section {{ margin-bottom:18px; }}
     p {{ color:var(--muted); line-height:1.55; }}
     table {{ width:100%; border-collapse:collapse; font-size:14px; }}
@@ -6556,6 +6591,7 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
       <h2>Entity & LSI Opportunities</h2>
       <table><thead><tr><th>Term</th><th>Current</th><th>Deficit</th></tr></thead><tbody>{lsi_rows or '<tr><td colspan="3">No LSI rows imported.</td></tr>'}</tbody></table>
     </section>
+    {ranking_html}
     {optimization_html}
     {entity_html}
     {comprehensive_html}
