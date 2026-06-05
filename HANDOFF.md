@@ -112,6 +112,13 @@ Implemented:
   - Cloud report metadata can be created.
   - Local bridge can pull report metadata and upload `report_html` plus `source_xlsx` to R2.
   - Public report and XLSX routes are live on `https://onpage.localblitz.io`.
+- Ranking/Entity parity verification passed on 2026-06-05:
+  - Cloud Ranking Snapshot rows were created for client `2`.
+  - Cloud saved Optimization Target `4`.
+  - Cloud Entity batch `10` generated crossover terms and saved Entity Set `1`.
+  - Cloud report metadata `15` was created with Ranking Snapshot, Optimization Target, and Entity Set attachments.
+  - Local bridge pulled the cloud-created ranking/entity/report rows into the local dashboard.
+  - Local Ranking Snapshot detail, Optimization Targets, Entity Batch crossover, Entity Set detail, and attached report metadata all matched the cloud IDs.
 - Inline status/progress cards exist for:
   - Cora queueing, including per-keyword status.
   - Cora Report creation.
@@ -155,6 +162,7 @@ npm run verify:cora-domain-bridge
 npm run verify:cora-profile-bridge
 npm run verify:cora-report-artifacts
 npm run verify:cloud-cora-run
+npm run verify:ranking-entity-parity
 ```
 
 To force headless:
@@ -199,6 +207,7 @@ Bridge verification scripts currently check:
 - `verify:cora-profile-bridge`: cloud Cora Profile metadata sync plus native Cora apply/push through local bridge.
 - `verify:cora-report-artifacts`: cloud report metadata, local artifact sync, public report URL, and XLSX download.
 - `verify:cloud-cora-run`: cloud-launched Cora run, local bridge execution, native Cora run/import, cloud mirror sync, public report URL, and XLSX download.
+- `verify:ranking-entity-parity`: cloud-created Ranking Snapshot rows, saved Optimization Targets, Entity Crossover/Entity Set rows, attached report metadata, and real cloud-to-local pull verification.
 
 ## Local Dashboard
 
@@ -265,6 +274,7 @@ git log --oneline --decorate -10
 
 Recent important commits:
 
+- `9a1a3ec` Verify cloud launched Cora run
 - `c08e350` Verify Cora report artifact sync
 - `e6679b2` Verify Cora profile bridge workflow
 - `400fff7` Verify Cora domain bridge workflow
@@ -288,7 +298,6 @@ Live status refresh on the tool pages has been started:
 ## Next Phase
 
 - Apply the parity checklist to the live codebase and close the next highest-impact gaps:
-  - Confirm Ranking Snapshot local/cloud run and result parity.
-  - Verify attached Ranking Snapshot, Optimization Targets, and Entity Set metadata appear in generated customer reports.
-  - Confirm cloud-to-local sync for cloud-created Ranking Targets and Entity Sets in a real bridge pull.
+  - Confirm real paid/API Ranking Snapshot and Entity Explorer executions when API spend is acceptable.
+  - Verify attached Ranking Snapshot, Optimization Targets, and Entity Set sections render inside uploaded customer report HTML, not just report metadata.
   - Document any intentional local-only or cloud-only execution differences.

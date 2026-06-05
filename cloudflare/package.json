@@ -12,7 +12,8 @@
     "verify:cora-domain-bridge": "node scripts/verify-cora-domain-bridge.mjs",
     "verify:cora-profile-bridge": "node scripts/verify-cora-profile-bridge.mjs",
     "verify:cora-report-artifacts": "node scripts/verify-cora-report-artifacts.mjs",
-    "verify:cloud-cora-run": "node scripts/verify-cloud-cora-run.mjs"
+    "verify:cloud-cora-run": "node scripts/verify-cloud-cora-run.mjs",
+    "verify:ranking-entity-parity": "node scripts/verify-ranking-entity-parity.mjs"
   },
   "devDependencies": {
     "playwright": "^1.60.0",
