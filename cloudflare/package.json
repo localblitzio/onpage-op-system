@@ -10,7 +10,8 @@
     "smoke:cloud": "node scripts/smoke-cloud-dashboard.mjs",
     "smoke:cloud:auth": "node scripts/smoke-cloud-auth.mjs",
     "verify:cora-domain-bridge": "node scripts/verify-cora-domain-bridge.mjs",
-    "verify:cora-profile-bridge": "node scripts/verify-cora-profile-bridge.mjs"
+    "verify:cora-profile-bridge": "node scripts/verify-cora-profile-bridge.mjs",
+    "verify:cora-report-artifacts": "node scripts/verify-cora-report-artifacts.mjs"
   },
   "devDependencies": {
     "playwright": "^1.60.0",
