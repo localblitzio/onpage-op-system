@@ -2990,6 +2990,7 @@ def run_managed_job(job_id: int) -> None:
                     try:
                         result = ingest_report(candidate, target_url=target_url, keyword=keyword, notes=f"Managed job {job_id}")
                         run = result.get("run") or {}
+                        share_report_ids: list[int] = []
                         if run.get("id") and job["project_id"]:
                             with connect() as con:
                                 keyword_row = con.execute(
@@ -3003,6 +3004,16 @@ def run_managed_job(job_id: int) -> None:
                                 int(keyword_row["page_id"]) if keyword_row and keyword_row["page_id"] else None,
                                 int(job["keyword_id"]) if job["keyword_id"] else None,
                             )
+                        if run.get("id"):
+                            try:
+                                share_report = ensure_share_report_for_run(
+                                    int(run["id"]),
+                                    "comprehensive",
+                                    notes=f"Auto-created from managed job {job_id}",
+                                )
+                                share_report_ids.append(int(share_report["id"]))
+                            except Exception as exc:
+                                log_activity("report", f"Job {job_id}: share report creation failed: {exc}", "warn", job_id=job_id)
                         job_update(
                             job_id,
                             status="imported",
@@ -3016,9 +3027,10 @@ def run_managed_job(job_id: int) -> None:
                             last_activity_at=datetime.now().isoformat(timespec="seconds"),
                         )
                         push_cloudflare_sync_quietly(
-                            ["runs", "serp_results", "recommendations", "lsi_keywords", "sheet_rows", "managed_jobs"],
+                            ["runs", "serp_results", "recommendations", "lsi_keywords", "sheet_rows", "share_reports", "managed_jobs"],
                             f"job {job_id} report import",
                         )
+                        sync_cloudflare_report_artifacts_quietly(share_report_ids, f"job {job_id} report import", force=True)
                         return
                     except Exception as exc:
                         fail_or_retry_job(
@@ -6264,6 +6276,29 @@ def create_share_report(
         report = row_to_dict(con.execute("SELECT * FROM share_reports WHERE id = ?", (cur.lastrowid,)).fetchone()) or {}
     report["url"] = f"/share/report/{token}"
     return report
+
+
+def ensure_share_report_for_run(
+    run_id: int,
+    level: str = "comprehensive",
+    title: str | None = None,
+    notes: str | None = None,
+) -> dict[str, Any]:
+    existing = find_existing_share_report(run_id, level, title)
+    if existing:
+        existing["url"] = f"/share/report/{existing['token']}"
+        return existing
+    return create_share_report(run_id, level, title, notes)
+
+
+def sync_cloudflare_report_artifacts_quietly(report_ids: list[int], reason: str, force: bool = True) -> dict[str, Any] | None:
+    if not report_ids or not cloudflare_sync_configured():
+        return None
+    try:
+        return sync_cloudflare_report_artifacts(report_ids=report_ids, dry_run=False, force=force)
+    except Exception as exc:
+        log_activity("cloud", f"Cloud artifact sync skipped after {reason}: {exc}", "warn")
+        return None
 
 
 def shared_report_by_token(token: str) -> dict[str, Any]:
