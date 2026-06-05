@@ -881,7 +881,15 @@ def cloudflare_table_rows(con: sqlite3.Connection, table: str, limit: int, offse
     if table not in cloudflare_sync_tables():
         raise ValueError(f"Unsupported Cloudflare sync table: {table}")
     rows = con.execute(f"SELECT * FROM {table} ORDER BY id LIMIT ? OFFSET ?", (limit, offset)).fetchall()
-    return [row_to_dict(row) or {} for row in rows]
+    return [prepare_local_row_for_cloudflare(table, row_to_dict(row) or {}) for row in rows]
+
+
+def prepare_local_row_for_cloudflare(table: str, row: dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    if table == "managed_jobs":
+        item["run_id"] = item.get("imported_run_id")
+        item["updated_at"] = item.get("last_activity_at") or item.get("completed_at") or item.get("started_at")
+    return item
 
 
 def local_table_columns(con: sqlite3.Connection, table: str) -> list[str]:
@@ -1734,6 +1742,10 @@ def push_cloudflare_sync_quietly(tables: list[str], reason: str) -> dict[str, An
 def should_sync_managed_job_update(fields: dict[str, Any]) -> bool:
     meaningful_fields = {
         "status",
+        "status_message",
+        "cora_running",
+        "cora_action",
+        "progress",
         "completed_at",
         "error",
         "report_path",
@@ -2998,8 +3010,14 @@ def run_managed_job(job_id: int) -> None:
                             completed_at=datetime.now().isoformat(timespec="seconds"),
                             report_path=str(candidate),
                             imported_run_id=run.get("id"),
+                            cora_running=0,
+                            cora_action="",
                             progress=1.0,
                             last_activity_at=datetime.now().isoformat(timespec="seconds"),
+                        )
+                        push_cloudflare_sync_quietly(
+                            ["runs", "serp_results", "recommendations", "lsi_keywords", "sheet_rows", "managed_jobs"],
+                            f"job {job_id} report import",
                         )
                         return
                     except Exception as exc:

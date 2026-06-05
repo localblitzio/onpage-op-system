@@ -11,7 +11,7 @@ const TABLE_COLUMNS = {
   lsi_keywords: ["id", "run_id", "keyword", "spearman", "pearson", "best_of_both", "pages", "max_value", "average", "tracked_value", "deficit"],
   sheet_rows: ["id", "run_id", "sheet", "row_index", "row_json"],
   workbook_rows: ["id", "run_id", "sheet", "row_index", "row_json"],
-  managed_jobs: ["id", "project_id", "keyword_id", "keyword", "target_url", "target_domain", "cora_profile", "tool", "status", "status_message", "report_path", "run_id", "started_at", "updated_at", "completed_at", "last_activity_at", "retry_count", "max_retries", "next_retry_at", "stall_detected_at"],
+  managed_jobs: ["id", "project_id", "keyword_id", "keyword", "target_url", "target_domain", "cora_profile", "tool", "status", "status_message", "cora_running", "cora_action", "progress", "report_path", "run_id", "error", "started_at", "updated_at", "completed_at", "last_activity_at", "retry_count", "max_retries", "next_retry_at", "stall_detected_at"],
   content_plans: ["id", "project_id", "site_id", "page_id", "keyword_id", "title", "content_type", "intent", "priority", "status", "due_date", "notes", "created_at", "updated_at"],
   entity_lsi_batches: ["id", "project_id", "seed_keyword", "depth", "target_count", "completed_count", "failed_count", "status", "created_at", "updated_at"],
   entity_lsi_runs: ["id", "project_id", "batch_id", "seed_keyword", "depth", "api_key_id", "provider", "model", "status", "summary", "entities_json", "lsi_keywords_json", "related_keywords_json", "questions_json", "topics_json", "raw_response", "error", "created_at", "completed_at"],
@@ -1729,7 +1729,8 @@ async function handleDashboardMirrorData(request, env) {
     ).all(),
     env.DB.prepare(
       `SELECT j.id, j.project_id, j.keyword, j.target_url, j.target_domain, j.cora_profile, j.tool, j.status,
-              j.status_message, j.started_at, j.updated_at, j.completed_at, j.last_activity_at,
+              j.status_message, j.cora_running, j.cora_action, j.progress, j.error,
+              j.started_at, j.updated_at, j.completed_at, j.last_activity_at,
               p.name AS project_name
        FROM managed_jobs j
        LEFT JOIN projects p ON p.id = j.project_id
@@ -3035,7 +3036,11 @@ function cloudMirrorHtml() {
       return table(["Keyword", "Client", "Target", "Imported", "Data", "Actions"], rows(items).map((r) => '<tr><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.file_name || "") + '</span></td><td>' + esc(r.project_name || "") + '</td><td>' + esc(r.target_domain || r.target_url || "") + '</td><td>' + esc(fmtDate(r.imported_at)) + '</td><td>' + esc(fmtNum(r.serp_count)) + ' SERP<br>' + esc(fmtNum(r.recommendation_count)) + ' recs<br>' + esc(fmtNum(r.lsi_count)) + ' LSI</td><td><button class="detail-btn" data-detail-type="run" data-detail-id="' + esc(r.id) + '">Open Run</button><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(r.project_id || "") + '">Open Client</button></td></tr>'));
     }
     function jobsTable(items) {
-      return table(["Keyword", "Client", "Tool/Profile", "Status", "Updated", "Actions"], rows(items).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.project_name || "") + '</td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span><br><span class="muted">' + esc(j.status_message || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(j.project_id || "") + '">Open Client</button></td></tr>'));
+      return table(["Keyword", "Client", "Tool/Profile", "Status", "Updated", "Actions"], rows(items).map((j) => {
+        const percent = j.progress == null ? "" : " · " + Math.round(Number(j.progress || 0) * 1000) / 10 + "%";
+        const message = j.cora_action || j.status_message || j.error || "";
+        return '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.project_name || "") + '</td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span><br><span class="muted">' + esc(message) + esc(percent) + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(j.project_id || "") + '">Open Client</button></td></tr>';
+      }));
     }
     function coraRunsView(data) {
       const allRuns = data.runs || [];
