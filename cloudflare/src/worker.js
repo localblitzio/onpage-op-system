@@ -2602,36 +2602,43 @@ function cloudDashboardHtml() {
 
 function cloudMirrorHtml() {
   return `<!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>On Page Optimization System Dashboard</title>
   <style>
-    :root { color-scheme: dark; --bg:#0d1117; --panel:#151b23; --soft:#1d2630; --line:#303b47; --text:#edf2f7; --muted:#9aa8b8; --accent:#4db6ac; --accent2:#6ee7dc; --danger:#ff7b72; }
+    :root { color-scheme: dark; --bg:#0f141b; --panel:#171d26; --panel-soft:#121922; --sidebar-bg:#111820; --soft:#1d2835; --line:#2d3949; --text:#e8edf5; --muted:#9aa8ba; --accent:#5ca8ff; --accent2:#91c5ff; --danger:#e15b50; --input-bg:#101720; --hover-bg:#1d2835; --table-head:#202a37; --good:#5bd28a; --warn:#f2c14e; --radius:8px; }
+    :root[data-theme="light"] { color-scheme: light; --bg:#f5f7fa; --panel:#ffffff; --panel-soft:#fbfcfe; --sidebar-bg:#ffffff; --soft:#eef3f9; --line:#d8dee8; --text:#172033; --muted:#657184; --accent:#0b6bcb; --accent2:#084c91; --danger:#b42318; --input-bg:#ffffff; --hover-bg:#eef3f9; --table-head:#f0f3f8; --good:#157347; --warn:#a15c00; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, Segoe UI, Arial, sans-serif; }
-    .shell { display: grid; grid-template-columns: 260px minmax(0, 1fr); min-height: 100vh; }
-    aside { border-right: 1px solid var(--line); background: #111821; padding: 16px 12px; }
-    .brand { padding: 4px 8px 16px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+    .shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: 100vh; }
+    aside { border-right: 1px solid var(--line); background: var(--sidebar-bg); padding: 12px; }
+    .brand { padding: 4px 2px 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
     .brand h1 { font-size: 18px; margin: 0; line-height: 1.15; }
     .brand p { color: var(--muted); margin: 5px 0 0; font-size: 12px; }
-    nav { display: grid; gap: 4px; }
-    nav button { width: 100%; text-align: left; background: transparent; color: var(--text); border: 0; border-radius: 6px; padding: 9px 10px; cursor: pointer; }
-    nav button.active, nav button:hover { background: var(--soft); color: var(--accent2); }
-    .nav-group { display:grid; gap:4px; margin:10px 0 12px; }
-    .nav-label { color:var(--muted); font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; padding:8px 10px 2px; }
-    nav button.subnav { padding-left:22px; color:var(--muted); }
+    .profile-context, .theme-context { border-bottom:1px solid var(--line); margin-bottom:12px; padding-bottom:12px; }
+    .profile-context label, .theme-context label { color:var(--muted); display:grid; font-size:12px; font-weight:700; gap:6px; text-transform:uppercase; }
+    .profile-context select { background:rgba(92,168,255,.12); border-color:rgba(92,168,255,.45); color:var(--text); font-weight:650; min-width:0; width:100%; }
+    .theme-context select { background:var(--input-bg); border-color:var(--line); color:var(--text); font-weight:650; min-width:0; width:100%; }
+    nav { display: grid; gap: 5px; align-items:stretch; }
+    nav button { width:100%; text-align:left; background:transparent; color:var(--muted); border:1px solid transparent; border-radius:6px; padding:8px 10px; cursor:pointer; }
+    nav button:hover { background:var(--hover-bg); color:var(--text); }
+    nav button.active { border-color:var(--accent); background:rgba(92,168,255,.12); color:var(--accent2); }
+    .nav-group { display:grid; gap:5px; margin:10px 0 12px; }
+    .nav-label { color:var(--muted); font-size:11px; font-weight:750; letter-spacing:.04em; text-transform:uppercase; padding:0 2px; margin:10px 0 2px; }
+    nav button.subnav { font-size:13px; margin-left:14px; padding-left:16px; position:relative; width:calc(100% - 14px); color:var(--muted); }
+    nav button.subnav::before { content:""; position:absolute; left:7px; top:11px; bottom:11px; border-left:2px solid var(--line); }
     nav button.subnav.active, nav button.subnav:hover { color:var(--accent2); }
-    main { min-width: 0; padding: 18px 20px 36px; }
-    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; }
+    main { min-width: 0; padding: 0 0 36px; }
+    .topbar { min-height:72px; display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
     .topbar h2 { margin:0; font-size:22px; }
     .muted { color: var(--muted); }
     .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; color:var(--muted); padding:2px 7px; font-size:12px; }
     .ok { color: var(--accent2); }
     .warn { color: var(--danger); }
     .cards { display:grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap:10px; margin-bottom:14px; }
-    .card, section { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+    .card, section { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); }
     .card { padding:13px; }
     .card strong { display:block; font-size:24px; }
     .card span { color:var(--muted); font-size:12px; }
@@ -2653,9 +2660,11 @@ function cloudMirrorHtml() {
     .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
     button.danger { background:rgba(255,123,114,.15); color:var(--danger); border:1px solid rgba(255,123,114,.45); }
     button:disabled { opacity:.55; cursor:not-allowed; }
-    input, select, textarea { background:var(--soft); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
+    input, select, textarea { background:var(--input-bg); border:1px solid var(--line); border-radius:6px; color:var(--text); padding:8px 10px; min-width:240px; }
     textarea { width:100%; min-height:72px; resize:vertical; font:inherit; }
-    .access { display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; margin-bottom:14px; }
+    .access { margin:0 20px 14px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:0; }
+    .access summary { cursor:pointer; color:var(--muted); font-weight:700; padding:10px 12px; }
+    .access-body { border-top:1px solid var(--line); display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:flex-end; padding:10px; }
     .access input { min-width:180px; }
     .access button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .access button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
@@ -2708,13 +2717,20 @@ function cloudMirrorHtml() {
     .scroll-table table { min-width:860px; }
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
     @media (max-width: 1200px) { .provider-grid { grid-template-columns:repeat(3,minmax(150px,1fr)); } }
-    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } }
+    #app { padding:0 20px; }
+    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } #app { padding:0 12px; } }
   </style>
 </head>
 <body>
   <div class="shell">
     <aside>
       <div class="brand"><h1>On Page Optimization System</h1><p>Cloud mirror. Local Cora automation stays on Windows.</p></div>
+      <div class="profile-context">
+        <label>Current Client<select id="active-client"></select></label>
+      </div>
+      <div class="theme-context">
+        <label>Theme<select id="theme-mode"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+      </div>
       <nav id="nav"></nav>
     </aside>
     <main>
@@ -2722,7 +2738,9 @@ function cloudMirrorHtml() {
         <div><h2 id="page-title">Client Dashboard</h2><div id="page-note" class="muted">Loading synced production data...</div></div>
         <div class="toolbar"><input id="search" placeholder="Filter current page"><button id="refresh">Refresh</button></div>
       </div>
-      <div class="access">
+      <details class="access">
+        <summary>Access</summary>
+        <div class="access-body">
         <span class="muted">Dashboard access</span>
         <input id="login-email" type="email" placeholder="Email login">
         <input id="login-code" placeholder="6-digit code">
@@ -2731,40 +2749,41 @@ function cloudMirrorHtml() {
         <input id="read-token" type="password" placeholder="Read/admin token">
         <button id="save-read-token">Unlock</button>
         <button id="lock-dashboard" class="secondary">Lock</button>
-      </div>
+        </div>
+      </details>
       <div id="app"><div class="empty">Loading cloud mirror...</div></div>
     </main>
   </div>
   <script>
-    let state = { data: null, page: "clients", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", domainEditId: "", domainListType: "all", commandPrefill: null, detail: null };
+    let state = { data: null, page: "clients", activeClient: localStorage.getItem("opos_active_client") || "all", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", domainEditId: "", domainListType: "all", commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
     const pages = [
       ["clients", "Client Dashboard"],
       ["new-client", "New Client"],
-      ["cora", "Cora"],
+      ["cora", "Run Cora"],
       ["reports", "Cora Reports"],
       ["runs", "Cora Runs"],
       ["jobs", "Cora Jobs"],
       ["cora-profiles", "Cora Profiles"],
-      ["ranking", "Ranking Snapshots"],
+      ["ranking", "Ranking Snapshot"],
       ["targets", "Optimization Targets"],
-      ["entities", "Entity Explorer"],
+      ["entities", "Entity & LSI Explorer"],
       ["entity-crossover", "Entity Crossover"],
       ["entity-sets", "Entity Sets"],
-      ["plans", "Content Plans"],
-      ["overview", "Cloud Overview"],
-      ["sync", "Sync Status"],
+      ["plans", "Content Planner"],
+      ["overview", "Overview"],
+      ["sync", "Cloud Sync"],
       ["audit", "Audit Trail"],
       ["commands", "Command Review"],
-      ["admin", "Admin"]
+      ["admin", "Settings"]
     ];
     const navGroups = [
       ["Clients", [["clients", "Client Dashboard"],["new-client", "New Client"]]],
-      ["Cora", [["cora", "Run Cora"],["runs", "Cora Runs"],["jobs", "Cora Jobs"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
-      ["Entity Explorer", [["entities", "Entity Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
+      ["Cora", [["cora", "Run Cora"],["cora-profiles", "Cora Profiles"],["reports", "Cora Reports"]]],
+      ["Entity Explorer", [["entities", "Entity & LSI Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
       ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
-      ["Planning", [["plans", "Content Plans"]]],
-      ["System", [["overview", "Cloud Overview"],["sync", "Sync Status"],["commands", "Command Review"],["audit", "Audit Trail"],["admin", "Admin"]]]
+      ["Planning", [["plans", "Content Planner"]]],
+      ["System", [["overview", "Overview"],["sync", "Cloud Sync"],["admin", "Settings"]]]
     ];
     const fmtNum = (v) => Number(v || 0).toLocaleString();
     const fmtDate = (v) => v ? new Date(v).toLocaleString() : "";
@@ -2808,6 +2827,85 @@ function cloudMirrorHtml() {
     function renderNav() {
       document.getElementById("nav").innerHTML = navGroups.map(([group, items]) => '<div class="nav-group"><div class="nav-label">' + esc(group) + '</div>' + items.map(([id, label], index) => '<button class="' + (index ? 'subnav' : '') + '" data-page="' + esc(id) + '">' + esc(label) + '</button>').join("") + '</div>').join("");
       document.querySelectorAll("nav button").forEach((b) => b.onclick = () => setPage(b.dataset.page));
+    }
+    function renderClientContext() {
+      const select = document.getElementById("active-client");
+      if (!select) return;
+      const clients = state.data?.clients || [];
+      if (state.activeClient !== "all" && !clients.some((client) => String(client.id) === String(state.activeClient))) {
+        state.activeClient = "all";
+        localStorage.setItem("opos_active_client", "all");
+      }
+      syncToolClients(state.activeClient);
+      select.innerHTML = '<option value="all">All clients</option>' + clients.map((client) => '<option value="' + esc(client.id) + '"' + (String(client.id) === String(state.activeClient) ? ' selected' : '') + '>' + esc(client.name || ("Client " + client.id)) + '</option>').join("");
+    }
+    function applyActiveClient(clientId) {
+      state.activeClient = clientId || "all";
+      localStorage.setItem("opos_active_client", state.activeClient);
+      syncToolClients(state.activeClient);
+      state.detail = null;
+      render();
+    }
+    function syncToolClients(clientId) {
+      const value = clientId || "all";
+      state.coraClient = value;
+      state.reportClient = value;
+      state.reportCreateClient = value;
+      state.runClient = value;
+      state.jobClient = value;
+      state.entityClient = value;
+      state.entitySetClient = value;
+      state.rankingClient = value;
+      state.targetClient = value;
+      state.planClient = value;
+      state.commandClient = value;
+    }
+    function openClientTool(page, projectId, options = {}) {
+      const clientId = projectId || "all";
+      state.activeClient = clientId;
+      localStorage.setItem("opos_active_client", state.activeClient);
+      syncToolClients(clientId);
+      if (page === "jobs") state.jobStatus = "all";
+      if (page === "commands") {
+        state.commandStatus = "all";
+        state.commandType = "all";
+      }
+      if (page === "ranking") {
+        state.rankingBase = "";
+        state.rankingCompare = "";
+        state.rankingComparison = null;
+      }
+      if (page === "targets") state.targetSelection = {};
+      if (page === "plans") state.planSelection = {};
+      if (page === "cora") {
+        state.commandPrefill = {
+          project_id: clientId === "all" ? 0 : Number(clientId || 0),
+          keyword: options.keyword || "",
+          target: options.target || "",
+          target_url: options.target || "",
+          cora_profile: options.profile || "",
+          command: "cora"
+        };
+      }
+      if (page === "entities") {
+        state.commandPrefill = {
+          project_id: clientId,
+          keyword: options.keyword || "",
+          seed_keyword: options.keyword || "",
+          target: options.target || "",
+          command: "entity"
+        };
+      }
+      if (page === "entity-crossover") state.entityBatch = options.latestBatch || "all";
+      state.detail = null;
+      setPage(page || "clients");
+    }
+    function applyTheme(theme) {
+      const value = theme === "light" ? "light" : "dark";
+      document.documentElement.dataset.theme = value;
+      localStorage.setItem("opos_cloud_theme", value);
+      const select = document.getElementById("theme-mode");
+      if (select) select.value = value;
     }
     function cards(items) {
       return '<div class="cards">' + items.map(([label, value]) => '<div class="card"><strong>' + esc(typeof value === "number" ? fmtNum(value) : value) + '</strong><span>' + esc(label) + '</span></div>').join("") + '</div>';
@@ -2887,7 +2985,7 @@ function cloudMirrorHtml() {
       const bridgeHtml = bridgeRows.map((bridge) => '<tr><td><strong>' + esc(bridge.bridge_id || "") + '</strong><br><span class="muted">' + esc(bridge.version || "") + '</span></td><td><span class="pill ' + (bridge.online ? "ok" : "warn") + '">' + esc(bridge.online ? "Online" : "Offline") + '</span></td><td>' + esc(bridge.allow_cora ? "Enabled" : "Off") + '</td><td>' + esc(bridge.allow_paid_tools ? "Enabled" : "Off") + '</td><td>' + esc(bridge.poll_interval || "") + 's</td><td>' + esc(fmtDate(bridge.last_seen_at)) + '</td></tr>');
       const artifactHtml = artifacts.map((item) => '<tr><td><strong>' + esc(item.artifact_type || "") + '</strong></td><td>' + esc(fmtNum(item.artifact_count || 0)) + '</td><td>' + esc(fmtBytes(item.total_bytes || 0)) + '</td><td>' + esc(fmtDate(item.last_uploaded_at)) + '</td></tr>');
       const recentHtml = recent.slice(0, 30).map((batch) => '<tr><td>' + esc(batch.table_name || "") + '</td><td>' + esc(fmtNum(batch.row_count || 0)) + '</td><td>' + esc(batch.source || "") + '</td><td>' + esc(fmtDate(batch.received_at)) + '</td></tr>');
-      const shortcuts = '<section><div class="head"><h3>Sync Shortcuts</h3><span class="muted">Creates reviewed commands; local bridge performs local-only sync work.</span></div><div class="toolbar"><button id="sync-review-push">Review Full Push</button><button id="sync-review-pull" class="secondary">Review Pull Core Tables</button><button id="sync-review-files" class="secondary">Review Report File Sync</button></div></section>';
+      const shortcuts = '<section><div class="head"><h3>Sync Shortcuts</h3><span class="muted">Creates reviewed commands; local bridge performs local-only sync work.</span></div><div class="toolbar"><button id="sync-review-push">Review Full Push</button><button id="sync-review-pull" class="secondary">Review Pull Core Tables</button><button id="sync-review-files" class="secondary">Review Report File Sync</button><button id="sync-open-commands" class="secondary">Command Review</button><button id="sync-open-audit" class="secondary">Audit Trail</button></div></section>';
       setTimeout(bindSyncControls, 0);
       return cards([["Last Sync", syncAgeInfo(lastSync).label],["Online Bridges", online],["Tracked Tables", tableRows.length],["Stale Tables", staleTables],["Artifact Types", artifacts.length]])
         + shortcuts
@@ -2941,10 +3039,11 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Cora Reports</h3><span class="pill ok">Share-ready</span></div>' + filters + reportTable(filtered) + '</section>';
     }
     function clientsTable(items) {
-      return table(["Client", "Site / Profile", "Keywords", "Runs", "Snapshots", "Targets", "Plans", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '<br><span class="muted">' + esc(c.profile_name ? "Cora profile: " + c.profile_name : "No Cora profile") + '</span></td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td><td>' + esc(fmtNum(c.plan_count)) + '</td><td><button class="detail-btn" data-detail-type="client" data-detail-id="' + esc(c.id) + '">Open</button></td></tr>'));
+      return table(["Client", "Site / Profile", "Keywords", "Runs", "Snapshots", "Targets", "Plans", ""], rows(items).map((c) => '<tr><td><strong>' + esc(c.name || "") + '</strong><br><span class="muted">' + esc(c.client || "") + '</span></td><td>' + esc(c.site_domain || "") + '<br><span class="muted">' + esc(c.profile_name ? "Cora profile: " + c.profile_name : "No Cora profile") + '</span></td><td>' + esc(fmtNum(c.keyword_count)) + '</td><td>' + esc(fmtNum(c.run_count)) + '</td><td>' + esc(fmtNum(c.snapshot_count)) + '</td><td>' + esc(fmtNum(c.target_count)) + '</td><td>' + esc(fmtNum(c.plan_count)) + '</td><td><button class="client-open-page" data-page-target="clients" data-project-id="' + esc(c.id) + '">Open</button></td></tr>'));
     }
     function clientsView(data) {
       const clients = data.clients || [];
+      const selected = state.activeClient !== "all" ? clients.find((client) => String(client.id) === String(state.activeClient)) : null;
       const totals = clients.reduce((acc, client) => {
         acc.keywords += Number(client.keyword_count || 0);
         acc.runs += Number(client.run_count || 0);
@@ -2953,8 +3052,28 @@ function cloudMirrorHtml() {
         acc.plans += Number(client.plan_count || 0);
         return acc;
       }, { keywords: 0, runs: 0, snapshots: 0, targets: 0, plans: 0 });
-      return cards([["Clients", clients.length],["Keywords", totals.keywords],["Cora Runs", totals.runs],["Ranking Snapshots", totals.snapshots],["Saved Targets", totals.targets],["Content Plans", totals.plans]])
-        + '<section><div class="head"><h3>Client Dashboard</h3><div class="toolbar"><button class="client-open-page" data-page-target="new-client" data-project-id="all">New Client</button></div></div><div class="empty">Open a client first, then launch Cora, Ranking Snapshot, Entity Explorer, reports, and plans from that workspace.</div>' + clientsTable(clients) + '</section>';
+      const summary = cards([["Clients", clients.length],["Keywords", totals.keywords],["Cora Runs", totals.runs],["Ranking Snapshots", totals.snapshots],["Saved Targets", totals.targets],["Content Plans", totals.plans]]);
+      if (selected) {
+        const detail = {
+          client: selected,
+          keywords: (data.keywords || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          runs: (data.runs || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          reports: (data.reports || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          snapshots: (data.snapshots || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          targets: (data.targets || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          jobs: (data.jobs || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          content_plans: (data.content_plans || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          entity_batches: (data.entity_batches || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          entity_runs: (data.entity_runs || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          entity_sets: (data.entity_sets || []).filter((row) => String(row.project_id || "") === String(selected.id)),
+          commands: (data.commands || []).filter((row) => String(row.project_id || row.payload?.project_id || "") === String(selected.id))
+        };
+        return summary
+          + '<section><div class="head"><h3>Client Dashboard</h3><div class="toolbar"><button class="client-open-page" data-page-target="new-client" data-project-id="all">New Client</button><button class="secondary" id="clear-active-client">All Clients</button></div></div><div class="empty">Current Client controls the URL, keywords, Cora profile, and tool defaults.</div></section>'
+          + clientDetail(detail);
+      }
+      return summary
+        + '<section><div class="head"><h3>Client Dashboard</h3><div class="toolbar"><button class="client-open-page" data-page-target="new-client" data-project-id="all">New Client</button></div></div><div class="empty">Select a Current Client in the sidebar or open a client below. Then launch Cora, Ranking Snapshot, Entity Explorer, reports, and plans from that workspace.</div>' + clientsTable(clients) + '</section>';
     }
     function newClientView() {
       return '<section><div class="head"><h3>New Client</h3><span class="muted">Creates a cloud command that the sync bridge can pull into the local dashboard.</span></div><div class="command-grid"><div class="command-card"><h4>Client Profile</h4><input id="quick-client-name" placeholder="Client name"><input id="quick-client-site" placeholder="Main URL or domain"><input id="quick-client-notes" placeholder="Notes"><button id="quick-create-client">Review Create Client</button></div><div class="command-card"><h4>What Happens Next</h4><div class="muted">The client is reviewed before it is queued. After queueing, use Sync Status or Command Review to confirm it reached the local dashboard.</div><button class="client-open-page secondary" data-page-target="clients" data-project-id="all">Back to Clients</button></div></div></section>';
@@ -3471,12 +3590,14 @@ function cloudMirrorHtml() {
         setPage("commands");
         setPendingCommand("sync_report_artifacts", { report_ids: [], dry_run: false, force: false });
       });
+      document.getElementById("sync-open-commands")?.addEventListener("click", () => setPage("commands"));
+      document.getElementById("sync-open-audit")?.addEventListener("click", () => setPage("audit"));
     }
     function bindRankingControls() {
       const client = document.getElementById("ranking-client-filter");
-      if (client) client.onchange = (event) => { state.rankingClient = event.target.value || "all"; state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; render(); };
+      if (client) client.onchange = (event) => { state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; applyActiveClient(event.target.value || "all"); };
       const runClient = document.getElementById("ranking-run-client");
-      if (runClient) runClient.onchange = (event) => { state.rankingClient = event.target.value || "all"; state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; render(); };
+      if (runClient) runClient.onchange = (event) => { state.rankingBase = ""; state.rankingCompare = ""; state.rankingComparison = null; applyActiveClient(event.target.value || "all"); };
       const runButton = document.getElementById("ranking-run-snapshot");
       if (runButton) runButton.onclick = () => {
         (async () => {
@@ -3541,7 +3662,7 @@ function cloudMirrorHtml() {
     function bindTargetControls() {
       const client = document.getElementById("target-client-filter");
       const status = document.getElementById("target-status-filter");
-      if (client) client.onchange = (event) => { state.targetClient = event.target.value || "all"; state.targetSelection = {}; render(); };
+      if (client) client.onchange = (event) => { state.targetSelection = {}; applyActiveClient(event.target.value || "all"); };
       if (status) status.onchange = (event) => { state.targetStatus = event.target.value || "all"; state.targetSelection = {}; render(); };
       document.querySelectorAll(".target-check").forEach((box) => {
         box.onchange = () => {
@@ -3560,9 +3681,7 @@ function cloudMirrorHtml() {
           const target = (state.data?.targets || []).find((item) => String(item.id) === String(button.dataset.targetId));
           if (!target) return;
           if (button.dataset.action === "cora") {
-            state.coraClient = String(target.project_id || "all");
-            state.commandPrefill = { project_id: Number(target.project_id || 0), keyword: target.keyword || "", target: target.url || "", target_url: target.url || "", command: "cora" };
-            setPage("cora");
+            openClientTool("cora", String(target.project_id || "all"), { keyword: target.keyword || "", target: target.url || "" });
           } else {
             (async () => {
               const result = await postCommand("create_content_plan", targetActionPayload(target, "plan"));
@@ -3600,7 +3719,7 @@ function cloudMirrorHtml() {
       const client = document.getElementById("plan-client-filter");
       const status = document.getElementById("plan-status-filter");
       const priority = document.getElementById("plan-priority-filter");
-      if (client) client.onchange = (event) => { state.planClient = event.target.value || "all"; state.planSelection = {}; render(); };
+      if (client) client.onchange = (event) => { state.planSelection = {}; applyActiveClient(event.target.value || "all"); };
       if (status) status.onchange = (event) => { state.planStatus = event.target.value || "all"; state.planSelection = {}; render(); };
       if (priority) priority.onchange = (event) => { state.planPriority = event.target.value || "all"; state.planSelection = {}; render(); };
       document.querySelectorAll(".plan-check").forEach((box) => {
@@ -3619,11 +3738,9 @@ function cloudMirrorHtml() {
         button.onclick = () => {
           const plan = (state.data?.content_plans || []).find((item) => String(item.id) === String(button.dataset.planId));
           if (!plan) return;
-          if (button.dataset.action === "client") openDetail("client", plan.project_id).catch((error) => alert(error.message || error));
+          if (button.dataset.action === "client") openClientTool("clients", String(plan.project_id || "all"));
           if (button.dataset.action === "cora") {
-            state.coraClient = String(plan.project_id || "all");
-            state.commandPrefill = { project_id: Number(plan.project_id || 0), keyword: plan.keyword || plan.title || "", target: "", target_url: "", command: "cora" };
-            setPage("cora");
+            openClientTool("cora", String(plan.project_id || "all"), { keyword: plan.keyword || plan.title || "" });
           }
         };
       });
@@ -3675,7 +3792,7 @@ function cloudMirrorHtml() {
       });
       updateEntityModelCount();
       document.querySelectorAll(".entity-page-link").forEach((button) => {
-        button.onclick = () => setPage(button.dataset.entityPage || "entities");
+        button.onclick = () => openClientTool(button.dataset.entityPage || "entities", state.entityClient || state.activeClient || "all");
       });
       document.querySelectorAll(".entity-batch-select").forEach((button) => {
         button.onclick = () => {
@@ -3687,9 +3804,9 @@ function cloudMirrorHtml() {
       const batchFilter = document.getElementById("entity-batch-filter");
       if (batchFilter) batchFilter.onchange = (event) => { state.entityBatch = event.target.value || "all"; state.entityCrossoverDetail = null; render(); };
       const entityClient = document.getElementById("entity-client-filter");
-      if (entityClient) entityClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; state.entityCrossoverDetail = null; render(); };
+      if (entityClient) entityClient.onchange = (event) => { state.entityBatch = "all"; state.entityCrossoverDetail = null; applyActiveClient(event.target.value || "all"); };
       const entityRunClient = document.getElementById("entity-run-client");
-      if (entityRunClient) entityRunClient.onchange = (event) => { state.entityClient = event.target.value || "all"; state.entityBatch = "all"; state.commandPrefill = null; render(); };
+      if (entityRunClient) entityRunClient.onchange = (event) => { state.entityBatch = "all"; state.commandPrefill = null; applyActiveClient(event.target.value || "all"); };
       document.getElementById("entity-run-start")?.addEventListener("click", (event) => {
         (async () => {
           const button = event.currentTarget;
@@ -3739,7 +3856,7 @@ function cloudMirrorHtml() {
         })();
       });
       const setClient = document.getElementById("entity-set-client-filter");
-      if (setClient) setClient.onchange = (event) => { state.entitySetClient = event.target.value || "all"; render(); };
+      if (setClient) setClient.onchange = (event) => applyActiveClient(event.target.value || "all");
       document.querySelectorAll(".entity-run-prefill").forEach((button) => {
         button.onclick = () => {
           state.commandPrefill = { project_id: state.entityClient === "all" ? "" : state.entityClient, command: "entity" };
@@ -4310,7 +4427,7 @@ function cloudMirrorHtml() {
       byId("cmd-sync-artifacts")?.addEventListener("click", () => setPendingCommand("sync_report_artifacts", { report_ids: (byId("cmd-artifact-report-ids").value || "").split(",").map((v) => Number(v.trim())).filter(Boolean), dry_run: Boolean(byId("cmd-artifact-dry").checked), force: Boolean(byId("cmd-artifact-force").checked) }));
       byId("confirm-command")?.addEventListener("click", () => sendPendingCommand().catch((e) => alert(e.message)));
       byId("cancel-command")?.addEventListener("click", () => { state.pendingWrite = null; render(); });
-      byId("command-client-filter")?.addEventListener("change", (event) => { state.commandClient = event.target.value || "all"; render(); });
+      byId("command-client-filter")?.addEventListener("change", (event) => applyActiveClient(event.target.value || "all"));
       byId("command-status-filter")?.addEventListener("change", (event) => { state.commandStatus = event.target.value || "all"; render(); });
       byId("command-type-filter")?.addEventListener("change", (event) => { state.commandType = event.target.value || "all"; render(); });
       document.querySelectorAll(".retry-command").forEach((button) => button.addEventListener("click", () => retryCommand(button.dataset.commandId).catch((e) => alert(e.message))));
@@ -4327,15 +4444,14 @@ function cloudMirrorHtml() {
     function bindReportControls() {
       const client = document.getElementById("report-client-filter");
       const level = document.getElementById("report-level-filter");
-      if (client) client.onchange = (event) => { state.reportClient = event.target.value || "all"; render(); };
+      if (client) client.onchange = (event) => applyActiveClient(event.target.value || "all");
       if (level) level.onchange = (event) => { state.reportLevel = event.target.value || "all"; render(); };
       const createClient = document.getElementById("report-create-client");
       if (createClient) createClient.onchange = (event) => {
-        state.reportCreateClient = event.target.value || "all";
         state.reportCreateRun = "";
         state.reportCreateSnapshot = "";
         state.reportTargetSelection = {};
-        render();
+        applyActiveClient(event.target.value || "all");
       };
       const createRun = document.getElementById("report-create-run");
       if (createRun) createRun.onchange = (event) => {
@@ -4777,18 +4893,17 @@ function cloudMirrorHtml() {
     }
     function bindCoraListControls() {
       const runClient = document.getElementById("run-client-filter");
-      if (runClient) runClient.onchange = (event) => { state.runClient = event.target.value || "all"; render(); };
+      if (runClient) runClient.onchange = (event) => applyActiveClient(event.target.value || "all");
       const jobClient = document.getElementById("job-client-filter");
       const jobStatus = document.getElementById("job-status-filter");
-      if (jobClient) jobClient.onchange = (event) => { state.jobClient = event.target.value || "all"; render(); };
+      if (jobClient) jobClient.onchange = (event) => applyActiveClient(event.target.value || "all");
       if (jobStatus) jobStatus.onchange = (event) => { state.jobStatus = event.target.value || "all"; render(); };
     }
     function bindCoraControls() {
       const clientSelect = document.getElementById("cora-client-select");
       if (clientSelect) clientSelect.onchange = (event) => {
-        state.coraClient = event.target.value || "all";
         state.commandPrefill = null;
-        render();
+        applyActiveClient(event.target.value || "all");
       };
       document.getElementById("cora-refresh")?.addEventListener("click", () => load().catch((error) => alert(error.message || error)));
       document.getElementById("cora-run-selected")?.addEventListener("click", (event) => {
@@ -4907,71 +5022,38 @@ function cloudMirrorHtml() {
       });
       document.querySelectorAll(".client-command").forEach((button) => {
         button.onclick = () => {
-          const projectId = Number(button.dataset.projectId || 0);
+          const projectId = String(button.dataset.projectId || "all");
           const keyword = button.dataset.keyword || "";
           const target = button.dataset.target || "";
           const profile = button.dataset.profile || "";
           if (button.dataset.clientCommand === "ranking") {
-            state.commandPrefill = { project_id: projectId, keyword, target, command: "ranking" };
-            state.rankingClient = String(projectId || "all");
-            setPage("ranking");
+            state.commandPrefill = { project_id: Number(projectId === "all" ? 0 : projectId), keyword, target, command: "ranking" };
+            openClientTool("ranking", projectId, { keyword, target });
           } else if (button.dataset.clientCommand === "cora") {
-            state.commandPrefill = { project_id: projectId, keyword, target, target_url: target, cora_profile: profile, command: "cora" };
-            state.coraClient = String(projectId || "all");
-            setPage("cora");
+            openClientTool("cora", projectId, { keyword, target, profile });
           } else if (button.dataset.clientCommand === "entity") {
-            state.commandPrefill = { project_id: projectId, keyword, seed_keyword: keyword, command: "entity" };
-            state.entityClient = String(projectId || "all");
-            setPage("entities");
+            openClientTool("entities", projectId, { keyword, target });
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
             setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
           }
         };
       });
+      document.getElementById("clear-active-client")?.addEventListener("click", () => applyActiveClient("all"));
       document.querySelectorAll(".client-open-page").forEach((button) => {
         button.onclick = () => {
           const page = button.dataset.pageTarget || "clients";
           const projectId = String(button.dataset.projectId || "all");
-          if (page === "reports") state.reportClient = projectId;
-          if (page === "runs") state.runClient = projectId;
-          if (page === "jobs") {
-            state.jobClient = projectId;
-            state.jobStatus = "all";
+          if (page === "new-client") {
+            setPage(page);
+            return;
           }
-          if (page === "cora") {
-            state.coraClient = projectId;
-            state.commandPrefill = { project_id: Number(projectId || 0), keyword: button.dataset.keyword || "", target: button.dataset.target || "", target_url: button.dataset.target || "", cora_profile: button.dataset.profile || "", command: "cora" };
-          }
-          if (page === "commands") {
-            state.commandClient = projectId;
-            state.commandStatus = "all";
-            state.commandType = "all";
-          }
-          if (page === "ranking") {
-            state.rankingClient = projectId;
-            state.rankingBase = "";
-            state.rankingCompare = "";
-            state.rankingComparison = null;
-          }
-          if (page === "targets") {
-            state.targetClient = projectId;
-            state.targetSelection = {};
-          }
-          if (page === "plans") {
-            state.planClient = projectId;
-            state.planSelection = {};
-          }
-          if (page === "entity-sets") state.entitySetClient = projectId;
-          if (page === "entities") {
-            state.entityClient = projectId;
-            state.commandPrefill = { project_id: projectId, keyword: button.dataset.keyword || "", target: button.dataset.target || "", command: "entity" };
-          }
-          if (page === "entity-crossover") {
-            state.entityClient = projectId;
-            state.entityBatch = button.dataset.latestBatch || "all";
-          }
-          setPage(page);
+          openClientTool(page, projectId, {
+            keyword: button.dataset.keyword || "",
+            target: button.dataset.target || "",
+            profile: button.dataset.profile || "",
+            latestBatch: button.dataset.latestBatch || "all"
+          });
         };
       });
       document.getElementById("entity-select-visible")?.addEventListener("click", () => {
@@ -4999,6 +5081,7 @@ function cloudMirrorHtml() {
       const names = Object.fromEntries(pages);
       document.getElementById("page-title").textContent = names[state.page] || "Overview";
       document.getElementById("page-note").textContent = "Synced from local dashboard at " + fmtDate(data.generated_at);
+      renderClientContext();
       const content = {
         overview: () => overview(data),
         clients: () => clientsView(data),
@@ -5076,6 +5159,9 @@ function cloudMirrorHtml() {
       lockedView("Dashboard locked in this browser.");
     }
     renderNav();
+    applyTheme(localStorage.getItem("opos_cloud_theme") || "dark");
+    document.getElementById("active-client").onchange = (event) => applyActiveClient(event.target.value || "all");
+    document.getElementById("theme-mode").onchange = (event) => applyTheme(event.target.value || "dark");
     document.getElementById("refresh").onclick = () => load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
     document.getElementById("search").oninput = (event) => { state.q = event.target.value || ""; render(); };
     document.getElementById("read-token").value = readToken();
