@@ -1721,6 +1721,30 @@ def push_cloudflare_sync(tables: list[str] | None = None, dry_run: bool = False)
     }
 
 
+def push_cloudflare_sync_quietly(tables: list[str], reason: str) -> dict[str, Any] | None:
+    if not cloudflare_sync_configured():
+        return None
+    try:
+        return push_cloudflare_sync(tables=tables, dry_run=False)
+    except Exception as exc:
+        log_activity("cloud", f"Cloud sync skipped after {reason}: {exc}", "warn")
+        return None
+
+
+def should_sync_managed_job_update(fields: dict[str, Any]) -> bool:
+    meaningful_fields = {
+        "status",
+        "completed_at",
+        "error",
+        "report_path",
+        "imported_run_id",
+        "retry_count",
+        "next_retry_at",
+        "stall_detected_at",
+    }
+    return any(key in fields for key in meaningful_fields)
+
+
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -2564,6 +2588,8 @@ def job_update(job_id: int, **fields: Any) -> None:
         con.execute(f"UPDATE managed_jobs SET {cols} WHERE id = ?", values)
         row = con.execute("SELECT keyword, project_id, status FROM managed_jobs WHERE id = ?", (job_id,)).fetchone()
     log_job_activity(job_id, row, fields)
+    if should_sync_managed_job_update(fields):
+        push_cloudflare_sync_quietly(["managed_jobs"], f"job {job_id} update")
 
 
 def log_job_activity(job_id: int, row: sqlite3.Row | None, fields: dict[str, Any]) -> None:
@@ -2678,6 +2704,7 @@ def fail_or_retry_job(
             )
     if activity:
         log_activity(activity[0], activity[1], activity[2], **activity[3])
+    push_cloudflare_sync_quietly(["managed_jobs"], f"job {job_id} retry/final update")
     if spawn_retry:
         schedule_job_thread(job_id)
 
@@ -2742,6 +2769,7 @@ def create_managed_job(
         project_id=project_id,
         target_url=target_url,
     )
+    push_cloudflare_sync_quietly(["managed_jobs"], f"job {job_id} creation")
     if queue_paused():
         job_update(job_id, status_message=queue_pause_message())
     else:
@@ -3019,6 +3047,8 @@ def resume_pending_jobs() -> None:
             )
     for row in rows:
         schedule_job_thread(int(row["id"]))
+    if rows:
+        push_cloudflare_sync_quietly(["managed_jobs"], "job resume")
 
 
 def auto_resume_loop() -> None:
