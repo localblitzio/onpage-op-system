@@ -2612,27 +2612,28 @@ function cloudMirrorHtml() {
     :root[data-theme="light"] { color-scheme: light; --bg:#f5f7fa; --panel:#ffffff; --panel-soft:#fbfcfe; --sidebar-bg:#ffffff; --soft:#eef3f9; --line:#d8dee8; --text:#172033; --muted:#657184; --accent:#0b6bcb; --accent2:#084c91; --danger:#b42318; --input-bg:#ffffff; --hover-bg:#eef3f9; --table-head:#f0f3f8; --good:#157347; --warn:#a15c00; }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 Inter, Segoe UI, Arial, sans-serif; }
-    .shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); min-height: 100vh; }
-    aside { border-right: 1px solid var(--line); background: var(--sidebar-bg); padding: 12px; }
-    .brand { padding: 4px 2px 12px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
-    .brand h1 { font-size: 18px; margin: 0; line-height: 1.15; }
-    .brand p { color: var(--muted); margin: 5px 0 0; font-size: 12px; }
+    .topbar { min-height:72px; display:flex; justify-content:space-between; align-items:center; gap:16px; padding:12px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+    .topbar h1 { margin:0; font-size:22px; line-height:1.15; }
+    .topbar p { margin:4px 0 0; color:var(--muted); }
+    .topbar .actions { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; align-items:center; }
+    .app-shell { display:grid; grid-template-columns:190px minmax(0,1fr); min-height:calc(100vh - 72px); }
+    .app-sidebar { border-right:1px solid var(--line); background:var(--sidebar-bg); padding:12px; }
+    .app-content { min-width:0; padding:0 0 36px; }
     .profile-context, .theme-context { border-bottom:1px solid var(--line); margin-bottom:12px; padding-bottom:12px; }
     .profile-context label, .theme-context label { color:var(--muted); display:grid; font-size:12px; font-weight:700; gap:6px; text-transform:uppercase; }
     .profile-context select { background:rgba(92,168,255,.12); border-color:rgba(92,168,255,.45); color:var(--text); font-weight:650; min-width:0; width:100%; }
     .theme-context select { background:var(--input-bg); border-color:var(--line); color:var(--text); font-weight:650; min-width:0; width:100%; }
-    nav { display: grid; gap: 5px; align-items:stretch; }
-    nav button { width:100%; text-align:left; background:transparent; color:var(--muted); border:1px solid transparent; border-radius:6px; padding:8px 10px; cursor:pointer; }
-    nav button:hover { background:var(--hover-bg); color:var(--text); }
-    nav button.active { border-color:var(--accent); background:rgba(92,168,255,.12); color:var(--accent2); }
+    .main-menu { display:grid; gap:5px; align-items:stretch; }
+    .main-menu button { width:100%; text-align:left; background:transparent; color:var(--muted); border:1px solid transparent; border-radius:6px; padding:8px 10px; cursor:pointer; }
+    .main-menu button:hover { background:var(--hover-bg); color:var(--text); }
+    .main-menu button.active { border-color:var(--accent); background:rgba(92,168,255,.12); color:var(--accent2); }
     .nav-group { display:grid; gap:5px; margin:10px 0 12px; }
     .nav-label { color:var(--muted); font-size:11px; font-weight:750; letter-spacing:.04em; text-transform:uppercase; padding:0 2px; margin:10px 0 2px; }
-    nav button.subnav { font-size:13px; margin-left:14px; padding-left:16px; position:relative; width:calc(100% - 14px); color:var(--muted); }
-    nav button.subnav::before { content:""; position:absolute; left:7px; top:11px; bottom:11px; border-left:2px solid var(--line); }
-    nav button.subnav.active, nav button.subnav:hover { color:var(--accent2); }
-    main { min-width: 0; padding: 0 0 36px; }
-    .topbar { min-height:72px; display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; padding:14px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
-    .topbar h2 { margin:0; font-size:22px; }
+    .main-menu button.subnav { font-size:13px; margin-left:14px; padding-left:16px; position:relative; width:calc(100% - 14px); color:var(--muted); }
+    .main-menu button.subnav::before { content:""; position:absolute; left:7px; top:11px; bottom:11px; border-left:2px solid var(--line); }
+    .main-menu button.subnav.active, .main-menu button.subnav:hover { color:var(--accent2); }
+    .page-strip { min-height:56px; display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:14px; padding:12px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+    .page-strip h2 { margin:0; font-size:18px; }
     .muted { color: var(--muted); }
     .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; color:var(--muted); padding:2px 7px; font-size:12px; }
     .ok { color: var(--accent2); }
@@ -2656,7 +2657,7 @@ function cloudMirrorHtml() {
     .status-row { display:flex; justify-content:space-between; gap:12px; border-bottom:1px solid var(--line); padding-bottom:8px; }
     .status-row:last-child { border-bottom:0; padding-bottom:0; }
     .toolbar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-    .toolbar button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
+    .toolbar button, .topbar .actions button { background:var(--accent); color:#061312; border:0; border-radius:6px; font-weight:700; padding:8px 10px; cursor:pointer; }
     .toolbar button.secondary, button.secondary { background:var(--soft); color:var(--accent2); border:1px solid var(--line); }
     button.danger { background:rgba(255,123,114,.15); color:var(--danger); border:1px solid rgba(255,123,114,.45); }
     button:disabled { opacity:.55; cursor:not-allowed; }
@@ -2713,30 +2714,50 @@ function cloudMirrorHtml() {
     .provider-card label { display:flex; gap:7px; align-items:flex-start; color:var(--text); font-size:12px; line-height:1.25; }
     .provider-card input { min-width:auto; margin-top:1px; }
     .provider-card small { display:block; color:var(--muted); }
+    .hidden { display:none !important; }
+    .ranking-tabs { display:flex; gap:6px; flex-wrap:wrap; padding:12px 12px 0; }
+    .ranking-tab { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:8px 10px; cursor:pointer; font-weight:700; }
+    .ranking-tab.active { background:rgba(92,168,255,.16); border-color:var(--accent); color:var(--text); }
+    .ranking-tab-content { padding:12px; }
+    .ranking-overview-grid { display:grid; grid-template-columns:repeat(5,minmax(120px,1fr)); gap:10px; }
+    .overview-card { background:var(--panel-soft); border:1px solid var(--line); border-radius:8px; padding:12px; }
+    .overview-card span { display:block; font-size:22px; font-weight:800; }
+    .overview-card label { color:var(--muted); font-size:12px; }
+    .note-box { border:1px solid var(--line); background:var(--panel-soft); border-radius:8px; color:var(--muted); padding:12px; margin:12px 0; }
     .scroll-table { overflow:auto; max-height:520px; }
     .scroll-table table { min-width:860px; }
     .close-detail { background:var(--soft); color:var(--accent2); border:1px solid var(--line); border-radius:6px; padding:7px 9px; cursor:pointer; }
     @media (max-width: 1200px) { .provider-grid { grid-template-columns:repeat(3,minmax(150px,1fr)); } }
     #app { padding:0 20px; }
-    @media (max-width: 920px) { .shell { grid-template-columns:1fr; } aside { position:static; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } #app { padding:0 12px; } }
+    @media (max-width: 920px) { .app-shell { grid-template-columns:1fr; } .app-sidebar { position:static; } .topbar { align-items:flex-start; flex-direction:column; } .cards,.grid2,.command-grid,.bridge-flags,.check-list,.workspace-grid,.tool-grid,.provider-grid,.ranking-overview-grid { grid-template-columns:1fr; } th:nth-child(4), td:nth-child(4) { display:none; } #app { padding:0 12px; } }
   </style>
 </head>
 <body>
-  <div class="shell">
-    <aside>
-      <div class="brand"><h1>On Page Optimization System</h1><p>Cloud mirror. Local Cora automation stays on Windows.</p></div>
+  <header class="topbar">
+    <div>
+      <h1>On Page Optimization System Dashboard</h1>
+      <p id="cora-status">Cloud mirror connected. Cora runs on the remote Windows bridge.</p>
+    </div>
+    <div class="actions">
+      <button id="top-open-cora" type="button">Run Cora</button>
+      <button id="top-import-latest" type="button">Import Latest Report</button>
+      <button id="refresh">Refresh</button>
+    </div>
+  </header>
+  <div class="app-shell">
+    <aside class="app-sidebar">
       <div class="profile-context">
         <label>Current Client<select id="active-client"></select></label>
       </div>
       <div class="theme-context">
         <label>Theme<select id="theme-mode"><option value="dark">Dark</option><option value="light">Light</option></select></label>
       </div>
-      <nav id="nav"></nav>
+      <nav id="nav" class="main-menu" aria-label="Main menu"></nav>
     </aside>
-    <main>
-      <div class="topbar">
+    <div class="app-content">
+      <div class="page-strip">
         <div><h2 id="page-title">Client Dashboard</h2><div id="page-note" class="muted">Loading synced production data...</div></div>
-        <div class="toolbar"><input id="search" placeholder="Filter current page"><button id="refresh">Refresh</button></div>
+        <div class="toolbar"><input id="search" placeholder="Filter current page"></div>
       </div>
       <details class="access">
         <summary>Access</summary>
@@ -2752,7 +2773,7 @@ function cloudMirrorHtml() {
         </div>
       </details>
       <div id="app"><div class="empty">Loading cloud mirror...</div></div>
-    </main>
+    </div>
   </div>
   <script>
     let state = { data: null, page: "clients", activeClient: localStorage.getItem("opos_active_client") || "all", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", domainEditId: "", domainListType: "all", commandPrefill: null, detail: null };
@@ -4011,21 +4032,33 @@ function cloudMirrorHtml() {
       const keywords = data.keywords || [];
       const pages = data.pages || [];
       const targets = data.targets || [];
+      const overview = snapshot.overview || {};
+      const dist = overview.rankingDistribution || overview.ranking_distribution || {};
       const derivedTargets = buildSnapshotOptimizationTargets(data);
       const keywordRows = keywords.map((k) => '<tr><td><strong>' + esc(k.keyword || "") + '</strong><br><span class="muted">' + esc(k.intent || "") + '</span></td><td>' + esc(k.position || "") + '</td><td>' + esc(k.previous_position || "") + '</td><td><a href="' + esc(k.ranking_url || "") + '" target="_blank">' + esc(k.ranking_url || "") + '</a></td><td>' + esc(fmtNum(k.search_volume)) + '</td><td>' + esc(k.estimated_traffic || "") + '</td><td>' + (k.ai_overview_present ? 'AIO' : '') + (k.ai_overview_reference ? ' / Ref' : '') + '</td></tr>');
-      const pageRows = pages.map((p) => '<tr><td><a href="' + esc(p.url || "") + '" target="_blank">' + esc(p.url || "") + '</a></td><td>' + esc(fmtNum(p.organic_keywords)) + '</td><td>' + esc(p.organic_traffic || "") + '</td><td>' + esc(p.organic_traffic_cost || "") + '</td><td>' + esc(p.top3 || "") + '</td><td>' + esc(p.top10 || "") + '</td></tr>');
+      const pageRows = pages.map((p) => '<tr><td><a href="' + esc(p.url || "") + '" target="_blank">' + esc(p.url || "") + '</a></td><td>' + esc(fmtNum(p.organic_keywords)) + '</td><td>' + esc(p.organic_traffic || "") + '</td><td>' + esc(p.organic_traffic_cost || "") + '</td><td>' + esc(p.top3 || "") + '</td><td>' + esc(p.top10 || "") + '</td><td>' + esc(p.top20 || "") + '</td><td>' + esc(p.paid_keywords || "") + '</td></tr>');
       const targetRows = targets.map((t) => '<tr><td><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></td><td>' + esc(t.keyword || "") + '</td><td>' + esc(t.best_position || "") + '</td><td>' + esc(t.opportunity_score || "") + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td><td>' + esc(t.recommended_action || "") + '</td></tr>');
+      const opportunityRows = derivedTargets.slice(0, 150).map((target) => '<tr><td>' + esc(target.priorityType || "") + '</td><td>' + esc(target.keyword || "") + '</td><td>' + esc(target.bestPosition || "") + '</td><td><a href="' + esc(target.url || "") + '" target="_blank">' + esc(target.url || "") + '</a></td><td>' + esc(fmtNum(target.totalSearchVolume || 0)) + '</td><td>' + esc(fmtNum(target.estimatedTraffic || 0)) + '</td><td>' + esc(target.recommendedAction || "") + '</td></tr>');
       const saveRows = derivedTargets.slice(0, 100).map((target, index) => {
         const encoded = encodeURIComponent(JSON.stringify(target));
         const checked = target.id ? "" : " checked";
         return '<tr><td><input class="snapshot-target-check" type="checkbox" data-target-index="' + esc(index) + '" data-target="' + encoded + '"' + checked + '></td><td><a href="' + esc(target.url || "") + '" target="_blank">' + esc(target.url || "") + '</a><br><span class="muted">' + esc(target.recommendedAction || "") + '</span></td><td>' + esc(target.keyword || "") + '</td><td>' + esc(target.bestPosition || "") + '</td><td>' + esc(fmtNum(target.opportunityCount || 0)) + '</td><td>' + esc(fmtNum(target.totalSearchVolume || 0)) + '</td><td><span class="pill">' + esc(fmtNum(target.opportunityScore || 0)) + '</span><br><span class="muted">' + esc(target.priorityType || "") + '</span></td><td><span class="pill">' + esc(target.status || "new") + '</span></td></tr>';
       });
       const savePanel = '<section><div class="head"><h3>Save Optimization Targets</h3><span class="muted">Select ranking pages from this snapshot and save them to Saved Targets.</span></div><div class="toolbar"><button id="snapshot-target-select-visible" class="secondary">Select Visible</button><button id="snapshot-target-clear" class="secondary">Clear</button><select id="snapshot-target-status"><option value="selected">Selected</option><option value="in_cora">In Cora</option><option value="in_entity_explorer">In Entity Explorer</option><option value="content_plan_created">Plan Created</option><option value="optimized">Optimized</option><option value="archived">Archived</option></select><button id="snapshot-target-save" data-snapshot-id="' + esc(snapshot.id || "") + '" data-project-id="' + esc(snapshot.project_id || "") + '">Save Selected Targets</button></div>' + detailTable(["","URL","Keyword","Best Pos","Opps","Volume","Score","Status"], saveRows, "No ranking pages can be converted to optimization targets for this snapshot.") + '</section>';
+      const overviewPanel = '<div class="ranking-overview-grid">'
+        + [["Organic Keywords", overview.organicKeywords ?? overview.organic_keywords],["Estimated Organic Traffic", overview.organicTraffic ?? overview.organic_traffic],["Traffic Cost", overview.organicTrafficCost ?? overview.organic_traffic_cost],["Paid Keywords", overview.paidKeywords ?? overview.paid_keywords],["Top 1", dist.top1],["Top 3", dist.top3],["Top 10", dist.top10],["Top 20", dist.top20],["Top 100", dist.top100]].map(([label, value]) => '<div class="overview-card"><span>' + esc(fmtNum(value || 0)) + '</span><label>' + esc(label) + '</label></div>').join("")
+        + '</div><div class="note-box">' + esc(overview.dataFreshnessNote || "DataForSEO Labs data is updated weekly; this is not live rank tracking.") + '</div>';
+      const tabs = [
+        ["overview", "Overview", overviewPanel],
+        ["targets", "Optimization Targets", savePanel + '<section><div class="head"><h3>Saved Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status","Action"], targetRows, "No optimization targets synced for this snapshot.") + '</section>'],
+        ["keywords", "Ranking Keywords", '<section><div class="head"><h3>Ranking Keywords</h3><span class="muted">Keyword, position, URL, volume, traffic, and AI Overview fields.</span></div>' + detailTable(["Keyword","Pos","Prev","URL","Volume","Traffic","AI"], keywordRows, "No ranking keywords synced for this snapshot.") + '</section>'],
+        ["pages", "Ranking Pages", '<section><div class="head"><h3>Ranking Pages</h3><span class="muted">Organic page traffic and keyword distribution.</span></div>' + detailTable(["URL","Keywords","Traffic","Cost","Top 3","Top 10","Top 20","Paid Keywords"], pageRows, "No ranking pages synced for this snapshot.") + '</section>'],
+        ["opportunities", "Opportunities", '<section><div class="head"><h3>Opportunities</h3><span class="muted">Derived from ranking pages and keyword positions.</span></div>' + detailTable(["Type","Keyword","Best Pos","Ranking URL","Volume","Traffic","Recommended Action"], opportunityRows, "No opportunities derived for this snapshot.") + '</section>']
+      ];
+      const tabButtons = '<div class="ranking-tabs">' + tabs.map(([id, label], index) => '<button type="button" class="ranking-tab' + (index ? '' : ' active') + '" data-detail-tab="' + esc(id) + '">' + esc(label) + '</button>').join("") + '</div>';
+      const tabPanels = tabs.map(([id, _label, html], index) => '<div class="ranking-tab-content detail-tab-panel' + (index ? ' hidden' : '') + '" data-detail-tab-panel="' + esc(id) + '">' + html + '</div>').join("");
       return smallCards([["Target", snapshot.target || ""],["Client", snapshot.project_name || ""],["Locale", (snapshot.location_code || "") + " / " + (snapshot.language_code || "")],["Keywords", keywords.length],["Pages", pages.length],["Targets", targets.length]])
-        + savePanel
-        + '<section><div class="head"><h3>Ranking Keywords</h3></div>' + detailTable(["Keyword","Pos","Prev","URL","Volume","Traffic","AI"], keywordRows, "No ranking keywords synced for this snapshot.") + '</section>'
-        + '<section><div class="head"><h3>Ranking Pages</h3></div>' + detailTable(["URL","Keywords","Traffic","Cost","Top 3","Top 10"], pageRows, "No ranking pages synced for this snapshot.") + '</section>'
-        + '<section><div class="head"><h3>Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status","Action"], targetRows, "No optimization targets synced for this snapshot.") + '</section>';
+        + '<section><div class="head"><h3>' + esc(snapshot.target || "Ranking Snapshot") + ' Ranking Snapshot</h3><span class="muted">' + esc(snapshot.source || "DataForSEO Labs") + ' / ' + esc(snapshot.freshness || "weekly") + ' / ' + esc(fmtDate(snapshot.created_at)) + '</span></div>' + tabButtons + tabPanels + '</section>';
     }
     function entitySetDetail(data) {
       const set = data.entity_set || {};
@@ -5020,6 +5053,13 @@ function cloudMirrorHtml() {
       document.querySelectorAll(".close-detail").forEach((button) => {
         button.onclick = () => { state.detail = null; render(); };
       });
+      document.querySelectorAll(".ranking-tab").forEach((button) => {
+        button.onclick = () => {
+          const tab = button.dataset.detailTab || "overview";
+          document.querySelectorAll(".ranking-tab").forEach((item) => item.classList.toggle("active", item === button));
+          document.querySelectorAll(".detail-tab-panel").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.detailTabPanel !== tab));
+        };
+      });
       document.querySelectorAll(".client-command").forEach((button) => {
         button.onclick = () => {
           const projectId = String(button.dataset.projectId || "all");
@@ -5081,6 +5121,11 @@ function cloudMirrorHtml() {
       const names = Object.fromEntries(pages);
       document.getElementById("page-title").textContent = names[state.page] || "Overview";
       document.getElementById("page-note").textContent = "Synced from local dashboard at " + fmtDate(data.generated_at);
+      const bridge = (data.bridges || [])[0] || {};
+      const coraStatus = document.getElementById("cora-status");
+      if (coraStatus) coraStatus.textContent = bridge.online
+        ? "Remote Cora bridge online. Cora execution " + (bridge.allow_cora ? "enabled." : "disabled.")
+        : "Remote Cora bridge offline. Cloud tools and synced data remain available.";
       renderClientContext();
       const content = {
         overview: () => overview(data),
@@ -5163,6 +5208,8 @@ function cloudMirrorHtml() {
     document.getElementById("active-client").onchange = (event) => applyActiveClient(event.target.value || "all");
     document.getElementById("theme-mode").onchange = (event) => applyTheme(event.target.value || "dark");
     document.getElementById("refresh").onclick = () => load().catch((error) => document.getElementById("app").innerHTML = '<div class="empty warn">' + esc(error.message || error) + '</div>');
+    document.getElementById("top-open-cora").onclick = () => openClientTool("cora", state.activeClient || "all");
+    document.getElementById("top-import-latest").onclick = () => setPage("reports");
     document.getElementById("search").oninput = (event) => { state.q = event.target.value || ""; render(); };
     document.getElementById("read-token").value = readToken();
     document.getElementById("request-login").onclick = () => requestLoginCode().catch((error) => alert(error.message || error));
