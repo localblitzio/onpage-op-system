@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -13,6 +14,8 @@ import app
 
 class DashboardSmokeTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.env_patcher = patch.dict(os.environ, {"CLOUDFLARE_SYNC_URL": "", "CLOUDFLARE_SYNC_TOKEN": ""})
+        self.env_patcher.start()
         self.tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         root = Path(self.tmp.name)
         app.DATA_DIR = root / "data"
@@ -20,6 +23,7 @@ class DashboardSmokeTests(unittest.TestCase):
         app.DB_PATH = app.DATA_DIR / "test.sqlite3"
         app.QUEUE_PAUSE_PATH = app.DATA_DIR / "queue_paused.flag"
         app.BRIDGE_SETTINGS_PATH = app.DATA_DIR / "cloud_bridge.json"
+        app.BRIDGE_SECRETS_PATH = app.DATA_DIR / "cloud_bridge_secrets.json"
         app.ACTIVITY_LOG_PATH = app.DATA_DIR / "dashboard_activity.jsonl"
         app.STATIC_DIR = root / "static"
         app.init_db()
@@ -27,6 +31,7 @@ class DashboardSmokeTests(unittest.TestCase):
     def tearDown(self) -> None:
         gc.collect()
         self.tmp.cleanup()
+        self.env_patcher.stop()
 
     def insert_run(self, keyword: str, target_domain: str, sha: str, imported_at: str) -> int:
         con = app.connect()
@@ -156,6 +161,26 @@ class DashboardSmokeTests(unittest.TestCase):
     def test_cloudflare_sync_requires_configuration_for_push(self) -> None:
         with self.assertRaisesRegex(ValueError, "not configured"):
             app.push_cloudflare_sync(tables=["projects"], dry_run=False)
+
+    def test_cloudflare_sync_config_can_be_persisted_for_bridge_startup(self) -> None:
+        result = app.save_cloudflare_sync_credentials("https://onpage.localblitz.io/", "secret-token")
+
+        self.assertTrue(result["configured"])
+        self.assertTrue(app.cloudflare_sync_configured())
+        state = app.cloudflare_sync_state()
+        self.assertEqual(state["sync_url"], "https://onpage.localblitz.io")
+        self.assertTrue(state["has_token"])
+        self.assertEqual(state["credential_source"], "file")
+
+    def test_cloudflare_sync_config_blank_token_preserves_existing_token(self) -> None:
+        app.save_cloudflare_sync_credentials("https://old.example", "secret-token")
+
+        result = app.save_cloudflare_sync_credentials("https://new.example", "")
+
+        self.assertEqual(result["sync_url"], "https://new.example")
+        creds = app.cloudflare_sync_credentials()
+        self.assertEqual(creds["sync_url"], "https://new.example")
+        self.assertEqual(creds["sync_token"], "secret-token")
 
     def test_ranking_snapshot_domain_normalization(self) -> None:
         self.assertEqual(app.normalize_ranking_snapshot_target("https://www.Example.com/path/"), "example.com")

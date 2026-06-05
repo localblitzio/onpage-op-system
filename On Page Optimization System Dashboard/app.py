@@ -32,6 +32,7 @@ ARCHIVE_DIR = DATA_DIR / "archive"
 DB_PATH = DATA_DIR / "cora_runs.sqlite3"
 QUEUE_PAUSE_PATH = DATA_DIR / "queue_paused.flag"
 BRIDGE_SETTINGS_PATH = DATA_DIR / "cloud_bridge.json"
+BRIDGE_SECRETS_PATH = DATA_DIR / "cloud_bridge_secrets.json"
 ACTIVITY_LOG_PATH = DATA_DIR / "dashboard_activity.jsonl"
 STATIC_DIR = APP_DIR / "static"
 DEFAULT_REPORT_DIR = Path.home()
@@ -43,8 +44,6 @@ JOB_POLL_SECONDS = 10
 JOB_TIMEOUT_SECONDS = 60 * 60 * 2
 CORA_FREEZE_SECONDS = int(os.environ.get("CORA_FREEZE_SECONDS", str(60 * 10)))
 DEFAULT_JOB_MAX_RETRIES = int(os.environ.get("CORA_JOB_MAX_RETRIES", "1"))
-CLOUDFLARE_SYNC_URL = os.environ.get("CLOUDFLARE_SYNC_URL", "").rstrip("/")
-CLOUDFLARE_SYNC_TOKEN = os.environ.get("CLOUDFLARE_SYNC_TOKEN", "")
 CLOUDFLARE_SYNC_BATCH_SIZE = max(1, min(int(os.environ.get("CLOUDFLARE_SYNC_BATCH_SIZE", "250")), 1000))
 CLOUDFLARE_SYNC_WORKBOOK_ROWS = os.environ.get("CLOUDFLARE_SYNC_WORKBOOK_ROWS", "").strip().lower() in {"1", "true", "yes"}
 CORA_JOB_LOCK = threading.Lock()
@@ -180,6 +179,39 @@ def set_queue_paused(
         log_activity("queue", "Queue resumed", "info")
         if QUEUE_PAUSE_PATH.exists():
             QUEUE_PAUSE_PATH.unlink()
+
+
+def cloudflare_sync_credentials() -> dict[str, str]:
+    file_url = ""
+    file_token = ""
+    if BRIDGE_SECRETS_PATH.exists():
+        try:
+            data = json.loads(BRIDGE_SECRETS_PATH.read_text(encoding="utf-8"))
+            file_url = clean_text(data.get("sync_url")) or ""
+            file_token = clean_text(data.get("sync_token")) or ""
+        except Exception:
+            file_url = ""
+            file_token = ""
+    sync_url = (file_url or os.environ.get("CLOUDFLARE_SYNC_URL", "")).rstrip("/")
+    sync_token = file_token or os.environ.get("CLOUDFLARE_SYNC_TOKEN", "")
+    source = "file" if file_url and file_token else ("environment" if sync_url and sync_token else "")
+    return {"sync_url": sync_url, "sync_token": sync_token, "source": source}
+
+
+def save_cloudflare_sync_credentials(sync_url: str | None = None, sync_token: str | None = None) -> dict[str, Any]:
+    existing = cloudflare_sync_credentials()
+    url = (clean_text(sync_url) or existing.get("sync_url") or "").rstrip("/")
+    token = clean_text(sync_token) or existing.get("sync_token") or ""
+    if not url or not token:
+        raise ValueError("Cloudflare sync URL and token are required.")
+    ensure_dirs()
+    payload = {
+        "sync_url": url,
+        "sync_token": token,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    BRIDGE_SECRETS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {"configured": True, "sync_url": url, "has_token": True, "source": "file", "updated_at": payload["updated_at"]}
 
 
 def bridge_settings() -> dict[str, Any]:
@@ -773,7 +805,8 @@ def cloudflare_sync_tables() -> list[str]:
 
 
 def cloudflare_sync_configured() -> bool:
-    return bool(CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN)
+    creds = cloudflare_sync_credentials()
+    return bool(creds["sync_url"] and creds["sync_token"])
 
 
 def cloudflare_sync_state() -> dict[str, Any]:
@@ -792,10 +825,12 @@ def cloudflare_sync_state() -> dict[str, Any]:
             except sqlite3.Error:
                 counts[table] = 0
         artifacts = cloudflare_artifact_state(con)
+    creds = cloudflare_sync_credentials()
     return {
         "configured": cloudflare_sync_configured(),
-        "sync_url": CLOUDFLARE_SYNC_URL,
-        "has_token": bool(CLOUDFLARE_SYNC_TOKEN),
+        "sync_url": creds["sync_url"],
+        "has_token": bool(creds["sync_token"]),
+        "credential_source": creds["source"],
         "batch_size": CLOUDFLARE_SYNC_BATCH_SIZE,
         "includes_workbook_rows": CLOUDFLARE_SYNC_WORKBOOK_ROWS,
         "counts": counts,
@@ -928,16 +963,17 @@ def pull_cloudflare_sync(tables: list[str] | None = None, limit: int = 5000) -> 
 
 
 def post_cloudflare_sync_batch(payload: dict[str, Any]) -> dict[str, Any]:
-    if not cloudflare_sync_configured():
+    creds = cloudflare_sync_credentials()
+    if not creds["sync_url"] or not creds["sync_token"]:
         raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
     body = json.dumps(payload, default=str).encode("utf-8")
     request = urllib.request.Request(
-        f"{CLOUDFLARE_SYNC_URL}/api/sync/push",
+        f"{creds['sync_url']}/api/sync/push",
         data=body,
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {CLOUDFLARE_SYNC_TOKEN}",
+            "Authorization": f"Bearer {creds['sync_token']}",
             "User-Agent": "OnPageOptimizationSystemDashboard/1.0",
         },
         method="POST",
@@ -951,16 +987,17 @@ def post_cloudflare_sync_batch(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def cloudflare_request_json(path: str, payload: dict[str, Any], timeout: int = 120) -> dict[str, Any]:
-    if not cloudflare_sync_configured():
+    creds = cloudflare_sync_credentials()
+    if not creds["sync_url"] or not creds["sync_token"]:
         raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
     body = json.dumps(payload, default=str).encode("utf-8")
     request = urllib.request.Request(
-        f"{CLOUDFLARE_SYNC_URL}{path}",
+        f"{creds['sync_url']}{path}",
         data=body,
         headers={
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {CLOUDFLARE_SYNC_TOKEN}",
+            "Authorization": f"Bearer {creds['sync_token']}",
             "User-Agent": "OnPageOptimizationSystemDashboard/1.0",
         },
         method="POST",
@@ -974,13 +1011,14 @@ def cloudflare_request_json(path: str, payload: dict[str, Any], timeout: int = 1
 
 
 def cloudflare_get_json(path: str, timeout: int = 120) -> dict[str, Any]:
-    if not cloudflare_sync_configured():
+    creds = cloudflare_sync_credentials()
+    if not creds["sync_url"] or not creds["sync_token"]:
         raise ValueError("Cloudflare sync is not configured. Set CLOUDFLARE_SYNC_URL and CLOUDFLARE_SYNC_TOKEN.")
     request = urllib.request.Request(
-        f"{CLOUDFLARE_SYNC_URL}{path}",
+        f"{creds['sync_url']}{path}",
         headers={
             "Accept": "application/json",
-            "Authorization": f"Bearer {CLOUDFLARE_SYNC_TOKEN}",
+            "Authorization": f"Bearer {creds['sync_token']}",
             "User-Agent": "OnPageOptimizationSystemDashboard/1.0",
         },
         method="GET",
@@ -1430,7 +1468,7 @@ def collect_share_report_artifacts(report_id: int, cloud_base_url: str | None = 
     if not report:
         raise ValueError("Shared report not found")
     token = str(report["token"])
-    base_url = (cloud_base_url or CLOUDFLARE_SYNC_URL or "").rstrip("/")
+    base_url = (cloud_base_url or cloudflare_sync_credentials()["sync_url"] or "").rstrip("/")
     data = shared_report_by_token(token)
     html_body = render_shared_report_html(data, base_url)
     artifacts = [
@@ -1567,7 +1605,7 @@ def sync_cloudflare_report_artifacts(report_ids: list[int] | None = None, dry_ru
         "total_bytes": 0,
     }
     for report_id in selected_ids:
-        for artifact in collect_share_report_artifacts(report_id, CLOUDFLARE_SYNC_URL):
+        for artifact in collect_share_report_artifacts(report_id, cloudflare_sync_credentials()["sync_url"]):
             body = artifact["body"]
             artifact_sha = hashlib.sha256(body).hexdigest()
             existing = None
@@ -6471,6 +6509,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 json_response(self, cloudflare_artifact_state())
             elif path == "/api/cloudflare/bridge":
                 json_response(self, bridge_status())
+            elif path == "/api/cloudflare/config":
+                creds = cloudflare_sync_credentials()
+                json_response(self, {"configured": bool(creds["sync_url"] and creds["sync_token"]), "sync_url": creds["sync_url"], "has_token": bool(creds["sync_token"]), "credential_source": creds["source"]})
             elif path == "/api/content-plans":
                 self.api_content_plans(query)
             elif path == "/api/entity-lsi/runs":
@@ -6667,6 +6708,9 @@ class AppHandler(BaseHTTPRequestHandler):
                         send_bridge_heartbeat(result={"settings_updated": True})
                     except Exception:
                         pass
+                json_response(self, result)
+            elif parsed.path == "/api/cloudflare/config":
+                result = save_cloudflare_sync_credentials(body.get("sync_url"), body.get("sync_token"))
                 json_response(self, result)
             elif parsed.path == "/api/share-reports":
                 report = create_share_report(
@@ -7469,6 +7513,15 @@ def main(argv: list[str]) -> int:
 
     if len(argv) > 1 and argv[1] == "cloudflare-status":
         print(json.dumps(cloudflare_sync_state(), indent=2, default=str))
+        return 0
+
+    if len(argv) > 1 and argv[1] == "cloudflare-save-config":
+        url_arg = next((arg for arg in argv[2:] if arg.startswith("--url=")), "")
+        token_arg = next((arg for arg in argv[2:] if arg.startswith("--token=")), "")
+        url = url_arg.removeprefix("--url=") if url_arg else os.environ.get("CLOUDFLARE_SYNC_URL", "")
+        token = token_arg.removeprefix("--token=") if token_arg else os.environ.get("CLOUDFLARE_SYNC_TOKEN", "")
+        result = save_cloudflare_sync_credentials(url, token)
+        print(json.dumps({key: value for key, value in result.items() if key != "sync_token"}, indent=2, default=str))
         return 0
 
     if len(argv) > 1 and argv[1] == "cloudflare-sync":

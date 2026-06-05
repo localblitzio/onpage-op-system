@@ -505,6 +505,7 @@ function renderCloudflareSyncPanel() {
       </div>
       <div id="cloudflare-sync-status" class="cloudflare-sync-status">
         <div><label>Endpoint</label><strong>${htmlEscape(cloudflare.sync_url || "Not configured")}</strong></div>
+        <div><label>Credential Source</label><strong>${htmlEscape(cloudflare.credential_source || "none")}</strong></div>
         <div><label>Rows Prepared</label><strong>${fmtNum(cloudflareRows)}</strong></div>
         <div><label>Batch Size</label><strong>${fmtNum(cloudflare.batch_size || 0)}</strong></div>
         <div><label>Last Success</label><strong>${fmtDate(cloudflareLast) || "Never"}</strong></div>
@@ -515,6 +516,11 @@ function renderCloudflareSyncPanel() {
         <div><label>Last Poll</label><strong>${fmtDate(bridge.last_poll_at) || "Never"}</strong></div>
         <div><label>Cora Commands</label><strong>${bridge.allow_cora ? "Allowed" : "Blocked"}</strong></div>
         <div><label>Paid/API Tools</label><strong>${bridge.allow_paid_tools ? "Allowed" : "Blocked"}</strong></div>
+      </div>
+      <div class="cloud-bridge-controls">
+        <label>Worker URL <input id="cloudflare-sync-url" type="url" value="${htmlEscape(cloudflare.sync_url || "")}" placeholder="https://onpage.localblitz.io"></label>
+        <label>Sync Token <input id="cloudflare-sync-token" type="password" placeholder="${cloudflare.has_token ? "Saved token unchanged" : "Paste sync/admin token"}"></label>
+        <button id="save-cloudflare-config" type="button" class="secondary">Save Sync Config</button>
       </div>
       <div class="cloud-bridge-controls">
         <label><input id="bridge-enabled" type="checkbox" ${bridge.enabled ? "checked" : ""}> Auto-pull cloud commands</label>
@@ -552,6 +558,7 @@ function bindCloudflareSyncControls() {
   el("cloudflare-files-dry-run")?.addEventListener("click", () => runCloudflareArtifactSync(true).catch((err) => toast(err.message)));
   el("cloudflare-files-sync-now")?.addEventListener("click", () => runCloudflareArtifactSync(false).catch((err) => toast(err.message)));
   el("cloudflare-commands-pull")?.addEventListener("click", () => pullCloudflareCommands().catch((err) => toast(err.message)));
+  el("save-cloudflare-config")?.addEventListener("click", () => saveCloudflareConfig().catch((err) => toast(err.message)));
   el("save-bridge-settings")?.addEventListener("click", () => saveCloudBridgeSettings().catch((err) => toast(err.message)));
 }
 
@@ -596,6 +603,18 @@ async function pullCloudflareCommands() {
   if (state.activeView === "overview-view") renderOverview();
   if (state.activeView === "cloud-sync-view") renderCloudSyncPage();
   toast(`Processed ${fmtNum(result.processed || 0)} cloud commands.`);
+}
+
+async function saveCloudflareConfig() {
+  const syncUrl = el("cloudflare-sync-url")?.value || "";
+  const syncToken = el("cloudflare-sync-token")?.value || "";
+  const result = await api("/api/cloudflare/config", {
+    method: "POST",
+    body: JSON.stringify({ sync_url: syncUrl, sync_token: syncToken }),
+  });
+  state.cloudflareSync = await api("/api/cloudflare/status").catch(() => state.cloudflareSync);
+  renderCloudflareActiveView();
+  toast(result.configured ? "Cloudflare sync config saved for bridge startup." : "Cloudflare sync config not complete.");
 }
 
 async function saveCloudBridgeSettings() {
