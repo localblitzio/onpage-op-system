@@ -4,7 +4,8 @@ const baseUrl = process.env.OPOS_SMOKE_URL || "https://onpage.localblitz.io/";
 const token = process.env.OPOS_SMOKE_TOKEN || process.env.OPOS_READ_TOKEN || process.env.OPOS_ADMIN_TOKEN || "";
 const sessionToken = process.env.OPOS_SMOKE_SESSION || "";
 const headless = String(process.env.OPOS_SMOKE_HEADLESS || "").toLowerCase() === "true";
-const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity & LSI Explorer", "Entity Crossover", "Entity Sets"];
+const expectAdmin = String(process.env.OPOS_EXPECT_ADMIN || "").toLowerCase() === "true";
+const requiredNav = ["Run Cora", "Cora Profiles", "Cora Reports", "Ranking Snapshot", "Entity & LSI Explorer", "Entity Crossover", "Entity Sets", "Users & Settings"];
 const checks = [];
 const errors = [];
 
@@ -146,6 +147,23 @@ try {
     await clickNav(page, "Entity Sets");
     await page.locator("#page-title", { hasText: "Entity Sets" }).waitFor({ state: "visible", timeout: 10000 });
     assert(await page.locator("text=Saved approved entity/LSI terms").count(), "Entity Sets page renders saved-set context");
+
+    await clickNav(page, "Users & Settings");
+    await page.locator("#page-title", { hasText: "Users & Settings" }).waitFor({ state: "visible", timeout: 10000 });
+    if (expectAdmin) {
+      await page.getByRole("heading", { name: "Current Access" }).waitFor({ state: "visible", timeout: 10000 });
+      assert(await page.locator("#admin-current-access").count(), "Admin current access panel renders");
+      assert(await page.locator("#admin-user-form").count(), "Admin user management form renders");
+      assert(await page.locator("#admin-tool-guardrails").count(), "Admin tool guardrails render");
+      assert(await page.locator("#admin-users-table").count(), "Admin users table renders");
+      const adminApi = await page.evaluate(async () => {
+        const response = await fetch("/api/admin/users");
+        return { status: response.status, body: await response.json().catch(() => ({})) };
+      });
+      assert(adminApi.status === 200 && Array.isArray(adminApi.body?.users), "Admin users API is available to admin session");
+    } else {
+      assert(await page.locator("#admin-locked").count(), "Read session sees admin-required settings state");
+    }
 
     console.log(JSON.stringify({ ok: true, mode: "authenticated", checks }, null, 2));
   }

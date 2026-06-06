@@ -58,6 +58,7 @@ Run these after ordinary UI, sync, report, or bridge changes:
 ```powershell
 Set-Location "D:\CC-Cora 7.2\cloudflare"
 npm run smoke:cloud:auth
+npm run smoke:cloud:admin
 npm run verify:cora-domain-bridge
 npm run verify:cora-profile-bridge
 npm run verify:cora-report-artifacts
@@ -75,7 +76,7 @@ npm run verify:live-paid-tools
 
 Parity is no longer the main blocker. The next work should be product hardening:
 
-- Cloud user/admin management by email.
+- Local user/admin impact and permissions model after cloud email/admin is stabilized.
 - Conflict handling for bidirectional edits.
 - Cleanup/archive policy for verification rows and old reports.
 - More polished report templates by level: Basic, Medium, Comprehensive.

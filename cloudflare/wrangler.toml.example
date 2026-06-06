@@ -6,7 +6,7 @@ workers_dev = true
 # Copy this file to wrangler.toml and fill in your real IDs before deploying.
 
 routes = [
-  { pattern = "onpage.example.com", custom_domain = true }
+  { pattern = "onpage.example.com/*", zone_name = "example.com" }
 ]
 
 [[d1_databases]]

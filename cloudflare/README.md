@@ -43,6 +43,7 @@ Auth roles:
 - `READ_TOKEN` can view the cloud dashboard and synced mirror data.
 - `ADMIN_TOKEN` can queue/reset cloud commands.
 - `SYNC_TOKEN` is used by the local dashboard bridge and can also act as the fallback admin/read token if the other secrets are not set.
+- Cloud users can also sign in with email codes after an admin creates them under `System > Users & Settings`.
 - Public customer report URLs under `/share/report/{token}` do not require dashboard auth.
 
 The cloud dashboard includes an Audit Trail page for recent sync, bridge, command, report view, and report download events.
@@ -63,6 +64,23 @@ The production Worker is configured for:
 
 ```text
 https://onpage.localblitz.io
+```
+
+The production trigger should be an explicit zone route:
+
+```toml
+routes = [
+  { pattern = "onpage.localblitz.io/*", zone_name = "localblitz.io" }
+]
+```
+
+This route is intentional. A custom-domain trigger did not reliably intercept the hostname while another cached site existed on the same host.
+
+Smoke test the deployed dashboard:
+
+```bash
+npm run smoke:cloud:auth
+npm run smoke:cloud:admin
 ```
 
 ## Local Dashboard Sync

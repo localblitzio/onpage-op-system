@@ -47,6 +47,16 @@ Production URL:
 https://onpage.localblitz.io/
 ```
 
+Production trigger:
+
+```toml
+routes = [
+  { pattern = "onpage.localblitz.io/*", zone_name = "localblitz.io" }
+]
+```
+
+Use the explicit zone route. The earlier custom-domain trigger deployed successfully but did not intercept the hostname while a cached Local Blitz Analytics site was still being served.
+
 Worker deploy command:
 
 ```powershell
@@ -77,6 +87,8 @@ https://github.com/localblitzio/onpage-op-system
 Implemented:
 
 - Cloud navigation is grouped by Clients, Cora, Entity Explorer, Ranking, Planning, System.
+- `System > Users & Settings` exposes cloud admin controls for email-code users, client scope, provider secret status, and paid-tool guardrails.
+- Read users see an admin-required state on `Users & Settings`; admin sessions see the user form, users table, and tool guardrails.
 - `Cora > Run Cora` is a real tool page.
 - `Ranking > Ranking Snapshot` has a direct run panel.
 - Cloud Ranking Snapshot detail now includes a Save Optimization Targets workflow.
@@ -173,6 +185,7 @@ Smoke tests are visible by default so the browser window can be observed.
 Set-Location "D:\CC-Cora 7.2\cloudflare"
 npm run smoke:cloud
 npm run smoke:cloud:auth
+npm run smoke:cloud:admin
 npm run verify:cora-domain-bridge
 npm run verify:cora-profile-bridge
 npm run verify:cora-report-artifacts
@@ -201,6 +214,8 @@ We have been using a temporary D1 `cloud_users` + `cloud_sessions` row for authe
 
 `npm run smoke:cloud:auth` now handles temporary D1 session setup and cleanup automatically. It does not print the generated session token.
 
+`npm run smoke:cloud:admin` creates a temporary admin D1 session, verifies `System > Users & Settings`, checks `/api/admin/users`, and cleans up after itself.
+
 Authenticated smoke currently checks:
 
 - Dashboard leaves loading state.
@@ -216,6 +231,8 @@ Authenticated smoke currently checks:
 - Entity Crossover page renders the inline save workflow instead of requiring a separate detail prompt.
 - Entity Sets page renders saved-set context.
 - Inline status containers exist.
+- Users & Settings renders the admin-required state for read users.
+- Users & Settings renders the admin user form, users table, tool guardrails, and admin users API for admin users.
 
 Bridge verification scripts currently check:
 
@@ -315,7 +332,7 @@ Live status refresh on the tool pages has been started:
 ## Next Phase
 
 - Move from parity proof to product hardening:
-  - Cloud user/admin management by email.
+  - Local user/admin impact and permissions model after cloud email/admin is stabilized.
   - Conflict handling for bidirectional cloud/local edits.
   - Cleanup/archive policy for verification rows and old report artifacts.
   - More polished Basic, Medium, and Comprehensive customer report templates.

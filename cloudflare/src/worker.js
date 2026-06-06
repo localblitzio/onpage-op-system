@@ -2806,7 +2806,7 @@ function cloudMirrorHtml() {
       ["sync", "Cloud Sync"],
       ["audit", "Audit Trail"],
       ["commands", "Command Review"],
-      ["admin", "Settings"]
+      ["admin", "Users & Settings"]
     ];
     const navGroups = [
       ["Clients", [["clients", "Client Dashboard"],["new-client", "New Client"]]],
@@ -2814,7 +2814,7 @@ function cloudMirrorHtml() {
       ["Entity Explorer", [["entities", "Entity & LSI Explorer"],["entity-crossover", "Entity Crossover"],["entity-sets", "Entity Sets"]]],
       ["Ranking", [["ranking", "Ranking Snapshot"],["targets", "Saved Targets"]]],
       ["Planning", [["plans", "Content Planner"]]],
-      ["System", [["overview", "Overview"],["sync", "Cloud Sync"],["admin", "Settings"]]]
+      ["System", [["overview", "Overview"],["sync", "Cloud Sync"],["admin", "Users & Settings"]]]
     ];
     const fmtNum = (v) => Number(v || 0).toLocaleString();
     const fmtDate = (v) => v ? new Date(v).toLocaleString() : "";
@@ -4376,7 +4376,7 @@ function cloudMirrorHtml() {
       await load();
     }
     function adminView(data) {
-      if (!data.is_admin) return '<section><div class="head"><h3>Admin</h3><span class="pill warn">Admin required</span></div><div class="empty">Use an admin session or admin/sync token to manage users and cloud tool policies.</div></section>';
+      if (!data.is_admin) return '<section id="admin-locked"><div class="head"><h3>Users & Settings</h3><span class="pill warn">Admin required</span></div><div class="empty">Use an admin session or admin/sync token to manage users, client access, provider secrets, and cloud tool policies.</div></section>';
       const admin = data.admin || {};
       const users = admin.users || [];
       const policies = admin.tool_policies || [];
@@ -4393,9 +4393,10 @@ function cloudMirrorHtml() {
       });
       const policyRows = policies.map((p) => '<tr><td><strong>' + esc(commandLabel(p.tool_key || p.tool_key)) + '</strong><br><span class="muted">' + esc(p.tool_key || "") + '</span></td><td>' + esc(p.cloud_enabled ? 'Cloud enabled' : 'Cloud disabled') + '</td><td>' + esc(p.daily_limit ?? "") + '</td><td>' + esc(p.monthly_limit ?? "") + '</td><td>' + esc(p.per_client_daily_limit ?? "") + '</td><td>' + esc(today[p.tool_key] || 0) + ' today<br><span class="muted">' + esc(month[p.tool_key] || 0) + ' this month</span></td></tr>');
       const clientChecks = clients.map((client) => '<label class="check-item"><input class="admin-client-check" type="checkbox" value="' + esc(client.id) + '"><span><strong>' + esc(client.name || client.client || ("Client #" + client.id)) + '</strong><br><span class="muted">' + esc(client.site_domain || "") + '</span></span></label>').join("");
-      const userForm = '<section><div class="head"><h3>Create / Update User</h3><span class="muted">Email login, roles, client scope.</span></div><div class="status-list"><div class="field-row"><input id="admin-user-email" type="email" placeholder="user@example.com"><input id="admin-user-name" placeholder="Name"><select id="admin-user-role"><option value="read">Read - view only</option><option value="write">Write - queue client tools</option><option value="admin">Admin - full access</option></select><select id="admin-user-status"><option value="active">Active</option><option value="disabled">Disabled</option></select></div><div><div class="muted">Client access. Leave all unchecked for all clients.</div><div class="toolbar" style="margin:8px 0"><button id="admin-select-all-clients" type="button" class="secondary">Select All</button><button id="admin-clear-clients" type="button" class="secondary">Clear Clients</button></div><div class="check-list">' + (clientChecks || '<div class="muted">No clients synced yet.</div>') + '</div></div><div class="toolbar"><button id="admin-save-user">Save User</button><button id="admin-clear-user" type="button" class="secondary">Clear Form</button></div></div></section>';
-      const policyForm = '<section><div class="head"><h3>Tool Guardrails</h3><span class="muted">Controls paid cloud tool execution.</span></div><div class="status-list"><div class="field-row"><select id="policy-tool"><option value="create_ranking_snapshot">Ranking Snapshot</option><option value="run_entity_lsi">Entity Explorer</option></select><select id="policy-cloud"><option value="true">Cloud enabled</option><option value="false">Cloud disabled</option></select><input id="policy-daily" placeholder="Daily limit"><input id="policy-monthly" placeholder="Monthly limit"><input id="policy-client-daily" placeholder="Per-client daily"></div><div class="toolbar"><button id="admin-save-policy">Save Policy</button></div></div>' + table(["Tool","Cloud","Daily","Monthly","Client Daily","Usage"], policyRows, "No tool policies yet.") + '</section>';
-      return '<div class="grid2"><section><div class="head"><h3>Current Access</h3><span class="pill ok">' + esc(data.user?.role || "") + '</span></div><div class="status-list"><div class="status-row"><span>User</span><strong>' + esc(data.user?.email || "") + '</strong></div><div class="head"><h3>Provider Secrets</h3></div>' + (secretRows || '<div class="muted">No secret status available.</div>') + '</div></section>' + userForm + '</div>' + policyForm + '<section><div class="head"><h3>Users</h3><span class="muted">Click Edit to load a user into the form.</span></div>' + table(["Email","Role","Status","Client Scope","Last Login",""], userRows, "No cloud users yet.") + '</section>';
+      const adminCards = cards([["Cloud Users", users.length],["Active Users", users.filter((user) => user.status === "active").length],["Scoped Users", users.filter((user) => (user.client_ids || []).length).length],["Cloud Tools Enabled", policies.filter((policy) => policy.cloud_enabled).length]]);
+      const userForm = '<section id="admin-user-form"><div class="head"><h3>Create / Update User</h3><span class="muted">Email code login, role, and optional client scope.</span></div><div class="note-box">Users sign in from the Access panel by requesting a six-digit email code. If email delivery is not configured, admin-token callers can still generate a setup code for testing.</div><div class="status-list"><div class="field-row"><input id="admin-user-email" type="email" placeholder="user@example.com"><input id="admin-user-name" placeholder="Name"><select id="admin-user-role"><option value="read">Read - view only</option><option value="write">Write - queue client tools</option><option value="admin">Admin - full access</option></select><select id="admin-user-status"><option value="active">Active</option><option value="disabled">Disabled</option></select></div><div><div class="muted">Client access. Leave all unchecked for all clients.</div><div class="toolbar" style="margin:8px 0"><button id="admin-select-all-clients" type="button" class="secondary">Select All</button><button id="admin-clear-clients" type="button" class="secondary">Clear Clients</button></div><div class="check-list">' + (clientChecks || '<div class="muted">No clients synced yet.</div>') + '</div></div><div class="toolbar"><button id="admin-save-user">Save User</button><button id="admin-clear-user" type="button" class="secondary">Clear Form</button></div></div></section>';
+      const policyForm = '<section id="admin-tool-guardrails"><div class="head"><h3>Tool Guardrails</h3><span class="muted">Controls paid cloud tool execution and usage limits.</span></div><div class="status-list"><div class="field-row"><select id="policy-tool"><option value="create_ranking_snapshot">Ranking Snapshot</option><option value="run_entity_lsi">Entity Explorer</option></select><select id="policy-cloud"><option value="true">Cloud enabled</option><option value="false">Cloud disabled</option></select><input id="policy-daily" placeholder="Daily limit"><input id="policy-monthly" placeholder="Monthly limit"><input id="policy-client-daily" placeholder="Per-client daily"></div><div class="toolbar"><button id="admin-save-policy">Save Policy</button></div></div>' + table(["Tool","Cloud","Daily","Monthly","Client Daily","Usage"], policyRows, "No tool policies yet.") + '</section>';
+      return adminCards + '<div class="grid2"><section id="admin-current-access"><div class="head"><h3>Current Access</h3><span class="pill ok">' + esc(data.user?.role || "") + '</span></div><div class="status-list"><div class="status-row"><span>User</span><strong>' + esc(data.user?.email || "") + '</strong></div><div class="head"><h3>Provider Secrets</h3><span class="muted">Configured secrets are shown without exposing values.</span></div>' + (secretRows || '<div class="muted">No secret status available.</div>') + '</div></section>' + userForm + '</div>' + policyForm + '<section id="admin-users-table"><div class="head"><h3>Users</h3><span class="muted">Click Edit to load a user into the form.</span></div>' + table(["Email","Role","Status","Client Scope","Last Login",""], userRows, "No cloud users yet.") + '</section>';
     }
     function bindAdminForms() {
       const byId = (id) => document.getElementById(id);
@@ -5260,7 +5261,9 @@ function cloudMirrorHtml() {
       if (!data) return;
       const names = Object.fromEntries(pages);
       document.getElementById("page-title").textContent = names[state.page] || "Overview";
-      document.getElementById("page-note").textContent = "Synced from local dashboard at " + fmtDate(data.generated_at);
+      document.getElementById("page-note").textContent = state.page === "admin"
+        ? "Manage cloud users, client scope, provider secret status, and paid-tool guardrails."
+        : "Synced from local dashboard at " + fmtDate(data.generated_at);
       const bridge = (data.bridges || [])[0] || {};
       const coraStatus = document.getElementById("cora-status");
       if (coraStatus) coraStatus.textContent = bridge.online

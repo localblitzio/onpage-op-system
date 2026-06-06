@@ -9,6 +9,7 @@
     "d1:init:remote": "wrangler d1 execute OPOS_DB --remote --file ./schema.sql",
     "smoke:cloud": "node scripts/smoke-cloud-dashboard.mjs",
     "smoke:cloud:auth": "node scripts/smoke-cloud-auth.mjs",
+    "smoke:cloud:admin": "node scripts/smoke-cloud-admin.mjs",
     "verify:cora-domain-bridge": "node scripts/verify-cora-domain-bridge.mjs",
     "verify:cora-profile-bridge": "node scripts/verify-cora-profile-bridge.mjs",
     "verify:cora-report-artifacts": "node scripts/verify-cora-report-artifacts.mjs",

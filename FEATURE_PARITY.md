@@ -87,7 +87,7 @@ Use this for clients, keywords, reports, entity sets, optimization targets, and 
 | Entity Crossover / Entity Sets | Local crossover and set storage | Cloud crossover and set storage | `entity_sets` / `entity_set_terms` | Bidirectional sync | Yes |
 | Customer reports | Local renders HTML and source XLSX artifacts | Cloud creates metadata and serves uploaded artifacts | Local renderer for artifacts, cloud/R2 for public delivery | Metadata sync plus local artifact upload to R2 | Yes |
 | Public report URLs | Local share routes for local use | Cloud public share URL and XLSX download | Cloud R2 object after upload | Local bridge artifact sync | Yes |
-| Users/admin | Local bridge settings only | Cloud email/session/admin model started | Cloud user/session tables | Not yet a local user model | Planned |
+| Users/admin | Local bridge settings only | Cloud email/session/admin page with user CRUD, client scope, provider status, and tool guardrails | Cloud user/session tables | Cloud only for now; local user model not defined | Cloud verified |
 
 ## Intentional Differences
 
@@ -104,6 +104,7 @@ Use the no-spend checks for routine regression coverage:
 ```powershell
 Set-Location "D:\CC-Cora 7.2\cloudflare"
 npm run smoke:cloud:auth
+npm run smoke:cloud:admin
 npm run verify:cora-domain-bridge
 npm run verify:cora-profile-bridge
 npm run verify:cora-report-artifacts
@@ -140,4 +141,4 @@ These areas need active parity checks during upcoming phases:
 - Keep local/cloud result schemas compatible before adding new report sections.
 - Re-run `verify:cloud-cora-run` after any Cora queue/bridge/job-runner changes.
 - Re-run `verify:live-paid-tools` after any DataForSEO, LLM provider, Ranking Snapshot, Entity Explorer, report attachment, or artifact sync changes.
-- Users/admin: planned future cloud feature; local impact and permissions model need to be defined before implementation.
+- Users/admin: cloud admin is implemented and smoke-tested; local impact and permissions model still need to be defined before adding local user roles.
