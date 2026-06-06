@@ -27,6 +27,8 @@ Use `FEATURE_PARITY.md` before calling any new feature complete. The rule is:
 - A feature may execute in the cloud, such as Ranking Snapshot or Entity Explorer, but local workflow and data compatibility still need to be reviewed.
 - Do not let local and cloud become separate products. Labels, menu placement, client selection, run status, and report access should match unless a difference is intentional and documented.
 
+Current parity status is summarized in `PARITY_STATUS.md`.
+
 ## Important Paths
 
 ```text
@@ -312,5 +314,9 @@ Live status refresh on the tool pages has been started:
 
 ## Next Phase
 
-- Apply the parity checklist to the live codebase and close the next highest-impact gaps:
-  - Document any intentional local-only or cloud-only execution differences.
+- Move from parity proof to product hardening:
+  - Cloud user/admin management by email.
+  - Conflict handling for bidirectional cloud/local edits.
+  - Cleanup/archive policy for verification rows and old report artifacts.
+  - More polished Basic, Medium, and Comprehensive customer report templates.
+  - Broader live paid/API provider matrix when spend is acceptable.
