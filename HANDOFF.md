@@ -321,19 +321,57 @@ Recent important commits:
 
 ## Phase Started After This Handoff
 
-Live status refresh on the tool pages has been started:
+Live status refresh on the tool pages has been implemented and hardened:
 
-- After queueing Cora, auto-refresh the current tool page for recent launch/job updates.
-- After starting Ranking Snapshot, auto-refresh snapshots/command status.
-- After starting Entity Explorer, auto-refresh batches/model runs.
-- Keep refresh non-disruptive: do not re-render while the user is actively typing in inputs/textareas/selects.
-- Show the user status where they already are; do not require `Command Review`.
+- After queueing Cora, the cloud tool page auto-refreshes recent launch/job updates inline.
+- After starting Ranking Snapshot, the cloud tool page auto-refreshes snapshots/command status inline.
+- After starting Entity Explorer, the cloud tool page auto-refreshes batches/model runs inline.
+- Refresh is non-disruptive: it pauses while the user is typing in inputs/textareas/selects/contenteditable controls and shows refresh notes in the inline status card.
+- Multiple tool refresh windows can coexist instead of one tool cancelling another.
+- Cora Profiles Domain List bridge actions now use the same refresh path.
+- Users see status where they already are; `Command Review` remains admin/debug.
+
+Product hardening shipped after parity verification:
+
+- Local `System > Cloud Sync` now shows bridge configured state, poll interval, Cora and paid/API guardrails, last error, and last command result.
+- Customer report templates now differ by level:
+  - Basic: tighter executive/customer view with top Cora recommendations and target visibility.
+  - Medium: adds competitor, entity/LSI, ranking, target, and entity-set context.
+  - Comprehensive: expands row limits and keeps the workbook appendix preview.
+- Customer reports can be archived/revoked locally and in cloud using the existing `share_reports.revoked_at` sync field.
+- Cloud `Cora > Cora Reports` exposes Archive beside report actions; local Stored Reports exposes Archive.
+- Cloud Worker deployed after these changes:
+  - Version ID `028fe339-69aa-4117-9356-a8e369148d2a`
+  - Route `onpage.localblitz.io/*`
+
+Verification after this hardening:
+
+```powershell
+Set-Location "D:\CC-Cora 7.2"
+node --check cloudflare\src\worker.js
+Set-Location "D:\CC-Cora 7.2\On Page Optimization System Dashboard"
+node --check static\app.js
+python -m py_compile app.py
+python .\test_dashboard.py
+Set-Location "D:\CC-Cora 7.2\cloudflare"
+npm run deploy
+npm run smoke:cloud
+npm run smoke:cloud:auth
+npm run smoke:cloud:admin
+```
+
+Results:
+
+- Local dashboard test suite passed: 70 tests.
+- Cloud locked/auth/admin smoke passed after final deploy.
+- Local and production root routes both returned 200.
+- An earlier auth smoke failure happened only when auth/admin smoke were run concurrently with temporary sessions; rerunning sequentially passed.
 
 ## Next Phase
 
 - Move from parity proof to product hardening:
   - Local user/admin impact and permissions model after cloud email/admin is stabilized.
   - Conflict handling for bidirectional cloud/local edits.
-  - Cleanup/archive policy for verification rows and old report artifacts.
-  - More polished Basic, Medium, and Comprehensive customer report templates.
+  - Cleanup/archive policy for verification rows beyond report revocation, including old ranking/entity verification rows and stale R2 report artifacts.
+  - Further visual polish for Basic, Medium, and Comprehensive customer report templates.
   - Broader live paid/API provider matrix when spend is acceptable.

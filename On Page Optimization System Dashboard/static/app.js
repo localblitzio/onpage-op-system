@@ -134,6 +134,30 @@ function fmtBytes(value) {
   return `${size.toLocaleString(undefined, { maximumFractionDigits: index ? 1 : 0 })} ${units[index]}`;
 }
 
+function bridgeResultSummary(result) {
+  if (!result || typeof result !== "object") return "No command result recorded.";
+  const parts = [];
+  if ("ok" in result) parts.push(result.ok ? "ok" : "failed");
+  if ("processed" in result) parts.push(`${fmtNum(result.processed)} command${Number(result.processed) === 1 ? "" : "s"}`);
+  if (Array.isArray(result.commands) && result.commands.length) {
+    const failed = result.commands.filter((command) => command.status === "failed").length;
+    if (failed) parts.push(`${fmtNum(failed)} failed`);
+  }
+  if (result.error) parts.push(result.error);
+  return parts.length ? parts.join(" | ") : "No command result recorded.";
+}
+
+function bridgeSafetyMessages(cloudflare, bridge) {
+  const messages = [];
+  if (!cloudflare.configured) messages.push("Sync credentials are not configured, so the bridge cannot contact production.");
+  if (!bridge.enabled) messages.push("Auto-pull is off; use Pull Cloud Commands manually or enable auto-pull.");
+  if (!bridge.allow_cora) messages.push("Cloud Cora commands are blocked locally.");
+  if (!bridge.allow_paid_tools) messages.push("Cloud paid/API tool commands are blocked locally.");
+  if (bridge.last_error) messages.push(`Last bridge error: ${bridge.last_error}`);
+  if (!messages.length) messages.push("Bridge is ready for allowed command types.");
+  return messages;
+}
+
 function fmtDelta(value, lowerIsBetter = false) {
   if (value === null || value === undefined || value === "") return "";
   const num = Number(value);
@@ -488,6 +512,8 @@ function renderCloudflareSyncPanel() {
   const artifactBytes = Number(artifactState.total_bytes || 0);
   const artifactLast = artifactState.last_uploaded_at || "";
   const bridge = cloudflare.bridge || {};
+  const bridgeMessages = bridgeSafetyMessages(cloudflare, bridge);
+  const bridgeReadyClass = cloudflare.configured && bridge.enabled && !bridge.last_error ? "ok" : "warn";
   return `
     <section class="data-section cloud-sync-panel">
       <div class="panel-head">
@@ -514,8 +540,14 @@ function renderCloudflareSyncPanel() {
         <div><label>Last File Upload</label><strong>${fmtDate(artifactLast) || "Never"}</strong></div>
         <div><label>Bridge</label><strong>${bridge.enabled ? "Auto" : "Manual"}</strong></div>
         <div><label>Last Poll</label><strong>${fmtDate(bridge.last_poll_at) || "Never"}</strong></div>
+        <div><label>Poll Interval</label><strong>${fmtNum(bridge.poll_interval || 30)}s</strong></div>
+        <div><label>Configured</label><strong>${cloudflare.configured ? "Yes" : "No"}</strong></div>
         <div><label>Cora Commands</label><strong>${bridge.allow_cora ? "Allowed" : "Blocked"}</strong></div>
         <div><label>Paid/API Tools</label><strong>${bridge.allow_paid_tools ? "Allowed" : "Blocked"}</strong></div>
+      </div>
+      <div class="note-box bridge-safety ${bridgeReadyClass}">
+        ${bridgeMessages.map((message) => `<div>${htmlEscape(message)}</div>`).join("")}
+        <div>Last result: ${htmlEscape(bridgeResultSummary(bridge.last_result))}</div>
       </div>
       <div class="cloud-bridge-controls">
         <label>Worker URL <input id="cloudflare-sync-url" type="url" value="${htmlEscape(cloudflare.sync_url || "")}" placeholder="https://onpage.localblitz.io"></label>
@@ -874,6 +906,30 @@ function renderReportGenerator() {
   root.querySelectorAll(".sync-report-files").forEach((button) => {
     button.addEventListener("click", () => runCloudflareArtifactSync(false, [Number(button.dataset.reportId)], true).catch((err) => toast(err.message)));
   });
+  root.querySelectorAll(".archive-report").forEach((button) => {
+    button.addEventListener("click", () => archiveShareReport(Number(button.dataset.reportId), button).catch((err) => toast(err.message)));
+  });
+}
+
+async function archiveShareReport(reportId, button) {
+  if (!reportId) throw new Error("Report ID is required.");
+  if (!window.confirm("Archive this customer report link? The report metadata will be revoked locally and on the next cloud sync.")) return;
+  const original = button?.textContent || "Archive";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Archiving...";
+  }
+  try {
+    await api(`/api/share-reports/${reportId}`, { method: "DELETE" });
+    await loadShareReports(state.selectedClientId || state.selectedProjectId || "");
+    renderReportGenerator();
+    toast("Customer report archived.");
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = original;
+    }
+  }
 }
 
 function renderReportTargetPicker(targets) {
@@ -913,6 +969,7 @@ function renderStoredReports() {
           <button class="link-button copy-report-link" type="button" data-url="${htmlEscape(url)}">Copy link</button>
           ${cloudUrl ? `<a class="button-link" href="${htmlEscape(cloudUrl)}" target="_blank" rel="noopener">Cloud</a>` : ""}
           <button class="link-button sync-report-files" type="button" data-report-id="${report.id}">Sync files</button>
+          <button class="link-button archive-report" type="button" data-report-id="${report.id}">Archive</button>
         </td>
       </tr>
     `;

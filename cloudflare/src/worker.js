@@ -209,7 +209,7 @@ async function assertCommandAccess(request, env, commandType, payload) {
   return scope;
 }
 
-const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "create_cora_domain_entry", "update_cora_domain_entry", "archive_cora_domain_entry", "apply_cora_domain_lists", "pull_cora_domain_lists", "add_keyword", "create_content_plan", "create_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "create_cora_domain_entry", "update_cora_domain_entry", "archive_cora_domain_entry", "apply_cora_domain_lists", "pull_cora_domain_lists", "add_keyword", "create_content_plan", "create_share_report", "revoke_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
 const RANKING_TARGET_STATUSES = new Set(["new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"]);
 const CONTENT_PLAN_STATUSES = new Set(["planned", "in_progress", "drafting", "review", "published", "paused", "done", "archived"]);
 const ENTITY_DEPTH_LIMITS = {
@@ -1005,6 +1005,16 @@ async function executeCloudCommand(commandType, payload, env) {
     ).bind(token, runId, level, title || null, cleanText(payload.notes) || null, snapshotId, entitySetId, optimizationTargetIdsJson, now).run();
     result.report = await env.DB.prepare("SELECT * FROM share_reports WHERE id = ?").bind(inserted.meta.last_row_id).first();
     result.artifact_note = "Cloud-created report metadata will get shareable artifacts after local report generation/upload sync.";
+    changedTables.push("share_reports");
+    return result;
+  }
+  if (commandType === "revoke_share_report") {
+    const reportId = Number(payload.report_id || 0);
+    if (!reportId) throw new Error("Report ID is required.");
+    const report = await env.DB.prepare("SELECT * FROM share_reports WHERE id = ?").bind(reportId).first();
+    if (!report) throw new Error("Shared report not found.");
+    await env.DB.prepare("UPDATE share_reports SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL").bind(now, reportId).run();
+    result.report = await env.DB.prepare("SELECT * FROM share_reports WHERE id = ?").bind(reportId).first();
     changedTables.push("share_reports");
     return result;
   }
@@ -2788,6 +2798,7 @@ function cloudMirrorHtml() {
   <script>
     let state = { data: null, page: "clients", activeClient: localStorage.getItem("opos_active_client") || "all", q: "", pendingWrite: null, toolFeedback: {}, reportClient: "all", reportLevel: "all", reportCreateClient: "all", reportCreateRun: "", reportCreateSnapshot: "", reportTargetSelection: {}, runClient: "all", jobClient: "all", jobStatus: "all", coraClient: "all", commandClient: "all", commandStatus: "all", commandType: "all", auditActor: "all", auditAction: "all", auditObject: "all", entityBatch: "all", entityClient: "all", entitySetClient: "all", entityCrossoverDetail: null, rankingClient: "all", rankingComparison: null, targetClient: "all", targetStatus: "all", targetSelection: {}, planClient: "all", planStatus: "all", planPriority: "all", planSelection: {}, profileEditId: "", domainEditId: "", domainListType: "all", commandPrefill: null, detail: null };
     let toolRefreshTimer = null;
+    const toolRefreshTimers = {};
     const pages = [
       ["clients", "Client Dashboard"],
       ["new-client", "New Client"],
@@ -2947,7 +2958,8 @@ function cloudMirrorHtml() {
       const done = Number(feedback.done || 0);
       const percent = total ? Math.max(0, Math.min(100, Math.round((done / total) * 100))) : 0;
       const rows = (feedback.rows || []).map((row) => '<div class="status-row"><span>' + esc(row.label || "") + '</span><strong class="' + esc(row.status === "failed" ? "warn" : row.status === "complete" || row.status === "queued" ? "ok" : "") + '">' + esc(row.status || "") + '</strong></div>').join("");
-      return '<div class="inline-status ' + (feedback.status === "failed" ? "warn" : "") + '"><div class="status-row"><span><strong>' + esc(feedback.title || "Tool Status") + '</strong><br><small class="muted">' + esc(feedback.message || "") + '</small></span><strong class="' + (feedback.status === "failed" ? "warn" : feedback.status === "complete" ? "ok" : "") + '">' + esc(feedback.status || "") + '</strong></div>' + (total ? '<div class="progress-track"><div class="progress-fill" style="width:' + esc(percent) + '%"></div></div><div class="muted">' + esc(done) + ' of ' + esc(total) + ' complete</div>' : '') + rows + '</div>';
+      const refreshNote = feedback.refreshNote ? '<div class="muted">' + esc(feedback.refreshNote) + '</div>' : '';
+      return '<div class="inline-status ' + (feedback.status === "failed" ? "warn" : "") + '"><div class="status-row"><span><strong>' + esc(feedback.title || "Tool Status") + '</strong><br><small class="muted">' + esc(feedback.message || "") + '</small></span><strong class="' + (feedback.status === "failed" ? "warn" : feedback.status === "complete" ? "ok" : "") + '">' + esc(feedback.status || "") + '</strong></div>' + (total ? '<div class="progress-track"><div class="progress-fill" style="width:' + esc(percent) + '%"></div></div><div class="muted">' + esc(done) + ' of ' + esc(total) + ' complete</div>' : '') + refreshNote + rows + '</div>';
     }
     function setToolFeedback(key, feedback, renderNow) {
       state.toolFeedback = { ...(state.toolFeedback || {}), [key]: feedback };
@@ -2955,25 +2967,42 @@ function cloudMirrorHtml() {
       if (target) target.innerHTML = toolFeedbackHtml(feedback);
       if (renderNow) render();
     }
+    function updateToolRefreshNote(key, message) {
+      const feedback = state.toolFeedback?.[key];
+      if (!feedback) return;
+      setToolFeedback(key, { ...feedback, refreshNote: message }, false);
+    }
     function userIsEditing() {
       const el = document.activeElement;
-      return Boolean(el && ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+      return Boolean(el && (["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName) || el.isContentEditable));
     }
     function startToolAutoRefresh(key, durationMs) {
-      if (toolRefreshTimer) clearInterval(toolRefreshTimer);
-      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"], reports: ["reports"], profiles: ["cora-profiles"] }[key] || [];
+      if (toolRefreshTimer) {
+        clearInterval(toolRefreshTimer);
+        toolRefreshTimer = null;
+      }
+      if (toolRefreshTimers[key]) clearInterval(toolRefreshTimers[key]);
+      const allowedPages = { cora: ["cora"], ranking: ["ranking"], entity: ["entities", "entity-crossover"], reports: ["reports"], profiles: ["cora-profiles"], domains: ["cora-profiles"] }[key] || [];
       const until = Date.now() + (durationMs || 120000);
-      toolRefreshTimer = setInterval(async () => {
+      updateToolRefreshNote(key, "Auto-refreshing status on this page. Form editing pauses refresh.");
+      toolRefreshTimers[key] = setInterval(async () => {
         if (Date.now() > until || !allowedPages.includes(state.page)) {
-          clearInterval(toolRefreshTimer);
-          toolRefreshTimer = null;
+          clearInterval(toolRefreshTimers[key]);
+          delete toolRefreshTimers[key];
+          updateToolRefreshNote(key, "Auto-refresh window ended. Use Refresh for the latest status.");
           return;
         }
-        if (userIsEditing()) return;
+        if (userIsEditing()) {
+          updateToolRefreshNote(key, "Auto-refresh paused while you edit this form.");
+          return;
+        }
         try {
+          updateToolRefreshNote(key, "Refreshing status...");
           await load({ preserveScroll: true });
+          updateToolRefreshNote(key, "Status refreshed " + new Date().toLocaleTimeString() + ".");
         } catch (error) {
           console.warn("Tool status refresh failed", error);
+          updateToolRefreshNote(key, "Status refresh failed: " + (error.message || error));
         }
       }, 8000);
     }
@@ -3029,8 +3058,8 @@ function cloudMirrorHtml() {
       return table(["Report", "Client", "Keyword / URL", "Level", "Created", "Files", "Actions"], rows(items).map((r) => {
         const hasHtml = Boolean(r.cloud_url);
         const actions = hasHtml
-          ? '<a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a><a class="action-link" href="' + downloadUrl(r.token) + '">XLSX</a><button class="copy-btn" data-copy="' + esc(absoluteUrl(reportUrl(r.token))) + '">Copy report</button><button class="copy-btn" data-copy="' + esc(absoluteUrl(downloadUrl(r.token))) + '">Copy XLSX</button>'
-          : '<span class="pill warn">Files pending</span><button class="copy-btn report-sync-files" data-report-id="' + esc(r.id || "") + '">Sync files</button>';
+          ? '<a class="action-link" href="' + reportUrl(r.token) + '" target="_blank">Open</a><a class="action-link" href="' + downloadUrl(r.token) + '">XLSX</a><button class="copy-btn" data-copy="' + esc(absoluteUrl(reportUrl(r.token))) + '">Copy report</button><button class="copy-btn" data-copy="' + esc(absoluteUrl(downloadUrl(r.token))) + '">Copy XLSX</button><button class="copy-btn report-archive" data-report-id="' + esc(r.id || "") + '" data-project-id="' + esc(r.project_id || "") + '">Archive</button>'
+          : '<span class="pill warn">Files pending</span><button class="copy-btn report-sync-files" data-report-id="' + esc(r.id || "") + '">Sync files</button><button class="copy-btn report-archive" data-report-id="' + esc(r.id || "") + '" data-project-id="' + esc(r.project_id || "") + '">Archive</button>';
         return '<tr><td><strong>' + esc(r.title || r.keyword || "Report") + '</strong><br><span class="muted">Run #' + esc(r.run_id || "") + '</span></td><td>' + esc(r.project_name || r.client_name || "") + '<br><span class="muted">' + esc(r.site_domain || "") + '</span></td><td><strong>' + esc(r.keyword || "") + '</strong><br><span class="muted">' + esc(r.target_domain || r.target_url || "") + '</span></td><td><span class="pill">' + esc(r.level || "") + '</span></td><td>' + esc(fmtDate(r.created_at)) + '<br><span class="muted">Uploaded ' + esc(fmtDate(r.last_uploaded_at)) + '</span></td><td><span class="pill">' + esc(fmtNum(r.artifact_count || 0)) + ' files</span><br><span class="muted">' + esc(fmtBytes(r.total_bytes || 0)) + '</span></td><td><div class="actions">' + actions + '</div></td></tr>';
       }), "No cloud reports synced yet.");
     }
@@ -3550,6 +3579,7 @@ function cloudMirrorHtml() {
         add_keyword: "Add Keyword",
         create_content_plan: "Content Plan",
         create_share_report: "Customer Report",
+        revoke_share_report: "Archive Customer Report",
         run_cora: "Run Cora",
         create_ranking_snapshot: "Ranking Snapshot",
         run_entity_lsi: "Entity Explorer",
@@ -4273,6 +4303,7 @@ function cloudMirrorHtml() {
       if (command_type === "add_keyword") return 'Add or reuse keyword "' + (payload.keyword || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_content_plan") return 'Create or reuse content plan "' + (payload.title || "") + '" on client ID ' + (payload.project_id || "");
       if (command_type === "create_share_report") return 'Create or reuse ' + (payload.level || "medium") + ' report for run ID ' + (payload.run_id || "");
+      if (command_type === "revoke_share_report") return 'Archive customer report ID ' + (payload.report_id || "") + '.';
       if (command_type === "run_cora") return 'Queue Cora locally for "' + (payload.keyword || "") + '" against ' + (payload.target_url || "") + '. Local bridge must allow Cora execution.';
       if (command_type === "create_ranking_snapshot") return (payload.dry_run ? "Dry-run " : "") + 'Run Ranking Snapshot for ' + (payload.target || "") + '. Real runs require paid/API tools enabled on the local bridge.';
       if (command_type === "run_entity_lsi") return (payload.dry_run ? "Dry-run " : "") + 'Run Entity Explorer for "' + (payload.seed_keyword || "") + '" across ' + ((payload.targets || []).length || 0) + ' model(s)' + (payload.execution_mode === "cloud" ? ' in Cloudflare.' : '. Real local runs require paid/API tools enabled on the local bridge.');
@@ -4304,6 +4335,7 @@ function cloudMirrorHtml() {
       if (command_type === "add_keyword" && (!(payload.project_id) || !(payload.keyword || "").trim())) return "Select a client and enter a keyword.";
       if (command_type === "create_content_plan" && (!(payload.project_id) || !(payload.title || "").trim())) return "Select a client and enter a plan title.";
       if (command_type === "create_share_report" && !payload.run_id) return "Select a Cora run for the report.";
+      if (command_type === "revoke_share_report" && !payload.report_id) return "Select a customer report to archive.";
       if (command_type === "run_cora") {
         const missing = [];
         if (!payload.project_id) missing.push("client");
@@ -4561,8 +4593,13 @@ function cloudMirrorHtml() {
           setPendingCommand("sync_report_artifacts", { report_ids: id ? [id] : [], dry_run: false, force: true });
         });
       });
+      document.querySelectorAll(".report-archive").forEach((button) => {
+        button.addEventListener("click", () => archiveCloudReport(button).catch((error) => {
+          setToolFeedback("reports", { status: "failed", title: "Report Archive Failed", message: error.message || String(error) });
+        }));
+      });
       document.querySelectorAll(".copy-btn").forEach((button) => {
-        if (button.classList.contains("report-sync-files")) return;
+        if (button.classList.contains("report-sync-files") || button.classList.contains("report-archive")) return;
         button.onclick = async () => {
           const value = button.dataset.copy || "";
           try {
@@ -4574,6 +4611,32 @@ function cloudMirrorHtml() {
           }
         };
       });
+    }
+    async function archiveCloudReport(button) {
+      const reportId = Number(button?.dataset.reportId || 0);
+      if (!reportId) throw new Error("Report ID is required.");
+      if (!confirm("Archive this customer report link? The report will be removed from normal cloud report lists.")) return;
+      const originalLabel = button?.textContent || "Archive";
+      if (button) {
+        button.disabled = true;
+        button.textContent = "Archiving...";
+      }
+      setToolFeedback("reports", { status: "running", title: "Archiving Customer Report", message: "Revoking report metadata in Cloudflare." });
+      try {
+        await postCommand("revoke_share_report", { execution_mode: "cloud", report_id: reportId, project_id: Number(button?.dataset.projectId || 0) || null });
+        await load({ preserveScroll: true });
+        setToolFeedback("reports", {
+          status: "complete",
+          title: "Customer Report Archived",
+          message: "Report metadata was revoked in Cloudflare. Pull cloud changes locally to mirror the archive state."
+        }, true);
+      } catch (error) {
+        if (button) {
+          button.disabled = false;
+          button.textContent = originalLabel;
+        }
+        throw error;
+      }
     }
     async function createCloudReport(button) {
       const originalLabel = button?.textContent || "Create Report";

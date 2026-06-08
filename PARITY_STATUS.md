@@ -1,10 +1,11 @@
 # Local / Cloud Parity Status
 
-Date: 2026-06-05
+Date: 2026-06-07
 
 ## Status
 
 Core local/cloud parity is verified for the current product surface.
+The first hardening pass after parity has also shipped to production.
 
 The app is not two separate codebases. The local dashboard and Cloudflare dashboard have separate runtimes, but they share the same product model:
 
@@ -14,6 +15,8 @@ The app is not two separate codebases. The local dashboard and Cloudflare dashbo
 - Bridge-based execution for Windows-only Cora actions.
 - Cloud/API execution for cloud-safe tools.
 - Shared report metadata and public Cloudflare report delivery.
+- Non-disruptive inline status refresh on cloud tool pages.
+- Local/cloud customer report archive paths through `share_reports.revoked_at`.
 
 ## Verified End To End
 
@@ -31,6 +34,9 @@ The app is not two separate codebases. The local dashboard and Cloudflare dashbo
 | Live LLM Entity Explorer | Passed |
 | Cloud-to-local sync for paid/API results | Passed |
 | Public report URL and XLSX download | Passed |
+| Inline cloud tool status refresh | Passed by smoke/static verification |
+| Local/cloud customer report archive controls | Implemented; route/static checks passed |
+| Report template level differentiation | Implemented in local renderer and served through cloud artifacts |
 
 Latest live proof:
 
@@ -74,10 +80,10 @@ npm run verify:live-paid-tools
 
 ## Remaining Product Work
 
-Parity is no longer the main blocker. The next work should be product hardening:
+Parity is no longer the main blocker. The next work should continue product hardening:
 
 - Local user/admin impact and permissions model after cloud email/admin is stabilized.
 - Conflict handling for bidirectional edits.
-- Cleanup/archive policy for verification rows and old reports.
-- More polished report templates by level: Basic, Medium, Comprehensive.
+- Cleanup/archive policy for old ranking/entity verification rows and stale report artifacts beyond report metadata revocation.
+- More visual polish for report templates by level: Basic, Medium, Comprehensive.
 - Broader live paid/API matrix across more providers when spend is acceptable.

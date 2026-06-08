@@ -1293,6 +1293,10 @@ def apply_cloudflare_command(command: dict[str, Any]) -> dict[str, Any]:
         result["report"] = report
         changed_tables.add("share_reports")
         artifact_report_ids.append(int(report["id"]))
+    elif command_type == "revoke_share_report":
+        report = revoke_share_report(int(payload.get("report_id") or 0))
+        result["report"] = report
+        changed_tables.add("share_reports")
     elif command_type == "run_cora":
         project_id = int(payload.get("project_id") or 0) or None
         keyword_text = clean_text(payload.get("keyword")) or ""
@@ -6280,6 +6284,18 @@ def create_share_report(
     return report
 
 
+def revoke_share_report(report_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        row = con.execute("SELECT * FROM share_reports WHERE id = ?", (report_id,)).fetchone()
+        if not row:
+            raise ValueError("Shared report not found")
+        con.execute("UPDATE share_reports SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", (now, report_id))
+        report = row_to_dict(con.execute("SELECT * FROM share_reports WHERE id = ?", (report_id,)).fetchone()) or {}
+    push_cloudflare_sync_quietly(["share_reports"], f"report {report_id} archive")
+    return report
+
+
 def ensure_share_report_for_run(
     run_id: int,
     level: str = "comprehensive",
@@ -6430,13 +6446,26 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
     target_matches = data.get("target_matches") or []
     title = share.get("title") or f"{run['keyword']} On Page SEO Report"
     download_url = f"{base_url}/share/report/{share['token']}/download"
+    level_key = str(data.get("level") or "medium").lower()
+    level_limits = {
+        "basic": {"recommendations": 10, "serp": 8, "lsi": 12, "ranking_keywords": 8, "ranking_pages": 5, "targets": 12, "entity_terms": 25},
+        "medium": {"recommendations": 25, "serp": 20, "lsi": 35, "ranking_keywords": 12, "ranking_pages": 8, "targets": 40, "entity_terms": 60},
+        "comprehensive": {"recommendations": 80, "serp": 40, "lsi": 100, "ranking_keywords": 30, "ranking_pages": 20, "targets": 120, "entity_terms": 120},
+    }.get(level_key, {})
+    include_competitors = level_key in {"medium", "comprehensive"}
+    include_lsi = level_key in {"medium", "comprehensive"}
+    summary_copy = {
+        "basic": "This Basic report focuses on the highest-priority Cora recommendations and target URL visibility for the selected keyword.",
+        "medium": "This Medium report combines Cora priorities with competitor, entity, ranking, and saved target context for customer review.",
+        "comprehensive": "This Comprehensive report includes the full customer narrative plus expanded ranking/entity attachments and a workbook appendix preview.",
+    }.get(level_key, "This report summarizes the strongest on-page opportunities found in the Cora analysis for the selected keyword.")
     rec_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('factor') or '')}</td><td>{html_escape(r.get('recommendation') or '')}</td><td>{html_escape(fmt_report_num(r.get('percent')))}</td></tr>"
-        for r in data["recommendations"]
+        for r in data["recommendations"][: level_limits.get("recommendations", 25)]
     )
     serp_rows = "\n".join(
         f"<tr><td>{html_escape(fmt_report_num(r.get('rank')))}</td><td>{html_escape(r.get('host') or '')}</td><td>{html_escape(r.get('title') or '')}</td><td>{html_escape(r.get('url') or '')}</td></tr>"
-        for r in data["results"]
+        for r in data["results"][: level_limits.get("serp", 20)]
     )
     target_match_rows = "\n".join(
         f"<tr><td>{html_escape(fmt_report_num(r.get('rank')))}</td><td>{html_escape((r.get('match_type') or '').replace('_', ' ').title())}</td><td>{html_escape(r.get('host') or '')}</td><td>{html_escape(r.get('url') or '')}</td></tr>"
@@ -6444,7 +6473,7 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
     )
     lsi_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('keyword') or '')}</td><td>{html_escape(fmt_report_num(r.get('tracked_value')))}</td><td>{html_escape(fmt_report_num(r.get('deficit')))}</td></tr>"
-        for r in data["lsi"]
+        for r in data["lsi"][: level_limits.get("lsi", 35)]
     )
     ranking_detail = data.get("ranking_snapshot_detail") or {}
     ranking_snapshot = ranking_detail.get("snapshot") or data.get("ranking_snapshot") or {}
@@ -6454,20 +6483,20 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
     ranking_pages = ranking_detail.get("pages") or []
     ranking_keyword_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('keyword') or '')}</td><td>{html_escape(fmt_report_num(r.get('position')))}</td><td>{html_escape(r.get('rankingUrl') or '')}</td><td>{html_escape(fmt_report_num(r.get('searchVolume')))}</td><td>{html_escape(fmt_report_num(r.get('estimatedTraffic')))}</td></tr>"
-        for r in ranking_keywords[:12]
+        for r in ranking_keywords[: level_limits.get("ranking_keywords", 12)]
     )
     ranking_page_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('url') or '')}</td><td>{html_escape(fmt_report_num(r.get('organicKeywords')))}</td><td>{html_escape(fmt_report_num(r.get('organicTraffic')))}</td><td>{html_escape(fmt_report_num(r.get('top10')))}</td></tr>"
-        for r in ranking_pages[:8]
+        for r in ranking_pages[: level_limits.get("ranking_pages", 8)]
     )
     optimization_target_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('url') or '')}</td><td>{html_escape(r.get('keyword') or '')}</td><td>{html_escape(fmt_report_num(r.get('bestPosition')))}</td><td>{html_escape(fmt_report_num(r.get('opportunityScore')))}</td><td>{html_escape(r.get('status') or '')}</td><td>{html_escape(r.get('recommendedAction') or '')}</td></tr>"
-        for r in data.get("optimization_targets", [])
+        for r in data.get("optimization_targets", [])[: level_limits.get("targets", 40)]
     )
     entity_terms = (data.get("entity_set") or {}).get("terms") or []
     entity_rows = "\n".join(
         f"<tr><td>{html_escape(r.get('term') or '')}</td><td>{html_escape((r.get('type') or '').replace('_', ' ').title())}</td><td>{html_escape(fmt_report_num(r.get('source_count')))}</td></tr>"
-        for r in entity_terms[:80]
+        for r in entity_terms[: level_limits.get("entity_terms", 60)]
     )
     target_rank = fmt_report_num(target.get("rank")) if target else "Not found in top imported results"
     notes = html_escape(share.get("notes") or "")
@@ -6502,6 +6531,18 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
       <table><thead><tr><th>Term</th><th>Type</th><th>Source Count</th></tr></thead><tbody>{entity_rows or '<tr><td colspan="3">No entity terms were attached.</td></tr>'}</tbody></table>
     </section>
     """ if data.get("entity_set") else ""
+    competitor_html = f"""
+    <section class="card">
+      <h2>Competitor Snapshot</h2>
+      <table><thead><tr><th>Rank</th><th>Host</th><th>Title</th><th>URL</th></tr></thead><tbody>{serp_rows or '<tr><td colspan="4">No SERP rows imported.</td></tr>'}</tbody></table>
+    </section>
+    """ if include_competitors else ""
+    lsi_html = f"""
+    <section class="card">
+      <h2>Entity & LSI Opportunities</h2>
+      <table><thead><tr><th>Term</th><th>Current</th><th>Deficit</th></tr></thead><tbody>{lsi_rows or '<tr><td colspan="3">No LSI rows imported.</td></tr>'}</tbody></table>
+    </section>
+    """ if include_lsi else ""
     body = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -6571,7 +6612,7 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
     </section>
     <section class="card">
       <h2>Executive Summary</h2>
-      <p>This report summarizes the strongest on-page opportunities found in the Cora analysis for the selected keyword. The recommendations are prioritized from imported Cora tuning data and grouped for customer review.</p>
+      <p>{html_escape(summary_copy)}</p>
       {f'<p class="note">{notes}</p>' if notes else ''}
     </section>
     <section class="card">
@@ -6583,14 +6624,8 @@ def render_shared_report_html(data: dict[str, Any], base_url: str = "") -> bytes
       <h2>Priority Action Plan</h2>
       <table><thead><tr><th>Factor</th><th>Recommendation</th><th>Gap %</th></tr></thead><tbody>{rec_rows or '<tr><td colspan="3">No recommendations imported.</td></tr>'}</tbody></table>
     </section>
-    <section class="card">
-      <h2>Competitor Snapshot</h2>
-      <table><thead><tr><th>Rank</th><th>Host</th><th>Title</th><th>URL</th></tr></thead><tbody>{serp_rows or '<tr><td colspan="4">No SERP rows imported.</td></tr>'}</tbody></table>
-    </section>
-    <section class="card">
-      <h2>Entity & LSI Opportunities</h2>
-      <table><thead><tr><th>Term</th><th>Current</th><th>Deficit</th></tr></thead><tbody>{lsi_rows or '<tr><td colspan="3">No LSI rows imported.</td></tr>'}</tbody></table>
-    </section>
+    {competitor_html}
+    {lsi_html}
     {ranking_html}
     {optimization_html}
     {entity_html}
@@ -7026,6 +7061,9 @@ class AppHandler(BaseHTTPRequestHandler):
             elif re.match(r"^/api/profiles/\d+$", parsed.path):
                 profile = archive_profile(int(parsed.path.rsplit("/", 1)[1]))
                 json_response(self, {"archived": True, "profile": profile})
+            elif re.match(r"^/api/share-reports/\d+$", parsed.path):
+                report = revoke_share_report(int(parsed.path.rsplit("/", 1)[1]))
+                json_response(self, {"archived": True, "report": report})
             elif re.match(r"^/api/entity-lsi/runs/\d+$", parsed.path):
                 delete_entity_lsi_run(int(parsed.path.rsplit("/", 1)[1]))
                 json_response(self, {"deleted": True})
