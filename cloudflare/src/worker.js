@@ -218,7 +218,9 @@ async function assertProjectAccess(request, env, projectId) {
 
 async function assertCommandAccess(request, env, commandType, payload) {
   const scope = await accessContext(request, env);
-  const singleUserWrite = await hasReadAccess(request, env);
+  // Bearer-token callers (READ/ADMIN/SYNC) run in single-user mode; session users
+  // need the write role so read-role accounts cannot queue commands or paid tools.
+  const singleUserWrite = requireReadAuth(request, env) || requireSyncAuth(request, env);
   if (!scope.write && !singleUserWrite) {
     const error = new Error("Unauthorized");
     error.status = 401;
@@ -933,7 +935,10 @@ async function refreshCloudNlpBatchStatus(env, batchId) {
   const skipped = Number(counts?.skipped_count || 0);
   const active = Number(counts?.active_count || 0);
   const target = Number(counts?.target_count || 0);
-  const status = active ? "running" : failed && complete + skipped ? "partial" : failed ? "failed" : "complete";
+  const current = await env.DB.prepare("SELECT status FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  const status = current?.status === "cancelled"
+    ? "cancelled"
+    : active ? "running" : failed && complete + skipped ? "partial" : failed ? "failed" : "complete";
   await env.DB.prepare(
     "UPDATE nlp_category_batches SET status = ?, target_count = ?, complete_count = ?, failed_count = ?, skipped_count = ?, updated_at = ? WHERE id = ?"
   ).bind(status, target, complete, failed, skipped, new Date().toISOString(), batchId).run();
@@ -1277,8 +1282,9 @@ function buildCloudHcuImpactForNlp(data) {
 }
 
 async function createCloudNlpBatchRoute(request, env) {
-  await assertCommandAccess(request, env, "run_nlp_categorizer", await request.clone().json().catch(() => ({})));
   const payload = await request.json().catch(() => ({}));
+  await assertCommandAccess(request, env, "run_nlp_categorizer", payload);
+  await enforceToolPolicy(request, env, "run_nlp_categorizer", { ...payload, execution_mode: "cloud" });
   const result = await createCloudNlpCategorizer({ ...payload, execution_mode: "cloud" }, env);
   await recordToolUsage(request, env, "run_nlp_categorizer", { ...payload, execution_mode: "cloud" });
   return await getCloudNlpBatch(request, env, result.batch.id);
@@ -1289,6 +1295,7 @@ async function createCloudNlpLlmComparisonRoute(request, env, batchId) {
   const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
   if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
   await assertCommandAccess(request, env, "run_nlp_llm_comparison", { ...payload, project_id: batch.project_id, batch_id: batchId });
+  await enforceToolPolicy(request, env, "run_nlp_llm_comparison", { ...payload, project_id: batch.project_id, execution_mode: "cloud" });
   const targets = Array.isArray(payload.targets) ? payload.targets : [];
   const normalizedTargets = await cloudLlmTargetsFromApiKeys(env, targets);
   const result = await createCloudNlpLlmComparison({ ...payload, batch_id: batchId, targets: normalizedTargets, execution_mode: "cloud" }, env);
@@ -1353,14 +1360,17 @@ async function retryCloudNlpBatch(request, env, batchId) {
   const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
   if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
   await assertProjectAccess(request, env, batch.project_id);
-  const result = await createCloudNlpCategorizer({
+  const retryPayload = {
     project_id: batch.project_id,
     source_type: batch.source_type,
     source_value: batch.source_value,
     max_urls: batch.max_urls,
     same_host_only: Boolean(batch.same_host_only),
     dry_run: String(batch.provider || "").toLowerCase().includes("dry")
-  }, env);
+  };
+  await enforceToolPolicy(request, env, "run_nlp_categorizer", { ...retryPayload, execution_mode: "cloud" });
+  const result = await createCloudNlpCategorizer(retryPayload, env);
+  await recordToolUsage(request, env, "run_nlp_categorizer", { ...retryPayload, execution_mode: "cloud" });
   return await getCloudNlpBatch(request, env, result.batch.id);
 }
 
@@ -1917,7 +1927,9 @@ async function handleSyncExport(request, env) {
   for (const table of tables) {
     const columns = TABLE_COLUMNS[table];
     if (!columns) return json({ ok: false, error: `Unsupported table: ${table}` }, 400);
-    const rows = await env.DB.prepare(`SELECT ${columns.join(", ")} FROM ${table} ORDER BY id LIMIT ?`).bind(limit).all();
+    // Never export stored provider secrets; sync consumers only need key metadata.
+    const exportColumns = table === "api_keys" ? columns.filter((column) => column !== "key_value") : columns;
+    const rows = await env.DB.prepare(`SELECT ${exportColumns.join(", ")} FROM ${table} ORDER BY id LIMIT ?`).bind(limit).all();
     exported.push({ table, rows: rows.results || [] });
   }
   await logAudit(request, env, "sync_export", "tables", tables.join(","), { tables, limit }, "local-sync");
@@ -2070,7 +2082,7 @@ async function handleLocalApiKeys(request, env) {
 }
 
 async function handleLocalApiKeyTest(request, env) {
-  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  await requireProjectWriteAccess(request, env, null);
   const payload = await request.json().catch(() => ({}));
   if (payload.key_id) {
     const key = await cloudApiKeyById(env, payload.key_id);
@@ -4046,6 +4058,7 @@ async function handleLocalEntityRunCreate(request, env) {
   const payload = await request.json().catch(() => ({}));
   const targets = await cloudLlmTargetsFromApiKeys(env, payload.targets);
   await assertCommandAccess(request, env, "run_entity_lsi", { ...payload, targets, execution_mode: "cloud" });
+  await enforceToolPolicy(request, env, "run_entity_lsi", { ...payload, execution_mode: "cloud" });
   const result = await createCloudEntityRuns({ ...payload, targets, execution_mode: "cloud" }, env);
   await recordToolUsage(request, env, "run_entity_lsi", { ...payload, project_id: payload.project_id, execution_mode: "cloud" });
   return await handleLocalEntityBatchDetail(request, env, result.batch.id);
