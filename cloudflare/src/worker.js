@@ -1,3 +1,5 @@
+import { EmailMessage } from "cloudflare:email";
+
 const TABLE_COLUMNS = {
   profiles: ["id", "name", "client", "notes", "created_at", "updated_at", "archived_at"],
   cora_domain_lists: ["id", "project_id", "profile_id", "scope", "list_type", "value", "notes", "created_at", "updated_at", "archived_at"],
@@ -5,6 +7,7 @@ const TABLE_COLUMNS = {
   sites: ["id", "project_id", "domain", "name", "created_at"],
   pages: ["id", "site_id", "url", "title", "created_at"],
   keywords: ["id", "project_id", "site_id", "page_id", "keyword", "intent", "priority", "created_at"],
+  api_keys: ["id", "provider", "label", "key_value", "notes", "base_url", "default_model", "status", "last_tested_at", "last_error", "created_at", "updated_at"],
   runs: ["id", "project_id", "site_id", "page_id", "keyword_id", "keyword", "target_url", "target_domain", "report_date", "imported_at", "source_path", "archive_path", "file_name", "file_size", "sha256", "notes", "status"],
   serp_results: ["id", "run_id", "rank", "title", "url", "host", "is_target"],
   recommendations: ["id", "run_id", "factor_id", "factor", "recommendation", "status", "details", "percent", "pages", "max_value", "min_value", "average"],
@@ -15,6 +18,10 @@ const TABLE_COLUMNS = {
   content_plans: ["id", "project_id", "site_id", "page_id", "keyword_id", "title", "content_type", "intent", "priority", "status", "due_date", "notes", "created_at", "updated_at"],
   entity_lsi_batches: ["id", "project_id", "seed_keyword", "depth", "target_count", "completed_count", "failed_count", "status", "created_at", "updated_at"],
   entity_lsi_runs: ["id", "project_id", "batch_id", "seed_keyword", "depth", "api_key_id", "provider", "model", "status", "summary", "entities_json", "lsi_keywords_json", "related_keywords_json", "questions_json", "topics_json", "raw_response", "error", "created_at", "completed_at"],
+  nlp_category_batches: ["id", "project_id", "source_type", "source_value", "status", "provider", "api_key_id", "target_count", "complete_count", "failed_count", "skipped_count", "max_urls", "same_host_only", "error", "created_at", "updated_at"],
+  nlp_category_urls: ["id", "batch_id", "url", "status", "title", "category", "confidence", "primary_result", "categories_json", "word_count", "error", "raw_response", "created_at", "updated_at"],
+  nlp_llm_comparison_runs: ["id", "batch_id", "project_id", "provider", "provider_key", "api_key_id", "model", "taxonomy", "status", "target_count", "complete_count", "failed_count", "prompt_version", "error", "created_at", "updated_at"],
+  nlp_llm_comparison_results: ["id", "comparison_run_id", "batch_url_id", "url", "status", "llm_category", "confidence", "page_type", "explanation", "recommended_action", "raw_response", "error", "created_at", "updated_at"],
   entity_sets: ["id", "project_id", "source_batch_id", "name", "notes", "created_at", "updated_at"],
   entity_set_terms: ["id", "set_id", "term", "normalized", "type", "source_count", "sources_json", "notes", "created_at"],
   share_reports: ["id", "token", "run_id", "level", "title", "notes", "ranking_snapshot_id", "entity_set_id", "optimization_target_ids_json", "created_at", "revoked_at"],
@@ -22,6 +29,29 @@ const TABLE_COLUMNS = {
   ranking_snapshot_keywords: ["id", "snapshot_id", "keyword", "ranking_url", "position", "previous_position", "search_volume", "cpc", "competition", "competition_level", "keyword_difficulty", "estimated_traffic", "traffic_cost", "serp_features_json", "ai_overview_present", "ai_overview_reference", "intent", "last_updated", "created_at"],
   ranking_snapshot_pages: ["id", "snapshot_id", "url", "organic_keywords", "organic_traffic", "organic_traffic_cost", "top1", "top3", "top10", "top20", "top100", "paid_keywords", "paid_traffic", "created_at"],
   ranking_optimization_targets: ["id", "snapshot_id", "project_id", "url", "keyword", "best_position", "ranking_keywords", "opportunity_count", "total_search_volume", "estimated_traffic", "page_organic_traffic", "page_organic_keywords", "top10", "priority_type", "opportunity_score", "recommended_action", "top_keywords_json", "status", "notes", "created_at", "updated_at"]
+};
+
+const CLOUD_NLP_DEFAULT_MAX_URLS = 25;
+const CLOUD_NLP_HARD_MAX_URLS = 50;
+const CLOUD_NLP_MAX_TEXT_CHARS = 5000;
+const CLOUD_NLP_MIN_WORDS = 20;
+const CLOUD_NLP_FETCH_BYTES = 3000000;
+const CLOUD_NLP_STATIC_ASSET_EXTENSIONS = new Set([
+  ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".ico", ".avif", ".bmp", ".tif", ".tiff",
+  ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z", ".gz",
+  ".mp4", ".mov", ".avi", ".wmv", ".mp3", ".wav", ".css", ".js", ".json", ".xml", ".txt"
+]);
+
+const NLP_LLM_COMPARISON_OUTPUT_SCHEMA = {
+  type: "object",
+  properties: {
+    category: { type: "string" },
+    page_type: { type: "string", enum: ["homepage", "service", "location", "blog", "product", "category", "pricing", "faq", "other"] },
+    confidence: { type: "number" },
+    explanation: { type: "string" },
+    recommended_action: { type: "string" }
+  },
+  required: ["category", "page_type", "confidence", "explanation", "recommended_action"]
 };
 
 function json(data, status = 200, extraHeaders = {}) {
@@ -209,7 +239,7 @@ async function assertCommandAccess(request, env, commandType, payload) {
   return scope;
 }
 
-const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "create_cora_domain_entry", "update_cora_domain_entry", "archive_cora_domain_entry", "apply_cora_domain_lists", "pull_cora_domain_lists", "add_keyword", "create_content_plan", "create_share_report", "revoke_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
+const COMMAND_TYPES = new Set(["create_project", "create_profile", "update_profile", "attach_profile", "detach_profile", "archive_profile", "apply_cora_profile", "push_cora_profile", "create_cora_domain_entry", "update_cora_domain_entry", "archive_cora_domain_entry", "apply_cora_domain_lists", "pull_cora_domain_lists", "add_keyword", "create_content_plan", "create_share_report", "revoke_share_report", "run_cora", "create_ranking_snapshot", "run_entity_lsi", "run_nlp_categorizer", "run_nlp_llm_comparison", "sync_cloud_data", "sync_cloud_to_local", "sync_report_artifacts"]);
 const RANKING_TARGET_STATUSES = new Set(["new", "selected", "in_cora", "in_entity_explorer", "content_plan_created", "optimized", "archived"]);
 const CONTENT_PLAN_STATUSES = new Set(["planned", "in_progress", "drafting", "review", "published", "paused", "done", "archived"]);
 const ENTITY_DEPTH_LIMITS = {
@@ -529,11 +559,11 @@ async function createCloudRankingSnapshot(payload, env) {
 
 function normalizeProvider(value) {
   const key = cleanText(value).toLowerCase();
-  const aliases = { "open ai": "openai", "chatgpt": "openai", "claude": "anthropic", "gemini": "google", "google ai": "google", "google gemini": "google", "grok": "xai", "x.ai": "xai", "xai / grok": "xai", "pplx": "perplexity", "perplexity ai": "perplexity" };
+  const aliases = { "open ai": "openai", "chatgpt": "openai", "claude": "anthropic", "gemini": "google", "google ai": "google", "google gemini": "google", "google nlp": "google_nlp", "google natural language": "google_nlp", "grok": "xai", "x.ai": "xai", "xai / grok": "xai", "pplx": "perplexity", "perplexity ai": "perplexity" };
   return aliases[key] || key;
 }
 
-function providerSecret(provider, env) {
+function providerSecret(provider, env, secretOverride = "") {
   const key = normalizeProvider(provider);
   const secrets = {
     openai: env.OPENAI_API_KEY,
@@ -542,6 +572,7 @@ function providerSecret(provider, env) {
     xai: env.XAI_API_KEY,
     perplexity: env.PERPLEXITY_API_KEY
   };
+  if (secretOverride) return { provider: key, secret: secretOverride };
   if (!secrets[key]) throw new Error(`Missing Cloudflare secret for ${provider}.`);
   return { provider: key, secret: secrets[key] };
 }
@@ -606,16 +637,29 @@ function normalizeEntityResult(parsed) {
   };
 }
 
-async function callCloudLlm(provider, model, prompt, env) {
-  const { provider: key, secret } = providerSecret(provider, env);
+async function callCloudLlm(provider, model, prompt, env, secretOverride = "", options = {}) {
+  const { provider: key, secret } = providerSecret(provider, env, secretOverride);
   if (key === "anthropic") {
+    const tool = options.anthropic_tool;
+    const body = { model, max_tokens: 5000, messages: [{ role: "user", content: prompt }] };
+    if (tool?.name && tool?.input_schema) {
+      body.tools = [{
+        name: tool.name,
+        description: tool.description || "Return the requested structured result.",
+        input_schema: tool.input_schema
+      }];
+      body.tool_choice = { type: "tool", name: tool.name };
+    }
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "content-type": "application/json", "x-api-key": secret, "anthropic-version": "2023-06-01" },
-      body: JSON.stringify({ model, max_tokens: 5000, messages: [{ role: "user", content: prompt }] })
+      body: JSON.stringify(body)
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error?.message || `Anthropic HTTP ${response.status}`);
+    for (const part of data.content || []) {
+      if (part?.type === "tool_use" && part.input && typeof part.input === "object") return JSON.stringify(part.input);
+    }
     return (data.content || []).map((part) => part.text || "").join("\n");
   }
   if (key === "google") {
@@ -649,6 +693,677 @@ async function callCloudLlm(provider, model, prompt, env) {
   return data.choices?.[0]?.message?.content || "";
 }
 
+function googleNlpSecret(env, secretOverride = "") {
+  const secret = secretOverride || env.GOOGLE_NLP_API_KEY || env.GOOGLE_CLOUD_LANGUAGE_API_KEY || env.GOOGLE_API_KEY;
+  if (!secret) throw new Error("Missing Cloudflare secret GOOGLE_NLP_API_KEY or GOOGLE_CLOUD_LANGUAGE_API_KEY.");
+  return secret;
+}
+
+function normalizeNlpUrl(value) {
+  const raw = cleanText(value);
+  if (!raw) return "";
+  try {
+    const candidate = raw.toLowerCase().startsWith("http://") || raw.toLowerCase().startsWith("https://") ? raw : `https://${raw}`;
+    const url = new URL(candidate);
+    if (!["http:", "https:"].includes(url.protocol) || !url.hostname) return "";
+    url.hash = "";
+    return url.toString();
+  } catch (_error) {
+    return "";
+  }
+}
+
+function nlpUrlHost(value) {
+  try {
+    const host = new URL(normalizeNlpUrl(value)).hostname.toLowerCase();
+    return host.startsWith("www.") ? host.slice(4) : host;
+  } catch (_error) {
+    return "";
+  }
+}
+
+function nlpSameHost(url, host) {
+  const current = nlpUrlHost(url);
+  const expected = String(host || "").toLowerCase().replace(/^www\./, "");
+  return Boolean(current && expected && (current === expected || current.endsWith(`.${expected}`)));
+}
+
+function nlpStaticAssetExtension(value) {
+  try {
+    const path = decodeURIComponent(new URL(normalizeNlpUrl(value)).pathname || "").toLowerCase();
+    const index = path.lastIndexOf(".");
+    if (index < 0) return "";
+    const ext = path.slice(index);
+    return CLOUD_NLP_STATIC_ASSET_EXTENSIONS.has(ext) ? ext : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function parseNlpUrlList(value) {
+  const seen = new Set();
+  const urls = [];
+  for (const raw of String(value || "").split(/[\r\n,]+/)) {
+    const url = normalizeNlpUrl(raw);
+    if (url && !nlpStaticAssetExtension(url) && !seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+async function nlpFetchText(url, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort("timeout"), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "user-agent": "OPOSCloudNLP/1.0 (+https://onpage.localblitz.io)",
+        "accept": "text/html,application/xml,text/xml;q=0.9,text/plain;q=0.8,*/*;q=0.5"
+      }
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const contentType = response.headers.get("content-type") || "";
+    const bytes = await response.arrayBuffer();
+    const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, CLOUD_NLP_FETCH_BYTES));
+    return { body, contentType };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractSitemapLocs(textValue) {
+  const textValueClean = String(textValue || "");
+  const locs = [...textValueClean.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/gi)].map((match) => cleanText(match[1])).filter(Boolean);
+  const isIndex = /<sitemapindex[\s>]/i.test(textValueClean);
+  return { pageLocs: isIndex ? [] : locs, sitemapLocs: isIndex ? locs : [] };
+}
+
+async function discoverCloudNlpUrls(sourceType, sourceValue, maxUrls, sameHostOnly = true) {
+  const source = cleanText(sourceType) || "urls";
+  const limit = Math.max(1, Math.min(Number(maxUrls || CLOUD_NLP_DEFAULT_MAX_URLS), CLOUD_NLP_HARD_MAX_URLS));
+  if (source === "urls") {
+    const urls = parseNlpUrlList(sourceValue).slice(0, limit);
+    if (!urls.length) throw new Error("No crawlable URLs were found for that source.");
+    return urls;
+  }
+  const sitemaps = [];
+  let rootHost = "";
+  if (source === "sitemap") {
+    const sitemap = normalizeNlpUrl(sourceValue);
+    if (!sitemap) throw new Error("Enter a valid sitemap URL.");
+    sitemaps.push(sitemap);
+    rootHost = nlpUrlHost(sitemap);
+  } else if (source === "domain") {
+    const root = normalizeNlpUrl(sourceValue);
+    if (!root) throw new Error("Enter a valid domain.");
+    const parsed = new URL(root);
+    rootHost = nlpUrlHost(root);
+    const base = `${parsed.protocol}//${parsed.host}`;
+    try {
+      const robots = await nlpFetchText(`${base}/robots.txt`, 8000);
+      for (const line of robots.body.split(/\r?\n/)) {
+        if (line.toLowerCase().startsWith("sitemap:")) {
+          const candidate = normalizeNlpUrl(line.slice(line.indexOf(":") + 1).trim());
+          if (candidate) sitemaps.push(candidate);
+        }
+      }
+    } catch (_error) {}
+    for (const path of ["/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml"]) {
+      const candidate = `${base}${path}`;
+      if (!sitemaps.includes(candidate)) sitemaps.push(candidate);
+    }
+  } else {
+    throw new Error("Choose URL list, sitemap, or domain source.");
+  }
+  const seenSitemaps = new Set();
+  const queue = [...new Set(sitemaps)];
+  const seenUrls = new Set();
+  const urls = [];
+  while (queue.length && seenSitemaps.size < 20 && urls.length < limit) {
+    const sitemapUrl = queue.shift();
+    if (!sitemapUrl || seenSitemaps.has(sitemapUrl)) continue;
+    seenSitemaps.add(sitemapUrl);
+    let sitemap;
+    try {
+      sitemap = await nlpFetchText(sitemapUrl, 10000);
+    } catch (_error) {
+      continue;
+    }
+    const { pageLocs, sitemapLocs } = extractSitemapLocs(sitemap.body);
+    for (const child of sitemapLocs) {
+      const childUrl = normalizeNlpUrl(child);
+      if (childUrl && !seenSitemaps.has(childUrl) && seenSitemaps.size + queue.length < 20) queue.push(childUrl);
+    }
+    for (const loc of pageLocs) {
+      const url = normalizeNlpUrl(loc);
+      if (!url || seenUrls.has(url) || nlpStaticAssetExtension(url)) continue;
+      if (sameHostOnly && rootHost && !nlpSameHost(url, rootHost)) continue;
+      seenUrls.add(url);
+      urls.push(url);
+      if (urls.length >= limit) break;
+    }
+  }
+  if (!urls.length) throw new Error("No crawlable URLs were found for that source.");
+  return urls;
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+async function fetchCloudNlpPageText(url) {
+  const { body, contentType } = await nlpFetchText(url, 12000);
+  const lowerType = String(contentType || "").toLowerCase();
+  if (lowerType && !lowerType.includes("html") && !lowerType.includes("text/plain") && !lowerType.includes("xml")) {
+    throw new Error(`Unsupported content type: ${contentType.split(";", 1)[0]}`);
+  }
+  const title = decodeHtmlEntities((body.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "");
+  const cleaned = decodeHtmlEntities(body)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const textValue = cleaned.slice(0, CLOUD_NLP_MAX_TEXT_CHARS);
+  const wordCount = textValue ? textValue.split(/\s+/).filter(Boolean).length : 0;
+  if (wordCount < CLOUD_NLP_MIN_WORDS) throw new Error(`Only ${wordCount} words found after extraction`);
+  return { title: cleanText(title), text: textValue, word_count: wordCount };
+}
+
+function fakeCloudNlpCategories(url, title, textValue) {
+  const haystack = `${url} ${title} ${String(textValue || "").slice(0, 500)}`.toLowerCase();
+  const rules = [
+    ["/Home & Garden", ["home", "pool", "roof", "plumbing", "hvac", "landscape"]],
+    ["/Health", ["health", "doctor", "medical", "clinic", "dental"]],
+    ["/Law & Government", ["law", "attorney", "legal", "government"]],
+    ["/Internet & Telecom", ["software", "seo", "website", "hosting", "api"]],
+    ["/Business & Industrial", ["service", "company", "business", "pricing", "quote"]]
+  ];
+  for (const [category, tokens] of rules) {
+    if (tokens.some((token) => haystack.includes(token))) return [{ name: category, confidence: 0.72 }];
+  }
+  return [{ name: "/Business & Industrial", confidence: 0.51 }];
+}
+
+async function googleCloudNlpClassifyText(textValue, env, secretOverride = "") {
+  const response = await fetch(`https://language.googleapis.com/v1/documents:classifyText?key=${encodeURIComponent(googleNlpSecret(env, secretOverride))}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "accept": "application/json" },
+    body: JSON.stringify({
+      document: { type: "PLAIN_TEXT", content: String(textValue || "").slice(0, CLOUD_NLP_MAX_TEXT_CHARS) },
+      classificationModelOptions: { v2Model: { contentCategoriesVersion: "V2" } }
+    })
+  });
+  const raw = await response.text();
+  let data = {};
+  try { data = JSON.parse(raw || "{}"); } catch (_error) {}
+  if (!response.ok) throw new Error(data.error?.message || `Google Natural Language HTTP ${response.status}`);
+  return {
+    categories: (data.categories || [])
+      .map((item) => ({ name: cleanText(item.name), confidence: Number(item.confidence || 0) }))
+      .filter((item) => item.name)
+      .sort((a, b) => b.confidence - a.confidence),
+    raw
+  };
+}
+
+async function refreshCloudNlpBatchStatus(env, batchId) {
+  const counts = await env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete_count,
+       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+       SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+       SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS active_count,
+       COUNT(*) AS target_count
+     FROM nlp_category_urls
+     WHERE batch_id = ?`
+  ).bind(batchId).first();
+  const complete = Number(counts?.complete_count || 0);
+  const failed = Number(counts?.failed_count || 0);
+  const skipped = Number(counts?.skipped_count || 0);
+  const active = Number(counts?.active_count || 0);
+  const target = Number(counts?.target_count || 0);
+  const status = active ? "running" : failed && complete + skipped ? "partial" : failed ? "failed" : "complete";
+  await env.DB.prepare(
+    "UPDATE nlp_category_batches SET status = ?, target_count = ?, complete_count = ?, failed_count = ?, skipped_count = ?, updated_at = ? WHERE id = ?"
+  ).bind(status, target, complete, failed, skipped, new Date().toISOString(), batchId).run();
+  return await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+}
+
+async function createCloudNlpCategorizer(payload, env) {
+  const projectId = Number(payload.project_id || 0);
+  if (!projectId) throw new Error("Client is required.");
+  const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(projectId).first();
+  if (!project) throw new Error("Client project not found.");
+  const sourceType = cleanText(payload.source_type) || "urls";
+  const sourceValue = cleanText(payload.source_value) || project.site_domain || "";
+  const maxUrls = Math.max(1, Math.min(Number(payload.max_urls || CLOUD_NLP_DEFAULT_MAX_URLS), CLOUD_NLP_HARD_MAX_URLS));
+  const sameHostOnly = payload.same_host_only !== false;
+  const dryRun = Boolean(payload.dry_run);
+  const savedKey = payload.api_key_id ? await cloudApiKeyById(env, payload.api_key_id) : null;
+  const googleNlpKey = savedKey && savedKey.provider_key === "google_nlp" ? savedKey.key_value : "";
+  if (!dryRun) googleNlpSecret(env, googleNlpKey);
+  const urls = await discoverCloudNlpUrls(sourceType, sourceValue, maxUrls, sameHostOnly);
+  const now = new Date().toISOString();
+  const provider = dryRun ? "Dry Run" : "Google Natural Language";
+  const inserted = await env.DB.prepare(
+    `INSERT INTO nlp_category_batches
+     (project_id, source_type, source_value, status, provider, api_key_id, target_count, complete_count, failed_count, skipped_count, max_urls, same_host_only, created_at, updated_at)
+     VALUES (?, ?, ?, 'running', ?, ?, ?, 0, 0, 0, ?, ?, ?, ?)`
+  ).bind(projectId, sourceType, sourceValue, provider, savedKey && !savedKey.pseudo ? savedKey.id : null, urls.length, maxUrls, sameHostOnly ? 1 : 0, now, now).run();
+  const batchId = inserted.meta.last_row_id;
+  for (const url of urls) {
+    await env.DB.prepare("INSERT INTO nlp_category_urls (batch_id, url, status, created_at, updated_at) VALUES (?, ?, 'queued', ?, ?)").bind(batchId, url, now, now).run();
+  }
+  const rows = await env.DB.prepare("SELECT * FROM nlp_category_urls WHERE batch_id = ? ORDER BY id").bind(batchId).all();
+  for (const row of rows.results || []) {
+    const updatedAt = new Date().toISOString();
+    const extension = nlpStaticAssetExtension(row.url);
+    if (extension) {
+      await env.DB.prepare("UPDATE nlp_category_urls SET status = 'skipped', categories_json = '[]', word_count = 0, error = ?, updated_at = ? WHERE id = ?").bind(`Skipped static asset URL (${extension})`, updatedAt, row.id).run();
+      continue;
+    }
+    await env.DB.prepare("UPDATE nlp_category_urls SET status = 'running', error = NULL, updated_at = ? WHERE id = ?").bind(updatedAt, row.id).run();
+    try {
+      const page = await fetchCloudNlpPageText(row.url);
+      const classified = dryRun
+        ? { categories: fakeCloudNlpCategories(row.url, page.title, page.text), raw: JSON.stringify({ dry_run: true }) }
+        : await googleCloudNlpClassifyText(page.text, env, googleNlpKey);
+      if (!classified.categories.length) throw new Error("No category returned");
+      const primary = classified.categories[0];
+      await env.DB.prepare(
+        `UPDATE nlp_category_urls
+         SET status = 'complete', title = ?, category = ?, confidence = ?, primary_result = 1,
+             categories_json = ?, word_count = ?, error = NULL, raw_response = ?, updated_at = ?
+         WHERE id = ?`
+      ).bind(page.title, primary.name, primary.confidence, JSON.stringify(classified.categories), page.word_count, String(classified.raw || "").slice(0, 200000), new Date().toISOString(), row.id).run();
+    } catch (error) {
+      await env.DB.prepare("UPDATE nlp_category_urls SET status = 'failed', error = ?, updated_at = ? WHERE id = ?").bind(error.message || String(error), new Date().toISOString(), row.id).run();
+    }
+  }
+  const batch = await refreshCloudNlpBatchStatus(env, batchId);
+  const resultRows = await env.DB.prepare("SELECT * FROM nlp_category_urls WHERE batch_id = ? ORDER BY id").bind(batchId).all();
+  return { batch, urls: resultRows.results || [] };
+}
+
+function normalizeNlpTaxonomy(value) {
+  const taxonomy = cleanText(value) || "seo_page_type";
+  return ["seo_page_type", "google_like", "custom"].includes(taxonomy) ? taxonomy : "seo_page_type";
+}
+
+function nlpLlmComparisonPrompt(row, taxonomy) {
+  let categories = [];
+  try { categories = JSON.parse(row.categories_json || "[]"); } catch (_error) {}
+  const categoryLines = (Array.isArray(categories) ? categories : []).slice(0, 5).map((item) => {
+    const name = cleanText(item?.name);
+    return name ? `- ${name}: ${Number(item?.confidence || 0).toFixed(3)}` : "";
+  }).filter(Boolean).join("\n");
+  const instructions = {
+    seo_page_type: "Classify the URL by practical SEO page type and content intent.",
+    google_like: "Classify the URL into a concise topic category similar to a Google Natural Language category.",
+    custom: "Classify the URL into the best reusable content inventory category for this website."
+  };
+  return `You are reviewing a URL categorization batch for an SEO content inventory.
+
+Return only valid JSON with these exact keys:
+category: string
+page_type: one of homepage, service, location, blog, product, category, pricing, faq, other
+confidence: number from 0 to 1
+explanation: string, one short sentence
+recommended_action: string, one short sentence
+
+${instructions[normalizeNlpTaxonomy(taxonomy)]}
+
+URL: ${row.url || ""}
+Title: ${row.title || "Not available"}
+Google NLP primary category: ${row.category || "Not available"}
+Google NLP confidence: ${Number(row.baseline_confidence || row.confidence || 0).toFixed(3)}
+Google NLP category candidates:
+${categoryLines || "- Not available"}
+Extracted word count: ${Number(row.word_count || 0)}
+
+Use the URL path, title, baseline category, and available confidence signals. Do not invent crawl facts beyond the provided fields.`;
+}
+
+function normalizeNlpLlmComparisonResult(parsed) {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("The LLM response JSON must be an object.");
+  if (!cleanText(parsed.category)) throw new Error("The LLM response JSON did not include a category.");
+  if (!Object.prototype.hasOwnProperty.call(parsed, "confidence")) throw new Error("The LLM response JSON did not include confidence.");
+  let pageType = cleanText(parsed.page_type).toLowerCase().replaceAll(" ", "_") || "other";
+  if (!["homepage", "service", "location", "blog", "product", "category", "pricing", "faq", "other"].includes(pageType)) pageType = "other";
+  const confidence = Math.max(0, Math.min(1, Number(parsed.confidence || 0) || 0));
+  return {
+    category: cleanText(parsed.category) || "Uncategorized",
+    page_type: pageType,
+    confidence,
+    explanation: cleanText(parsed.explanation).slice(0, 800),
+    recommended_action: cleanText(parsed.recommended_action).slice(0, 800)
+  };
+}
+
+async function refreshCloudNlpLlmRunStatus(env, runId) {
+  const counts = await env.DB.prepare(
+    `SELECT
+       SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete_count,
+       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+       SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS active_count,
+       COUNT(*) AS target_count
+     FROM nlp_llm_comparison_results
+     WHERE comparison_run_id = ?`
+  ).bind(runId).first();
+  const complete = Number(counts?.complete_count || 0);
+  const failed = Number(counts?.failed_count || 0);
+  const active = Number(counts?.active_count || 0);
+  const target = Number(counts?.target_count || 0);
+  const status = active ? "running" : failed && complete ? "partial" : failed ? "failed" : target ? "complete" : "failed";
+  await env.DB.prepare(
+    "UPDATE nlp_llm_comparison_runs SET status = ?, target_count = ?, complete_count = ?, failed_count = ?, updated_at = ? WHERE id = ?"
+  ).bind(status, target, complete, failed, new Date().toISOString(), runId).run();
+  return await env.DB.prepare("SELECT * FROM nlp_llm_comparison_runs WHERE id = ?").bind(runId).first();
+}
+
+async function createCloudNlpLlmComparison(payload, env) {
+  const batchId = Number(payload.batch_id || 0);
+  if (!batchId) throw new Error("NLP batch ID is required.");
+  const targets = Array.isArray(payload.targets) ? payload.targets : [];
+  if (!targets.length) throw new Error("Choose at least one cloud provider:model target.");
+  const taxonomy = normalizeNlpTaxonomy(payload.taxonomy);
+  const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  if (!batch) throw new Error("NLP categorizer batch not found.");
+  const limit = Math.max(1, Math.min(Number(payload.max_urls || 25), 50));
+  const urlRows = await env.DB.prepare(
+    `SELECT id, url, title, category, confidence AS baseline_confidence, categories_json, word_count
+     FROM nlp_category_urls
+     WHERE batch_id = ? AND status = 'complete'
+     ORDER BY id
+     LIMIT ?`
+  ).bind(batchId, limit).all();
+  const urls = urlRows.results || [];
+  if (!urls.length) throw new Error("Run the categorizer successfully before comparing LLMs.");
+  const now = new Date().toISOString();
+  const runs = [];
+  const results = [];
+  const seen = new Set();
+  for (const target of targets.slice(0, 10)) {
+    const resolved = target.secret ? target : await cloudProviderSecretForTarget(env, target);
+    const provider = normalizeProvider(resolved.provider || "");
+    const model = cleanText(resolved.model);
+    if (!provider || !model) throw new Error("Cloud NLP comparison targets must use provider:model.");
+    const dedupe = `${provider}:${model}`;
+    if (seen.has(dedupe)) continue;
+    seen.add(dedupe);
+    const inserted = await env.DB.prepare(
+      `INSERT INTO nlp_llm_comparison_runs
+       (batch_id, project_id, provider, provider_key, api_key_id, model, taxonomy, status, target_count, complete_count, failed_count, prompt_version, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, 0, 0, 'nlp-llm-v1', ?, ?)`
+    ).bind(batchId, batch.project_id, provider, provider, resolved.api_key_id || null, model, taxonomy, urls.length, now, now).run();
+    const runId = inserted.meta.last_row_id;
+    for (const urlRow of urls) {
+      const resultInsert = await env.DB.prepare(
+        "INSERT INTO nlp_llm_comparison_results (comparison_run_id, batch_url_id, url, status, created_at, updated_at) VALUES (?, ?, ?, 'running', ?, ?)"
+      ).bind(runId, urlRow.id, urlRow.url, now, now).run();
+      const resultId = resultInsert.meta.last_row_id;
+      let raw = "";
+      try {
+        raw = await callCloudLlm(provider, model, nlpLlmComparisonPrompt(urlRow, taxonomy), env, resolved.secret || "", {
+          anthropic_tool: {
+            name: "save_nlp_llm_classification",
+            description: "Save the structured NLP/LLM URL classification result.",
+            input_schema: NLP_LLM_COMPARISON_OUTPUT_SCHEMA
+          }
+        });
+        const parsed = normalizeNlpLlmComparisonResult(extractJsonText(raw));
+        await env.DB.prepare(
+          `UPDATE nlp_llm_comparison_results
+           SET status = 'complete', llm_category = ?, confidence = ?, page_type = ?, explanation = ?,
+               recommended_action = ?, raw_response = ?, error = NULL, updated_at = ?
+           WHERE id = ?`
+        ).bind(parsed.category, parsed.confidence, parsed.page_type, parsed.explanation, parsed.recommended_action, raw.slice(0, 200000), new Date().toISOString(), resultId).run();
+      } catch (error) {
+        await env.DB.prepare("UPDATE nlp_llm_comparison_results SET status = 'failed', raw_response = ?, error = ?, updated_at = ? WHERE id = ?")
+          .bind(String(raw || "").slice(0, 200000), error.message || String(error), new Date().toISOString(), resultId).run();
+      }
+      results.push(await env.DB.prepare("SELECT * FROM nlp_llm_comparison_results WHERE id = ?").bind(resultId).first());
+    }
+    runs.push(await refreshCloudNlpLlmRunStatus(env, runId));
+  }
+  if (!runs.length) throw new Error("Choose at least one cloud provider:model target.");
+  return { batch_id: batchId, runs, results };
+}
+
+function publicNlpCategoryUrl(row, llmResults = []) {
+  if (!row) return null;
+  let categories = [];
+  try { categories = JSON.parse(row.categories_json || "[]"); } catch (_error) {}
+  return {
+    ...row,
+    categories,
+    raw_response: undefined,
+    llm_results: llmResults
+  };
+}
+
+function nlpBatchProgress(batch) {
+  const total = Number(batch?.target_count || 0);
+  const done = Number(batch?.complete_count || 0) + Number(batch?.failed_count || 0) + Number(batch?.skipped_count || 0);
+  return {
+    done,
+    total,
+    percent: total ? Math.round((done / total) * 100) : 0
+  };
+}
+
+async function listCloudNlpBatches(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const url = new URL(request.url);
+  const projectId = Number(url.searchParams.get("project_id") || 0);
+  if (projectId) await assertProjectAccess(request, env, projectId);
+  const scopeSql = projectId ? "WHERE b.project_id = ?" : (scope.scoped ? `WHERE b.project_id IN (${scope.clientIds.map(() => "?").join(",")})` : "");
+  const params = projectId ? [projectId] : (scope.scoped ? scope.clientIds : []);
+  const rows = await env.DB.prepare(
+    `SELECT b.*, p.name AS project_name
+     FROM nlp_category_batches b
+     LEFT JOIN projects p ON p.id = b.project_id
+     ${scopeSql}
+     ORDER BY b.created_at DESC, b.id DESC
+     LIMIT 100`
+  ).bind(...params).all();
+  return json({ batches: rows.results || [] });
+}
+
+async function getCloudNlpBatch(request, env, batchId) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const batch = await env.DB.prepare(
+    `SELECT b.*, p.name AS project_name
+     FROM nlp_category_batches b
+     LEFT JOIN projects p ON p.id = b.project_id
+     WHERE b.id = ?`
+  ).bind(batchId).first();
+  if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
+  await assertProjectAccess(request, env, batch.project_id);
+  const [urlRows, runs, results] = await Promise.all([
+    env.DB.prepare("SELECT * FROM nlp_category_urls WHERE batch_id = ? ORDER BY id LIMIT 1000").bind(batchId).all(),
+    env.DB.prepare("SELECT * FROM nlp_llm_comparison_runs WHERE batch_id = ? ORDER BY created_at DESC, id DESC").bind(batchId).all(),
+    env.DB.prepare(
+      `SELECT r.*
+       FROM nlp_llm_comparison_results r
+       JOIN nlp_llm_comparison_runs cr ON cr.id = r.comparison_run_id
+       WHERE cr.batch_id = ?
+       ORDER BY r.id`
+    ).bind(batchId).all()
+  ]);
+  const byUrlId = new Map();
+  for (const result of results.results || []) {
+    const key = String(result.batch_url_id || "");
+    byUrlId.set(key, (byUrlId.get(key) || []).concat(result));
+  }
+  const urls = (urlRows.results || []).map((row) => publicNlpCategoryUrl(row, byUrlId.get(String(row.id)) || []));
+  const categoryMap = new Map();
+  for (const row of urls) {
+    if (row.status !== "complete" || !row.category) continue;
+    const item = categoryMap.get(row.category) || { category: row.category, count: 0, avg_confidence: 0 };
+    item.count += 1;
+    item.avg_confidence += Number(row.confidence || 0);
+    categoryMap.set(row.category, item);
+  }
+  const categories = [...categoryMap.values()].map((item) => ({ ...item, avg_confidence: item.avg_confidence / Math.max(1, item.count) }))
+    .sort((a, b) => b.count - a.count || a.category.localeCompare(b.category));
+  const providerColumns = ["Google NLP"].concat((runs.results || []).map((run) => `${run.provider || run.provider_key || "provider"} (${run.model || "model"})`));
+  return json({
+    batch,
+    urls,
+    categories,
+    category_count: categories.length,
+    progress: nlpBatchProgress(batch),
+    comparison_runs: runs.results || [],
+    comparison: {
+      baseline_provider: batch.provider || "Google NLP",
+      provider_columns: providerColumns,
+      next_provider_slots: ["OpenAI", "Anthropic", "Google Gemini", "xAI", "Perplexity"]
+    },
+    hcu_impact: buildCloudHcuImpactForNlp({ batch, urls, comparison_runs: runs.results || [] })
+  });
+}
+
+function buildCloudHcuImpactForNlp(data) {
+  const urls = (data.urls || []).filter((row) => row.status === "complete").map((row) => {
+    const wordCount = Number(row.word_count || 0);
+    const confidence = Number(row.confidence || 0);
+    const reasons = [];
+    let score = 0;
+    if (!row.category) { score += 1; reasons.push("No primary NLP category"); }
+    if (wordCount && wordCount < 300) { score += 2; reasons.push("Very thin word count"); }
+    else if (wordCount && wordCount < 650) { score += 1; reasons.push("Lower word count"); }
+    if (confidence && confidence < 0.55) { score += 1; reasons.push("Low NLP confidence"); }
+    const pageTypes = new Set((row.llm_results || []).map((item) => String(item.page_type || "").toLowerCase()).filter(Boolean));
+    const categories = new Set((row.llm_results || []).map((item) => String(item.llm_category || "").toLowerCase()).filter(Boolean));
+    if (pageTypes.size > 1) { score += 1; reasons.push("LLM page types disagree"); }
+    if (categories.size > 1) { score += 1; reasons.push("LLM categories disagree"); }
+    if (!reasons.length) reasons.push("No obvious HCU risk signal from synced data");
+    const level = score >= 4 ? "high" : score >= 2 ? "medium" : "low";
+    return {
+      url: row.url,
+      title: row.title,
+      category: row.category,
+      page_type: pageTypes.values().next().value || "other",
+      risk_level: level,
+      risk_score: score,
+      reasons,
+      word_count: row.word_count,
+      confidence: row.confidence,
+      traffic_delta: null,
+      keyword_delta: null
+    };
+  });
+  const summary = urls.reduce((acc, row) => {
+    acc.analyzed_urls += 1;
+    if (row.risk_level === "high") acc.high_risk += 1;
+    if (row.risk_level === "medium") acc.medium_risk += 1;
+    if (row.risk_level === "low") acc.low_risk += 1;
+    return acc;
+  }, { analyzed_urls: 0, high_risk: 0, medium_risk: 0, low_risk: 0, traffic_matched_urls: 0, organic_traffic_delta: 0 });
+  return { summary, urls, by_page_type: [], by_category: [], notes: ["Cloud API response uses NLP/LLM risk signals; ranking snapshot HCU deltas are shown in the cloud client workspace."] };
+}
+
+async function createCloudNlpBatchRoute(request, env) {
+  await assertCommandAccess(request, env, "run_nlp_categorizer", await request.clone().json().catch(() => ({})));
+  const payload = await request.json().catch(() => ({}));
+  const result = await createCloudNlpCategorizer({ ...payload, execution_mode: "cloud" }, env);
+  await recordToolUsage(request, env, "run_nlp_categorizer", { ...payload, execution_mode: "cloud" });
+  return await getCloudNlpBatch(request, env, result.batch.id);
+}
+
+async function createCloudNlpLlmComparisonRoute(request, env, batchId) {
+  const payload = await request.json().catch(() => ({}));
+  const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
+  await assertCommandAccess(request, env, "run_nlp_llm_comparison", { ...payload, project_id: batch.project_id, batch_id: batchId });
+  const targets = Array.isArray(payload.targets) ? payload.targets : [];
+  const normalizedTargets = await cloudLlmTargetsFromApiKeys(env, targets);
+  const result = await createCloudNlpLlmComparison({ ...payload, batch_id: batchId, targets: normalizedTargets, execution_mode: "cloud" }, env);
+  await recordToolUsage(request, env, "run_nlp_llm_comparison", { ...payload, project_id: batch.project_id, batch_id: batchId, execution_mode: "cloud" });
+  return await getCloudNlpBatch(request, env, result.batch_id);
+}
+
+async function exportCloudNlpBatch(request, env, batchId) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
+  await assertProjectAccess(request, env, batch.project_id);
+  const rows = await env.DB.prepare("SELECT * FROM nlp_category_urls WHERE batch_id = ? ORDER BY id").bind(batchId).all();
+  const csvEscape = (value) => `"${String(value ?? "").replaceAll('"', '""')}"`;
+  const lines = [["URL", "Status", "Title", "Primary Category", "Confidence", "Word Count", "All Categories", "Error"].map(csvEscape).join(",")];
+  for (const row of rows.results || []) {
+    let categories = [];
+    try { categories = JSON.parse(row.categories_json || "[]"); } catch (_error) {}
+    const categoryText = categories.map((item) => `${item.name || ""} (${Number(item.confidence || 0).toFixed(3)})`).join("; ");
+    lines.push([row.url, row.status, row.title, row.category, row.confidence ?? "", row.word_count ?? "", categoryText, row.error || ""].map(csvEscape).join(","));
+  }
+  return new Response(lines.join("\r\n"), {
+    headers: {
+      "content-type": "text/csv; charset=utf-8",
+      "content-disposition": `attachment; filename="nlp-categories-${batchId}.csv"`,
+      "cache-control": "no-store"
+    }
+  });
+}
+
+async function cancelCloudNlpBatch(request, env, batchId) {
+  await assertCommandAccess(request, env, "run_nlp_categorizer", {});
+  const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
+  await assertProjectAccess(request, env, batch.project_id);
+  const now = new Date().toISOString();
+  await env.DB.prepare("UPDATE nlp_category_batches SET status = 'cancelled', updated_at = ? WHERE id = ?").bind(now, batchId).run();
+  await env.DB.prepare("UPDATE nlp_category_urls SET status = 'cancelled', error = 'Cancelled before run started', updated_at = ? WHERE batch_id = ? AND status IN ('queued', 'running')").bind(now, batchId).run();
+  await refreshCloudNlpBatchStatus(env, batchId);
+  return await getCloudNlpBatch(request, env, batchId);
+}
+
+async function deleteCloudNlpBatch(request, env, batchId) {
+  const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  if (!batch) return json({ ok: true, deleted: false, already_deleted: true, batch_id: batchId });
+  await requireProjectWriteAccess(request, env, batch.project_id);
+  const runs = await env.DB.prepare("SELECT id FROM nlp_llm_comparison_runs WHERE batch_id = ?").bind(batchId).all();
+  const runIds = (runs.results || []).map((row) => Number(row.id)).filter(Boolean);
+  const statements = [];
+  for (const runId of runIds) {
+    statements.push(env.DB.prepare("DELETE FROM nlp_llm_comparison_results WHERE comparison_run_id = ?").bind(runId));
+  }
+  statements.push(env.DB.prepare("DELETE FROM nlp_llm_comparison_runs WHERE batch_id = ?").bind(batchId));
+  statements.push(env.DB.prepare("DELETE FROM nlp_category_urls WHERE batch_id = ?").bind(batchId));
+  statements.push(env.DB.prepare("DELETE FROM nlp_category_batches WHERE id = ?").bind(batchId));
+  await env.DB.batch(statements);
+  return json({ ok: true, deleted: true, batch_id: batchId, project_id: batch.project_id });
+}
+
+async function retryCloudNlpBatch(request, env, batchId) {
+  await assertCommandAccess(request, env, "run_nlp_categorizer", {});
+  const batch = await env.DB.prepare("SELECT * FROM nlp_category_batches WHERE id = ?").bind(batchId).first();
+  if (!batch) return json({ ok: false, error: "NLP categorizer batch not found" }, 404);
+  await assertProjectAccess(request, env, batch.project_id);
+  const result = await createCloudNlpCategorizer({
+    project_id: batch.project_id,
+    source_type: batch.source_type,
+    source_value: batch.source_value,
+    max_urls: batch.max_urls,
+    same_host_only: Boolean(batch.same_host_only),
+    dry_run: String(batch.provider || "").toLowerCase().includes("dry")
+  }, env);
+  return await getCloudNlpBatch(request, env, result.batch.id);
+}
+
 async function createCloudEntityRuns(payload, env) {
   const projectId = Number(payload.project_id || 0);
   const seed = cleanText(payload.seed_keyword);
@@ -670,15 +1385,16 @@ async function createCloudEntityRuns(payload, env) {
   let completed = 0;
   let failed = 0;
   for (const target of targets) {
-    const provider = normalizeProvider(target.provider || target.provider_key || "");
-    const model = cleanText(target.model);
+    const resolved = target.secret ? target : await cloudProviderSecretForTarget(env, target);
+    const provider = normalizeProvider(resolved.provider || "");
+    const model = cleanText(resolved.model);
     if (!provider || !model) throw new Error("Cloud Entity targets must use provider:model.");
     const runInsert = await env.DB.prepare(
-      "INSERT INTO entity_lsi_runs (project_id, batch_id, seed_keyword, depth, api_key_id, provider, model, status, created_at) VALUES (?, ?, ?, ?, NULL, ?, ?, 'running', ?)"
-    ).bind(projectId, batchId, seed, depth, provider, model, now).run();
+      "INSERT INTO entity_lsi_runs (project_id, batch_id, seed_keyword, depth, api_key_id, provider, model, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)"
+    ).bind(projectId, batchId, seed, depth, resolved.api_key_id || null, provider, model, now).run();
     const runId = runInsert.meta.last_row_id;
     try {
-      const raw = await callCloudLlm(provider, model, prompt, env);
+      const raw = await callCloudLlm(provider, model, prompt, env, resolved.secret || "");
       const parsed = normalizeEntityResult(extractJsonText(raw));
       await env.DB.prepare(
         "UPDATE entity_lsi_runs SET status = 'complete', summary = ?, entities_json = ?, lsi_keywords_json = ?, related_keywords_json = ?, questions_json = ?, topics_json = ?, raw_response = ?, error = NULL, completed_at = ? WHERE id = ?"
@@ -1058,6 +1774,46 @@ async function executeCloudCommand(commandType, payload, env) {
     changedTables.push("entity_lsi_batches", "entity_lsi_runs");
     return result;
   }
+  if (commandType === "run_nlp_categorizer") {
+    if (payload.dry_run) {
+      result.dry_run = true;
+      result.nlp_categorizer_request = {
+        project_id: Number(payload.project_id || 0),
+        source_type: cleanText(payload.source_type) || "urls",
+        source_value: cleanText(payload.source_value),
+        max_urls: Math.max(1, Math.min(Number(payload.max_urls || CLOUD_NLP_DEFAULT_MAX_URLS), CLOUD_NLP_HARD_MAX_URLS)),
+        same_host_only: payload.same_host_only !== false,
+        execution_mode: "cloud"
+      };
+      return result;
+    }
+    const nlp = await createCloudNlpCategorizer(payload, env);
+    result.batch = nlp.batch;
+    result.urls = nlp.urls;
+    result.batch_id = nlp.batch?.id;
+    changedTables.push("nlp_category_batches", "nlp_category_urls");
+    return result;
+  }
+  if (commandType === "run_nlp_llm_comparison") {
+    if (payload.dry_run) {
+      const targets = Array.isArray(payload.targets) ? payload.targets : [];
+      result.dry_run = true;
+      result.nlp_llm_comparison_request = {
+        batch_id: Number(payload.batch_id || 0),
+        taxonomy: normalizeNlpTaxonomy(payload.taxonomy),
+        target_count: targets.length,
+        max_urls: Math.max(1, Math.min(Number(payload.max_urls || 25), 50)),
+        execution_mode: "cloud"
+      };
+      return result;
+    }
+    const comparison = await createCloudNlpLlmComparison(payload, env);
+    result.batch_id = comparison.batch_id;
+    result.runs = comparison.runs;
+    result.results = comparison.results;
+    changedTables.push("nlp_llm_comparison_runs", "nlp_llm_comparison_results");
+    return result;
+  }
   throw new Error(`Cloud execution is not supported for ${commandType}.`);
 }
 
@@ -1155,7 +1911,7 @@ async function handleSyncExport(request, env) {
     .split(",")
     .map((table) => table.trim())
     .filter(Boolean);
-  const tables = selected.length ? selected : ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"];
+  const tables = selected.length ? selected : ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "nlp_category_batches", "nlp_category_urls", "nlp_llm_comparison_runs", "nlp_llm_comparison_results", "entity_sets", "entity_set_terms", "share_reports"];
   const limit = Math.min(Number(url.searchParams.get("limit") || 5000), 25000);
   const exported = [];
   for (const table of tables) {
@@ -1185,24 +1941,212 @@ function secretStatusData(env) {
     openai: Boolean(env.OPENAI_API_KEY),
     anthropic: Boolean(env.ANTHROPIC_API_KEY),
     google: Boolean(env.GOOGLE_API_KEY),
+    google_nlp: Boolean(env.GOOGLE_NLP_API_KEY || env.GOOGLE_CLOUD_LANGUAGE_API_KEY || env.GOOGLE_API_KEY),
     xai: Boolean(env.XAI_API_KEY),
     perplexity: Boolean(env.PERPLEXITY_API_KEY)
   };
 }
 
+const CLOUD_AI_PROVIDERS = [
+  { key: "openai", name: "OpenAI", placeholder: "sk-...", base_url: "https://api.openai.com", default_model: "gpt-5.5", models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"] },
+  { key: "anthropic", name: "Anthropic", placeholder: "sk-ant-...", base_url: "https://api.anthropic.com", default_model: "claude-opus-4-8", models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"] },
+  { key: "google", name: "Google Gemini", placeholder: "AIza...", base_url: "https://generativelanguage.googleapis.com", default_model: "gemini-3.5-flash", models: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-latest"] },
+  { key: "google_nlp", name: "Google NLP", placeholder: "AIza...", base_url: "https://language.googleapis.com", default_model: "classifyText-v2", models: [] },
+  { key: "xai", name: "xAI / Grok", placeholder: "xai-...", base_url: "https://api.x.ai", default_model: "grok-4.3", models: ["grok-4.3", "grok-4.3-latest", "grok-latest", "grok-build-0.1", "grok-code-fast"] },
+  { key: "perplexity", name: "Perplexity", placeholder: "pplx-...", base_url: "https://api.perplexity.ai", default_model: "perplexity/sonar", models: ["perplexity/sonar", "openai/gpt-5.4", "anthropic/claude-sonnet-4-6", "xai/grok-4.3", "xai/grok-4.20-reasoning", "xai/grok-4.20-non-reasoning", "xai/grok-4.20-multi-agent"] },
+  { key: "dataforseo", name: "DataForSEO", placeholder: "API password", login_placeholder: "api-login@example.com", base_url: "https://api.dataforseo.com", default_model: "", models: [], auth_type: "basic", test_path: "/v3/appendix/user_data" }
+];
+
+function cloudPseudoApiKeys(env) {
+  const configured = secretStatusData(env);
+  return CLOUD_AI_PROVIDERS
+    .filter((provider) => configured[provider.key])
+    .map((provider, index) => ({
+      id: 9000 + index + 1,
+      provider: provider.name,
+      provider_key: provider.key,
+      provider_name: provider.name,
+      label: "Cloudflare Worker Secret",
+      key_preview: "Cloudflare secret",
+      key_length: null,
+      default_model: provider.default_model || "",
+      base_url: provider.base_url || "",
+      status: "configured",
+      last_tested_at: "configured",
+      last_error: null,
+      pseudo: true,
+      notes: "Configured as a Cloudflare Worker secret."
+    }));
+}
+
+function cloudPseudoApiKeyById(env, id) {
+  return cloudPseudoApiKeys(env).find((key) => Number(key.id) === Number(id)) || null;
+}
+
+function maskSecret(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (text.length <= 8) return "*".repeat(text.length);
+  return `${text.slice(0, 4)}...${text.slice(-4)}`;
+}
+
+function apiKeyPublic(row) {
+  if (!row) return null;
+  const providerKey = normalizeProvider(row.provider || "");
+  const provider = CLOUD_AI_PROVIDERS.find((item) => item.key === providerKey) || {};
+  const keyValue = String(row.key_value || "");
+  return {
+    id: row.id,
+    provider: provider.name || row.provider,
+    provider_key: providerKey,
+    provider_name: provider.name || row.provider,
+    label: row.label || "Production",
+    notes: row.notes || "",
+    base_url: row.base_url || provider.base_url || "",
+    default_model: row.default_model || provider.default_model || "",
+    status: row.status || "untested",
+    last_tested_at: row.last_tested_at || null,
+    last_error: row.last_error || null,
+    created_at: row.created_at || null,
+    updated_at: row.updated_at || null,
+    key_preview: providerKey === "dataforseo" ? "login:********" : maskSecret(keyValue),
+    key_length: keyValue.length
+  };
+}
+
+function apiKeyValueFromPayload(provider, payload) {
+  const keyValue = cleanText(payload.key_value);
+  if (normalizeProvider(provider) !== "dataforseo" || keyValue) return keyValue;
+  const login = cleanText(payload.api_login);
+  const password = cleanText(payload.api_password);
+  return login && password ? `${login}:${password}` : "";
+}
+
+async function storedCloudApiKeys(env) {
+  const rows = await env.DB.prepare("SELECT * FROM api_keys ORDER BY provider COLLATE NOCASE, label COLLATE NOCASE, id DESC").all();
+  return rows.results || [];
+}
+
+async function cloudApiKeyById(env, id) {
+  const pseudo = cloudPseudoApiKeyById(env, id);
+  if (pseudo) return { ...pseudo, key_value: "", pseudo: true };
+  const row = await env.DB.prepare("SELECT * FROM api_keys WHERE id = ?").bind(Number(id || 0)).first();
+  return row ? { ...apiKeyPublic(row), key_value: row.key_value || "", pseudo: false } : null;
+}
+
+async function cloudProviderSecretForTarget(env, target) {
+  const saved = target.api_key_id ? await cloudApiKeyById(env, target.api_key_id) : null;
+  return {
+    provider: target.provider || target.provider_key || saved?.provider_key || "",
+    model: target.model || saved?.default_model || "",
+    api_key_id: saved && !saved.pseudo ? saved.id : null,
+    secret: saved?.key_value || ""
+  };
+}
+
+async function handleLocalApiKeys(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (request.method === "POST") {
+    const scope = await requireProjectWriteAccess(request, env, null);
+    if (!scope.write) return json({ ok: false, error: "Write access required" }, 401);
+    const payload = await request.json().catch(() => ({}));
+    const providerKey = normalizeProvider(payload.provider);
+    const provider = CLOUD_AI_PROVIDERS.find((item) => item.key === providerKey);
+    if (!provider) return json({ ok: false, error: "Unsupported provider" }, 400);
+    const keyValue = apiKeyValueFromPayload(providerKey, payload);
+    const label = cleanText(payload.label) || "Production";
+    if (!keyValue) return json({ ok: false, error: providerKey === "dataforseo" ? "API login/password or API key is required" : "API key is required" }, 400);
+    const now = new Date().toISOString();
+    const inserted = await env.DB.prepare(
+      `INSERT INTO api_keys
+       (provider, label, key_value, notes, base_url, default_model, status, last_tested_at, last_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'untested', NULL, NULL, ?, ?)`
+    ).bind(provider.name, label, keyValue, cleanText(payload.notes) || null, cleanText(payload.base_url) || provider.base_url || null, cleanText(payload.default_model) || provider.default_model || null, now, now).run();
+    const row = await env.DB.prepare("SELECT * FROM api_keys WHERE id = ?").bind(inserted.meta.last_row_id).first();
+    return json({ ok: true, api_key: apiKeyPublic(row) }, 201);
+  }
+  const rows = await storedCloudApiKeys(env);
+  return json({ ok: true, api_keys: [...rows.map(apiKeyPublic), ...cloudPseudoApiKeys(env)], providers: CLOUD_AI_PROVIDERS });
+}
+
+async function handleLocalApiKeyTest(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const payload = await request.json().catch(() => ({}));
+  if (payload.key_id) {
+    const key = await cloudApiKeyById(env, payload.key_id);
+    if (!key) return json({ ok: true, test: { ok: false, message: "Saved API key was not found." } });
+    const now = new Date().toISOString();
+    let ok = true;
+    let message = `${key.provider_name} key is stored and selectable.`;
+    let errorMessage = null;
+    if (key.provider_key === "google_nlp") {
+      try {
+        const sampleText = "Search engine optimization services help businesses improve local visibility, website content quality, organic rankings, and customer acquisition through technical SEO, content strategy, and digital marketing analysis.";
+        await googleCloudNlpClassifyText(sampleText, env, key.key_value || "");
+        message = "Google Natural Language classifyText verified successfully.";
+      } catch (error) {
+        ok = false;
+        errorMessage = error.message || String(error);
+        message = errorMessage;
+      }
+    }
+    if (!key.pseudo) {
+      await env.DB.prepare("UPDATE api_keys SET status = ?, last_tested_at = ?, last_error = ?, updated_at = ? WHERE id = ?").bind(ok ? "valid" : "failed", now, errorMessage, now, key.id).run();
+      const row = await env.DB.prepare("SELECT * FROM api_keys WHERE id = ?").bind(key.id).first();
+      return json({ ok: true, test: { ok, message }, api_key: apiKeyPublic(row) });
+    }
+    return json({ ok: true, test: { ok, message }, api_key: { ...key, status: ok ? "valid" : "failed", last_tested_at: now, last_error: errorMessage } });
+  }
+  const providerKey = normalizeProvider(payload.provider);
+  const keyValue = apiKeyValueFromPayload(providerKey, payload);
+  if (providerKey === "google_nlp" && keyValue) {
+    try {
+      const sampleText = "Search engine optimization services help businesses improve local visibility, website content quality, organic rankings, and customer acquisition through technical SEO, content strategy, and digital marketing analysis.";
+      await googleCloudNlpClassifyText(sampleText, env, keyValue);
+      return json({ ok: true, test: { ok: true, message: "Google Natural Language classifyText verified successfully." } });
+    } catch (error) {
+      return json({ ok: true, test: { ok: false, message: error.message || String(error) } });
+    }
+  }
+  return json({ ok: true, test: { ok: Boolean(providerKey && keyValue), message: providerKey && keyValue ? "Key format is present and can be saved." : "Provider and API key are required." } });
+}
+
+async function handleLocalApiKeyDelete(request, env, id) {
+  await requireProjectWriteAccess(request, env, null);
+  if (cloudPseudoApiKeyById(env, id)) return json({ ok: false, error: "Worker secret keys cannot be deleted from the dashboard." }, 400);
+  await env.DB.prepare("DELETE FROM api_keys WHERE id = ?").bind(Number(id || 0)).run();
+  return json({ ok: true, deleted: Number(id || 0) });
+}
+
 async function sendLoginEmail(env, email, code) {
-  if (!env.RESEND_API_KEY || !env.LOGIN_EMAIL_FROM) return false;
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: { "content-type": "application/json", "authorization": `Bearer ${env.RESEND_API_KEY}` },
-    body: JSON.stringify({
-      from: env.LOGIN_EMAIL_FROM,
-      to: [email],
-      subject: "On Page Optimization System login code",
-      text: `Your On Page Optimization System login code is ${code}. It expires in 10 minutes.`
-    })
-  });
-  return response.ok;
+  if (!env.EMAIL) return false;
+  const from = env.LOGIN_EMAIL_FROM || "noreply@localblitz.io";
+  const fromDomain = from.split("@")[1] || "localblitz.io";
+  const text = `Your On Page Optimization System login code is ${code}. It expires in 10 minutes.`;
+  const html = `<p>Your On Page Optimization System login code is <strong>${code}</strong>.</p><p>It expires in 10 minutes.</p>`;
+  const boundary = `opos-${crypto.randomUUID()}`;
+  const raw = [
+    `From: ${from}`,
+    `To: ${email}`,
+    "Subject: On Page Optimization System login code",
+    `Date: ${new Date().toUTCString()}`,
+    `Message-ID: <${crypto.randomUUID()}@${fromDomain}>`,
+    "MIME-Version: 1.0",
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
+    'Content-Type: text/plain; charset="utf-8"',
+    "",
+    text,
+    `--${boundary}`,
+    'Content-Type: text/html; charset="utf-8"',
+    "",
+    html,
+    `--${boundary}--`,
+    ""
+  ].join("\r\n");
+  await env.EMAIL.send(new EmailMessage(from, email, raw));
+  return true;
 }
 
 async function handleAuthRequest(request, env) {
@@ -1220,13 +2164,16 @@ async function handleAuthRequest(request, env) {
   const codeHash = await sha256Hex(`${email}:${code}`);
   await env.DB.prepare("INSERT INTO login_codes (email, code_hash, expires_at, created_at) VALUES (?, ?, ?, ?)")
     .bind(email, codeHash, expiresAt, now.toISOString()).run();
-  const emailSent = await sendLoginEmail(env, email, code).catch(() => false);
+  const emailSent = await sendLoginEmail(env, email, code).catch((error) => {
+    console.error("Login email delivery failed:", error?.message || error);
+    return false;
+  });
   const revealCode = await hasAdminAccess(request, env);
   await logAudit(request, env, "login_code_requested", "cloud_user", user.id, { email_sent: emailSent }, email);
   return json({
     ok: true,
     email_sent: emailSent,
-    message: emailSent ? "Login code sent." : "Email delivery is not configured yet. Admin-token callers receive a setup code.",
+    message: emailSent ? "Login code sent." : "Cloudflare email delivery is not configured yet. Admin-token callers receive a setup code.",
     dev_code: revealCode ? code : undefined
   });
 }
@@ -1284,7 +2231,9 @@ function normalizeToolPolicy(row) {
 
 const DEFAULT_TOOL_POLICIES = {
   create_ranking_snapshot: { tool_key: "create_ranking_snapshot", cloud_enabled: true, daily_limit: 25, monthly_limit: 500, per_client_daily_limit: 10, updated_at: null },
-  run_entity_lsi: { tool_key: "run_entity_lsi", cloud_enabled: true, daily_limit: 25, monthly_limit: 500, per_client_daily_limit: 10, updated_at: null }
+  run_entity_lsi: { tool_key: "run_entity_lsi", cloud_enabled: true, daily_limit: 25, monthly_limit: 500, per_client_daily_limit: 10, updated_at: null },
+  run_nlp_categorizer: { tool_key: "run_nlp_categorizer", cloud_enabled: true, daily_limit: 50, monthly_limit: 1000, per_client_daily_limit: 20, updated_at: null },
+  run_nlp_llm_comparison: { tool_key: "run_nlp_llm_comparison", cloud_enabled: true, daily_limit: 50, monthly_limit: 1000, per_client_daily_limit: 20, updated_at: null }
 };
 
 async function toolPolicies(env) {
@@ -1591,7 +2540,7 @@ async function syncStatusData(env) {
   ).all();
   const tableRows = rows.results || [];
   const seen = new Set(tableRows.map((row) => row.table_name));
-  const coreTables = ["profiles", "cora_domain_lists", "projects", "sites", "pages", "keywords", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "entity_sets", "entity_set_terms"];
+  const coreTables = ["profiles", "cora_domain_lists", "projects", "sites", "pages", "keywords", "api_keys", "runs", "managed_jobs", "content_plans", "share_reports", "ranking_snapshots", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "nlp_category_batches", "nlp_category_urls", "nlp_llm_comparison_runs", "nlp_llm_comparison_results", "entity_sets", "entity_set_terms"];
   for (const table of coreTables) {
     if (!seen.has(table)) tableRows.push({ table_name: table, rows_received: 0, batch_count: 0, last_received_at: null });
   }
@@ -1645,7 +2594,7 @@ async function handleDashboardData(request, env) {
   if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
   const scope = await accessContext(request, env);
   const { user, admin } = scope;
-  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, contentPlans, entitySets, pendingCommands, bridges, artifacts, sync] = await Promise.all([
+  const [profiles, projects, keywords, runs, reports, rankingSnapshots, targets, contentPlans, entitySets, nlpBatches, pendingCommands, bridges, artifacts, sync] = await Promise.all([
     countTable(env, "profiles"),
     countProjectTable(env, "projects", scope, "id"),
     countProjectTable(env, "keywords", scope),
@@ -1655,6 +2604,7 @@ async function handleDashboardData(request, env) {
     countProjectTable(env, "ranking_optimization_targets", scope),
     countProjectTable(env, "content_plans", scope),
     countProjectTable(env, "entity_sets", scope),
+    countProjectTable(env, "nlp_category_batches", scope),
     env.DB.prepare("SELECT COUNT(*) AS count FROM cloud_commands WHERE status IN ('pending', 'claimed')").first().then((row) => Number(row?.count || 0)),
     bridgeStatus(env),
     artifactStatusData(env),
@@ -1693,7 +2643,8 @@ async function handleDashboardData(request, env) {
             (SELECT COUNT(*) FROM runs r WHERE r.project_id = p.id) AS run_count,
             (SELECT COUNT(*) FROM ranking_snapshots rs WHERE rs.project_id = p.id) AS snapshot_count,
             (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.project_id = p.id) AS target_count,
-            (SELECT COUNT(*) FROM content_plans cp WHERE cp.project_id = p.id) AS plan_count
+            (SELECT COUNT(*) FROM content_plans cp WHERE cp.project_id = p.id) AS plan_count,
+            (SELECT COUNT(*) FROM nlp_category_batches nb WHERE nb.project_id = p.id) AS nlp_category_count
      FROM projects p
      LEFT JOIN profiles pr ON pr.id = p.profile_id
      ${clientWhere}
@@ -1707,7 +2658,7 @@ async function handleDashboardData(request, env) {
     worker_url: new URL(request.url).origin,
     user: user || (admin ? { email: "token-admin", role: "admin", status: "active" } : { email: "token-reader", role: "read", status: "active" }),
     is_admin: admin,
-    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, content_plans: contentPlans, entity_sets: entitySets, pending_commands: pendingCommands },
+    counts: { profiles, projects, keywords, runs, reports, ranking_snapshots: rankingSnapshots, ranking_optimization_targets: targets, content_plans: contentPlans, entity_sets: entitySets, nlp_category_batches: nlpBatches, pending_commands: pendingCommands },
     artifacts,
     sync,
     bridges,
@@ -1725,7 +2676,7 @@ async function handleDashboardMirrorData(request, env) {
   const profileWhere = scope.scoped && profileScope.sql ? `WHERE ${profileScope.sql}` : "";
   const domainScope = scopeClause(scope, "dl.project_id");
   const domainWhere = scope.scoped && domainScope.sql ? `AND (dl.project_id IS NULL OR ${domainScope.sql})` : "";
-  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, profileRows, domainLists, keywordRows, commands, audits] = await Promise.all([
+  const [runs, jobs, snapshots, targets, entityBatches, entityRuns, entitySets, contentPlans, nlpBatches, nlpUrls, nlpComparisonRuns, nlpComparisonResults, profileRows, domainLists, keywordRows, commands, audits] = await Promise.all([
     env.DB.prepare(
       `SELECT r.id, r.project_id, r.keyword, r.target_url, r.target_domain, r.imported_at, r.file_name, r.status,
               p.name AS project_name,
@@ -1804,6 +2755,40 @@ async function handleDashboardMirrorData(request, env) {
        LIMIT 150`
     ).all(),
     env.DB.prepare(
+      `SELECT b.id, b.project_id, b.source_type, b.source_value, b.status, b.provider,
+              b.target_count, b.complete_count, b.failed_count, b.skipped_count, b.max_urls,
+              b.same_host_only, b.error, b.created_at, b.updated_at, p.name AS project_name
+       FROM nlp_category_batches b
+       LEFT JOIN projects p ON p.id = b.project_id
+       ORDER BY b.created_at DESC, b.id DESC
+       LIMIT 100`
+    ).all(),
+    env.DB.prepare(
+      `SELECT u.id, u.batch_id, u.url, u.status, u.title, u.category, u.confidence,
+              u.primary_result, u.categories_json, u.word_count, u.error, u.created_at, u.updated_at,
+              b.project_id, p.name AS project_name
+       FROM nlp_category_urls u
+       JOIN nlp_category_batches b ON b.id = u.batch_id
+       LEFT JOIN projects p ON p.id = b.project_id
+       ORDER BY u.updated_at DESC, u.id DESC
+       LIMIT 500`
+    ).all(),
+    env.DB.prepare(
+      `SELECT cr.*, p.name AS project_name
+       FROM nlp_llm_comparison_runs cr
+       LEFT JOIN projects p ON p.id = cr.project_id
+       ORDER BY cr.created_at DESC, cr.id DESC
+       LIMIT 200`
+    ).all(),
+    env.DB.prepare(
+      `SELECT r.*, cr.batch_id, cr.project_id, cr.provider, cr.model, cr.taxonomy, p.name AS project_name
+       FROM nlp_llm_comparison_results r
+       JOIN nlp_llm_comparison_runs cr ON cr.id = r.comparison_run_id
+       LEFT JOIN projects p ON p.id = cr.project_id
+       ORDER BY r.updated_at DESC, r.id DESC
+       LIMIT 800`
+    ).all(),
+    env.DB.prepare(
       `SELECT pr.id, pr.name, pr.client, pr.notes, pr.created_at, pr.updated_at, pr.archived_at,
               COUNT(p.id) AS client_count,
               GROUP_CONCAT(p.name, ', ') AS client_names
@@ -1844,6 +2829,10 @@ async function handleDashboardMirrorData(request, env) {
     entity_runs: filterScope(entityRuns.results || [], scope),
     entity_sets: filterScope(entitySets.results || [], scope),
     content_plans: filterScope(contentPlans.results || [], scope),
+    nlp_category_batches: filterScope(nlpBatches.results || [], scope),
+    nlp_category_urls: filterScope(nlpUrls.results || [], scope),
+    nlp_llm_comparison_runs: filterScope(nlpComparisonRuns.results || [], scope),
+    nlp_llm_comparison_results: filterScope(nlpComparisonResults.results || [], scope),
     profiles: profileRows.results || [],
     domain_lists: domainLists.results || [],
     keywords: filterScope(keywordRows.results || [], scope),
@@ -2422,11 +3411,19 @@ async function handleClientDetail(request, env, id) {
      WHERE p.id = ?`
   ).bind(id).first();
   if (!client) return json({ ok: false, error: "Client not found" }, 404);
-  const [keywords, runs, jobs, snapshots, targets, reports, plans, entityBatches, entityRuns, entitySets, commands] = await Promise.all([
+  const [keywords, runs, jobs, snapshots, rankingPages, targets, reports, plans, entityBatches, entityRuns, entitySets, nlpBatches, nlpUrls, nlpComparisonRuns, nlpComparisonResults, commands] = await Promise.all([
     env.DB.prepare("SELECT * FROM keywords WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 250").bind(id).all(),
     env.DB.prepare("SELECT * FROM runs WHERE project_id = ? ORDER BY imported_at DESC, id DESC LIMIT 150").bind(id).all(),
     env.DB.prepare("SELECT * FROM managed_jobs WHERE project_id = ? ORDER BY updated_at DESC, id DESC LIMIT 150").bind(id).all(),
     env.DB.prepare("SELECT * FROM ranking_snapshots WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 100").bind(id).all(),
+    env.DB.prepare(
+      `SELECT rsp.*, rs.project_id, rs.target, rs.created_at AS snapshot_created_at
+       FROM ranking_snapshot_pages rsp
+       JOIN ranking_snapshots rs ON rs.id = rsp.snapshot_id
+       WHERE rs.project_id = ?
+       ORDER BY rs.created_at DESC, rsp.organic_traffic DESC, rsp.organic_keywords DESC
+       LIMIT 2000`
+    ).bind(id).all(),
     env.DB.prepare("SELECT * FROM ranking_optimization_targets WHERE project_id = ? ORDER BY opportunity_score DESC, id DESC LIMIT 250").bind(id).all(),
     env.DB.prepare(
       `SELECT sr.id, sr.token, sr.level, sr.title, sr.created_at, sr.revoked_at,
@@ -2460,6 +3457,24 @@ async function handleClientDetail(request, env, id) {
        ORDER BY es.updated_at DESC, es.id DESC
        LIMIT 100`
     ).bind(id).all(),
+    env.DB.prepare("SELECT * FROM nlp_category_batches WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 100").bind(id).all(),
+    env.DB.prepare(
+      `SELECT u.*
+       FROM nlp_category_urls u
+       JOIN nlp_category_batches b ON b.id = u.batch_id
+       WHERE b.project_id = ?
+       ORDER BY u.updated_at DESC, u.id DESC
+       LIMIT 500`
+    ).bind(id).all(),
+    env.DB.prepare("SELECT * FROM nlp_llm_comparison_runs WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT 150").bind(id).all(),
+    env.DB.prepare(
+      `SELECT r.*, cr.batch_id, cr.project_id, cr.provider, cr.model, cr.taxonomy
+       FROM nlp_llm_comparison_results r
+       JOIN nlp_llm_comparison_runs cr ON cr.id = r.comparison_run_id
+       WHERE cr.project_id = ?
+       ORDER BY r.updated_at DESC, r.id DESC
+       LIMIT 800`
+    ).bind(id).all(),
     env.DB.prepare("SELECT * FROM cloud_commands ORDER BY created_at DESC, id DESC LIMIT 150").all()
   ]);
   const clientCommands = (commands.results || [])
@@ -2474,13 +3489,706 @@ async function handleClientDetail(request, env, id) {
     runs: runs.results || [],
     jobs: jobs.results || [],
     snapshots: snapshots.results || [],
+    ranking_snapshot_pages: rankingPages.results || [],
     targets: targets.results || [],
     reports: reports.results || [],
     content_plans: plans.results || [],
     entity_batches: entityBatches.results || [],
     entity_runs: entityRuns.results || [],
     entity_sets: entitySets.results || [],
+    nlp_category_batches: nlpBatches.results || [],
+    nlp_category_urls: nlpUrls.results || [],
+    nlp_llm_comparison_runs: nlpComparisonRuns.results || [],
+    nlp_llm_comparison_results: nlpComparisonResults.results || [],
     commands: clientCommands
+  });
+}
+
+async function countScopedPages(env, scope) {
+  if (!scope?.scoped) return await countTable(env, "pages");
+  const clause = scopeClause(scope, "s.project_id");
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM pages p
+     JOIN sites s ON s.id = p.site_id
+     WHERE ${clause.sql}`
+  ).bind(...clause.binds).first();
+  return Number(row?.count || 0);
+}
+
+async function handleLocalCoraStatus(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  return json({
+    connected: false,
+    running: false,
+    cloud_mode: true,
+    status: "cloud",
+    message: "Cora desktop execution is local-only. Cloud tools run here; Cora jobs use the local bridge."
+  });
+}
+
+async function handleLocalCloudflareStatus(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const [projects, runs, jobs, apiKeys, artifacts, bridge] = await Promise.all([
+    countTable(env, "projects"),
+    countTable(env, "runs"),
+    countTable(env, "managed_jobs"),
+    countTable(env, "api_keys").catch(() => 0),
+    artifactStatusData(env),
+    bridgeStatus(env)
+  ]);
+  const latestBridge = Array.isArray(bridge) ? bridge[0] : null;
+  return json({
+    configured: true,
+    state: "cloud",
+    counts: { projects, runs, jobs, api_keys: apiKeys + cloudPseudoApiKeys(env).length },
+    artifacts,
+    bridge: {
+      enabled: Boolean(latestBridge),
+      allow_cora: Boolean(latestBridge?.allow_cora),
+      allow_paid_tools: Boolean(latestBridge?.allow_paid_tools),
+      last_error: null,
+      last_poll_at: latestBridge?.last_poll_at || null,
+      poll_interval: latestBridge?.poll_interval || null,
+      last_result: latestBridge?.last_result || null
+    },
+    sync_url: new URL(request.url).origin,
+    credential_source: "cloudflare-worker",
+    batch_size: 500,
+    has_token: true
+  });
+}
+
+async function handleLocalProfiles(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const rows = await env.DB.prepare("SELECT * FROM profiles WHERE archived_at IS NULL ORDER BY updated_at DESC, name ASC LIMIT 250").all();
+  return json({ profiles: rows.results || [], selected_cora_profile: "" });
+}
+
+async function handleLocalProjects(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  if (request.method === "POST") {
+    const payload = await request.json().catch(() => ({}));
+    await requireProjectWriteAccess(request, env, payload.project_id || null);
+    const result = await executeCloudCommand("create_project", payload, env);
+    return json({ ok: true, project: result.project, duplicate: Boolean(result.duplicate) }, result.duplicate ? 200 : 201);
+  }
+  const scope = await accessContext(request, env);
+  const clause = scopeClause(scope, "p.id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT p.id, p.profile_id, p.name, p.client, p.site_domain, p.notes, p.created_at, p.updated_at,
+            pr.name AS profile_name,
+            (SELECT COUNT(*) FROM sites s WHERE s.project_id = p.id) AS site_count,
+            (SELECT COUNT(*) FROM keywords k WHERE k.project_id = p.id) AS keyword_count,
+            (SELECT COUNT(*) FROM runs r WHERE r.project_id = p.id) AS run_count,
+            (SELECT COUNT(*) FROM managed_jobs j WHERE j.project_id = p.id) AS job_count
+     FROM projects p
+     LEFT JOIN profiles pr ON pr.id = p.profile_id
+     ${where}
+     ORDER BY p.updated_at DESC, p.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ projects: rows.results || [] });
+}
+
+async function handleLocalProjectDetail(request, env, id) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  await assertProjectAccess(request, env, id);
+  const project = await env.DB.prepare(
+    `SELECT p.*, pr.name AS profile_name
+     FROM projects p
+     LEFT JOIN profiles pr ON pr.id = p.profile_id
+     WHERE p.id = ?`
+  ).bind(id).first();
+  if (!project) return json({ ok: false, error: "Project not found" }, 404);
+  const [sites, pages, keywords, runs, jobs, contentPlans] = await Promise.all([
+    env.DB.prepare("SELECT * FROM sites WHERE project_id = ? ORDER BY id LIMIT 500").bind(id).all(),
+    env.DB.prepare(
+      `SELECT pg.*, s.domain AS site_domain
+       FROM pages pg
+       LEFT JOIN sites s ON s.id = pg.site_id
+       WHERE s.project_id = ?
+       ORDER BY pg.id
+       LIMIT 1000`
+    ).bind(id).all(),
+    env.DB.prepare("SELECT * FROM keywords WHERE project_id = ? ORDER BY id LIMIT 1000").bind(id).all(),
+    env.DB.prepare("SELECT * FROM runs WHERE project_id = ? ORDER BY imported_at DESC, id DESC LIMIT 250").bind(id).all(),
+    env.DB.prepare("SELECT * FROM managed_jobs WHERE project_id = ? ORDER BY updated_at DESC, id DESC LIMIT 250").bind(id).all(),
+    env.DB.prepare("SELECT * FROM content_plans WHERE project_id = ? ORDER BY updated_at DESC, id DESC LIMIT 250").bind(id).all()
+  ]);
+  return json({
+    project,
+    sites: sites.results || [],
+    pages: pages.results || [],
+    keywords: keywords.results || [],
+    runs: runs.results || [],
+    jobs: jobs.results || [],
+    content_plans: contentPlans.results || []
+  });
+}
+
+async function handleLocalOverview(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const runScope = scopeClause(scope, "r.project_id");
+  const runWhere = runScope.sql ? `WHERE ${runScope.sql}` : "";
+  const jobScope = scopeClause(scope, "j.project_id");
+  const jobWhere = jobScope.sql ? `WHERE ${jobScope.sql}` : "";
+  const planScope = scopeClause(scope, "cp.project_id");
+  const planWhere = planScope.sql ? `WHERE ${planScope.sql}` : "";
+  const [profiles, projects, keywords, runs, sites, pages, workbookRows, plans, jobs, recentRuns, recentJobs, recentPlans] = await Promise.all([
+    countTable(env, "profiles"),
+    countProjectTable(env, "projects", scope, "id"),
+    countProjectTable(env, "keywords", scope),
+    countProjectTable(env, "runs", scope),
+    countProjectTable(env, "sites", scope),
+    countScopedPages(env, scope),
+    countTable(env, "workbook_rows").catch(() => 0),
+    countProjectTable(env, "content_plans", scope),
+    env.DB.prepare(`SELECT status, COUNT(*) AS count FROM managed_jobs j ${jobWhere} GROUP BY status ORDER BY count DESC`).bind(...jobScope.binds).all(),
+    env.DB.prepare(
+      `SELECT r.*, p.name AS project_name
+       FROM runs r
+       LEFT JOIN projects p ON p.id = r.project_id
+       ${runWhere}
+       ORDER BY r.imported_at DESC, r.id DESC
+       LIMIT 10`
+    ).bind(...runScope.binds).all(),
+    env.DB.prepare(
+      `SELECT j.*, p.name AS project_name
+       FROM managed_jobs j
+       LEFT JOIN projects p ON p.id = j.project_id
+       ${jobWhere}
+       ORDER BY j.updated_at DESC, j.id DESC
+       LIMIT 10`
+    ).bind(...jobScope.binds).all(),
+    env.DB.prepare(
+      `SELECT cp.*, p.name AS project_name
+       FROM content_plans cp
+       LEFT JOIN projects p ON p.id = cp.project_id
+       ${planWhere}
+       ORDER BY cp.updated_at DESC, cp.id DESC
+       LIMIT 10`
+    ).bind(...planScope.binds).all()
+  ]);
+  const storedKeys = await storedCloudApiKeys(env).catch(() => []);
+  const keys = [...storedKeys.map(apiKeyPublic), ...cloudPseudoApiKeys(env)];
+  return json({
+    counts: { profiles, projects, runs, keywords, workbook_rows: workbookRows, sites, pages, content_plans: plans, api_keys: keys.length },
+    job_counts: jobs.results || [],
+    recent_runs: recentRuns.results || [],
+    recent_jobs: recentJobs.results || [],
+    recent_content_plans: recentPlans.results || [],
+    api_key_providers: keys.map((key) => ({ provider: key.provider_name, provider_key: key.provider_key, count: 1 }))
+  });
+}
+
+async function handleLocalRuns(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const url = new URL(request.url);
+  const projectId = Number(url.searchParams.get("project_id") || 0);
+  if (projectId) await assertProjectAccess(request, env, projectId);
+  const clause = projectId ? { sql: "r.project_id = ?", binds: [projectId] } : scopeClause(scope, "r.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT r.*, p.name AS project_name
+     FROM runs r
+     LEFT JOIN projects p ON p.id = r.project_id
+     ${where}
+     ORDER BY r.imported_at DESC, r.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ runs: rows.results || [] });
+}
+
+async function handleLocalJobs(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const clause = scopeClause(scope, "j.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT j.*, p.name AS project_name
+     FROM managed_jobs j
+     LEFT JOIN projects p ON p.id = j.project_id
+     ${where}
+     ORDER BY j.updated_at DESC, j.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ jobs: rows.results || [] });
+}
+
+async function handleLocalShareReports(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const clause = scopeClause(scope, "r.project_id");
+  const where = `sr.revoked_at IS NULL${clause.sql ? ` AND ${clause.sql}` : ""}`;
+  const rows = await env.DB.prepare(
+    `SELECT sr.*, r.keyword, r.target_url, r.target_domain, p.name AS project_name
+     FROM share_reports sr
+     LEFT JOIN runs r ON r.id = sr.run_id
+     LEFT JOIN projects p ON p.id = r.project_id
+     WHERE ${where}
+     ORDER BY sr.created_at DESC, sr.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ reports: rows.results || [] });
+}
+
+async function handleLocalContentPlans(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const clause = scopeClause(scope, "cp.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT cp.*, p.name AS project_name, k.keyword
+     FROM content_plans cp
+     LEFT JOIN projects p ON p.id = cp.project_id
+     LEFT JOIN keywords k ON k.id = cp.keyword_id
+     ${where}
+     ORDER BY cp.updated_at DESC, cp.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ content_plans: rows.results || [] });
+}
+
+async function handleLocalRankingSnapshots(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const clause = scopeClause(scope, "rs.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT rs.*, p.name AS project_name,
+            (SELECT COUNT(*) FROM ranking_snapshot_keywords rsk WHERE rsk.snapshot_id = rs.id) AS keyword_count,
+            (SELECT COUNT(*) FROM ranking_snapshot_pages rsp WHERE rsp.snapshot_id = rs.id) AS page_count,
+            (SELECT COUNT(*) FROM ranking_optimization_targets rot WHERE rot.snapshot_id = rs.id) AS target_count
+     FROM ranking_snapshots rs
+     LEFT JOIN projects p ON p.id = rs.project_id
+     ${where}
+     ORDER BY rs.created_at DESC, rs.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ snapshots: rows.results || [] });
+}
+
+async function handleLocalOptimizationTargets(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const clause = scopeClause(scope, "rot.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT rot.*, p.name AS project_name
+     FROM ranking_optimization_targets rot
+     LEFT JOIN projects p ON p.id = rot.project_id
+     ${where}
+     ORDER BY rot.opportunity_score DESC, rot.updated_at DESC, rot.id DESC
+     LIMIT 500`
+  ).bind(...clause.binds).all();
+  return json({ targets: rows.results || [] });
+}
+
+async function handleLocalEntityRuns(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const url = new URL(request.url);
+  const projectId = Number(url.searchParams.get("project_id") || 0);
+  if (projectId) await assertProjectAccess(request, env, projectId);
+  const clause = projectId ? { sql: "r.project_id = ?", binds: [projectId] } : scopeClause(scope, "r.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT r.*, p.name AS project_name
+     FROM entity_lsi_runs r
+     LEFT JOIN projects p ON p.id = r.project_id
+     ${where}
+     ORDER BY r.created_at DESC, r.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ runs: rows.results || [] });
+}
+
+async function handleLocalEntityBatches(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const url = new URL(request.url);
+  const projectId = Number(url.searchParams.get("project_id") || 0);
+  if (projectId) await assertProjectAccess(request, env, projectId);
+  const clause = projectId ? { sql: "b.project_id = ?", binds: [projectId] } : scopeClause(scope, "b.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT b.*, p.name AS project_name
+     FROM entity_lsi_batches b
+     LEFT JOIN projects p ON p.id = b.project_id
+     ${where}
+     ORDER BY b.created_at DESC, b.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ batches: rows.results || [] });
+}
+
+async function handleLocalEntitySets(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const scope = await accessContext(request, env);
+  const url = new URL(request.url);
+  const projectId = Number(url.searchParams.get("project_id") || 0);
+  if (projectId) await assertProjectAccess(request, env, projectId);
+  const clause = projectId ? { sql: "es.project_id = ?", binds: [projectId] } : scopeClause(scope, "es.project_id");
+  const where = clause.sql ? `WHERE ${clause.sql}` : "";
+  const rows = await env.DB.prepare(
+    `SELECT es.*, p.name AS project_name,
+            (SELECT COUNT(*) FROM entity_set_terms est WHERE est.set_id = es.id) AS term_count
+     FROM entity_sets es
+     LEFT JOIN projects p ON p.id = es.project_id
+     ${where}
+     ORDER BY es.updated_at DESC, es.id DESC
+     LIMIT 250`
+  ).bind(...clause.binds).all();
+  return json({ entity_sets: rows.results || [] });
+}
+
+async function cloudLlmTargetsFromApiKeys(env, targets) {
+  const resolved = [];
+  for (const target of Array.isArray(targets) ? targets : []) {
+    const saved = target.api_key_id ? await cloudApiKeyById(env, target.api_key_id) : null;
+    const item = {
+      provider: target.provider || target.provider_key || saved?.provider_key,
+      model: target.model || saved?.default_model,
+      api_key_id: saved && !saved.pseudo ? saved.id : null,
+      secret: saved?.key_value || ""
+    };
+    if (item.provider && item.model) resolved.push(item);
+  }
+  return resolved;
+}
+
+function localRankingKeyword(row) {
+  return {
+    ...row,
+    rankingUrl: row.ranking_url,
+    previousPosition: row.previous_position,
+    searchVolume: row.search_volume,
+    competitionLevel: row.competition_level,
+    keywordDifficulty: row.keyword_difficulty,
+    estimatedTraffic: row.estimated_traffic,
+    trafficCost: row.traffic_cost,
+    serpFeatures: parseJsonField(row.serp_features_json, []),
+    aiOverviewPresent: Boolean(row.ai_overview_present),
+    aiOverviewReference: Boolean(row.ai_overview_reference),
+    lastUpdated: row.last_updated
+  };
+}
+
+function localRankingPage(row) {
+  return {
+    ...row,
+    organicKeywords: row.organic_keywords,
+    organicTraffic: row.organic_traffic,
+    organicTrafficCost: row.organic_traffic_cost,
+    paidKeywords: row.paid_keywords,
+    paidTraffic: row.paid_traffic
+  };
+}
+
+function localOptimizationTarget(row) {
+  return {
+    ...row,
+    snapshotId: row.snapshot_id,
+    projectId: row.project_id,
+    bestPosition: row.best_position,
+    rankingKeywords: row.ranking_keywords,
+    opportunityCount: row.opportunity_count,
+    totalSearchVolume: row.total_search_volume,
+    estimatedTraffic: row.estimated_traffic,
+    pageOrganicTraffic: row.page_organic_traffic,
+    pageOrganicKeywords: row.page_organic_keywords,
+    priorityType: row.priority_type,
+    opportunityScore: row.opportunity_score,
+    recommendedAction: row.recommended_action,
+    topKeywords: parseJsonField(row.top_keywords_json, []),
+    snapshotTarget: row.snapshot_target,
+    snapshotCreatedAt: row.snapshot_created_at
+  };
+}
+
+async function localRankingSnapshotData(request, env, id) {
+  const snapshot = await env.DB.prepare(
+    `SELECT rs.*, p.name AS project_name
+     FROM ranking_snapshots rs
+     LEFT JOIN projects p ON p.id = rs.project_id
+     WHERE rs.id = ?`
+  ).bind(id).first();
+  if (!snapshot) {
+    const error = new Error("Ranking snapshot not found");
+    error.status = 404;
+    throw error;
+  }
+  await assertProjectAccess(request, env, snapshot.project_id);
+  const [keywords, pages, targets] = await Promise.all([
+    env.DB.prepare("SELECT * FROM ranking_snapshot_keywords WHERE snapshot_id = ? ORDER BY position ASC, search_volume DESC LIMIT 5000").bind(id).all(),
+    env.DB.prepare("SELECT * FROM ranking_snapshot_pages WHERE snapshot_id = ? ORDER BY organic_traffic DESC, organic_keywords DESC LIMIT 2000").bind(id).all(),
+    env.DB.prepare(
+      `SELECT rot.*, rs.target AS snapshot_target, rs.created_at AS snapshot_created_at
+       FROM ranking_optimization_targets rot
+       LEFT JOIN ranking_snapshots rs ON rs.id = rot.snapshot_id
+       WHERE rot.snapshot_id = ?
+       ORDER BY rot.opportunity_score DESC, rot.id ASC
+       LIMIT 1000`
+    ).bind(id).all()
+  ]);
+  const keywordRows = (keywords.results || []).map(localRankingKeyword);
+  const pageRows = (pages.results || []).map(localRankingPage);
+  return {
+    ok: true,
+    snapshot: {
+      ...snapshot,
+      overview: parseJsonField(snapshot.overview_json, {}),
+      errors: parseJsonField(snapshot.errors_json, [])
+    },
+    meta: {
+      source: snapshot.source || "DataForSEO Labs",
+      freshness: snapshot.freshness || "weekly",
+      generated_at: snapshot.created_at,
+      cached: false,
+      partial: Boolean(snapshot.errors_json && snapshot.errors_json !== "{}")
+    },
+    overview: parseJsonField(snapshot.overview_json, {}),
+    keywords: keywordRows,
+    pages: pageRows,
+    opportunities: keywordRows,
+    savedTargets: (targets.results || []).map(localOptimizationTarget),
+    targets: (targets.results || []).map(localOptimizationTarget)
+  };
+}
+
+async function handleLocalRankingSnapshotDetail(request, env, id) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  return json(await localRankingSnapshotData(request, env, id));
+}
+
+async function handleLocalRankingSnapshotCreate(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  await assertCommandAccess(request, env, "create_ranking_snapshot", payload);
+  await enforceToolPolicy(request, env, "create_ranking_snapshot", { ...payload, execution_mode: "cloud" });
+  const result = await createCloudRankingSnapshot(payload, env);
+  await recordToolUsage(request, env, "create_ranking_snapshot", { ...payload, execution_mode: "cloud" });
+  return json({ ...(await localRankingSnapshotData(request, env, result.snapshot.id)), meta: result.meta || {} }, 201);
+}
+
+async function handleLocalSites(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const projectId = Number(payload.project_id || 0);
+  const domain = domainFromUrl(payload.domain || payload.url || "");
+  if (!projectId || !domain) return json({ ok: false, error: "Client and domain are required" }, 400);
+  await requireProjectWriteAccess(request, env, projectId);
+  const now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT * FROM sites WHERE project_id = ? AND lower(domain) = lower(?) ORDER BY id LIMIT 1").bind(projectId, domain).first();
+  if (existing) return json({ ok: true, duplicate: true, site: existing }, 200);
+  const inserted = await env.DB.prepare("INSERT INTO sites (project_id, domain, name, created_at) VALUES (?, ?, ?, ?)").bind(projectId, domain, cleanText(payload.name) || null, now).run();
+  const site = await env.DB.prepare("SELECT * FROM sites WHERE id = ?").bind(inserted.meta.last_row_id).first();
+  return json({ ok: true, site }, 201);
+}
+
+async function handleLocalPages(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const siteId = Number(payload.site_id || 0);
+  const url = cleanText(payload.url);
+  if (!siteId || !url) return json({ ok: false, error: "Site and URL are required" }, 400);
+  const site = await env.DB.prepare("SELECT * FROM sites WHERE id = ?").bind(siteId).first();
+  if (!site) return json({ ok: false, error: "Site not found" }, 404);
+  await requireProjectWriteAccess(request, env, site.project_id);
+  const now = new Date().toISOString();
+  const existing = await env.DB.prepare("SELECT * FROM pages WHERE site_id = ? AND url = ? ORDER BY id LIMIT 1").bind(siteId, url).first();
+  if (existing) return json({ ok: true, duplicate: true, page: existing }, 200);
+  const inserted = await env.DB.prepare("INSERT INTO pages (site_id, url, title, created_at) VALUES (?, ?, ?, ?)").bind(siteId, url, cleanText(payload.title) || null, now).run();
+  const page = await env.DB.prepare("SELECT * FROM pages WHERE id = ?").bind(inserted.meta.last_row_id).first();
+  return json({ ok: true, page }, 201);
+}
+
+async function handleLocalKeywords(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const projectId = Number(payload.project_id || 0);
+  await requireProjectWriteAccess(request, env, projectId);
+  const result = await executeCloudCommand("add_keyword", payload, env);
+  return json({ ok: true, keyword: result.keyword, duplicate: Boolean(result.duplicate) }, result.duplicate ? 200 : 201);
+}
+
+async function handleLocalContentPlanCreate(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  await requireProjectWriteAccess(request, env, payload.project_id);
+  const result = await executeCloudCommand("create_content_plan", payload, env);
+  return json({ ok: true, content_plan: result.content_plan, duplicate: Boolean(result.duplicate) }, result.duplicate ? 200 : 201);
+}
+
+async function handleLocalShareReportCreate(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const run = await env.DB.prepare("SELECT project_id FROM runs WHERE id = ?").bind(Number(payload.run_id || 0)).first();
+  await requireProjectWriteAccess(request, env, run?.project_id);
+  const result = await executeCloudCommand("create_share_report", payload, env);
+  const origin = new URL(request.url).origin;
+  const report = result.report ? { ...result.report, url: `/share/report/${result.report.token}`, absolute_url: `${origin}/share/report/${result.report.token}` } : null;
+  return json({ ok: true, report, duplicate: Boolean(result.duplicate) }, result.duplicate ? 200 : 201);
+}
+
+async function handleLocalShareReportDelete(request, env, id) {
+  const report = await env.DB.prepare(
+    `SELECT sr.*, r.project_id
+     FROM share_reports sr
+     LEFT JOIN runs r ON r.id = sr.run_id
+     WHERE sr.id = ?`
+  ).bind(id).first();
+  if (!report) return json({ ok: false, error: "Shared report not found" }, 404);
+  await requireProjectWriteAccess(request, env, report.project_id);
+  const result = await executeCloudCommand("revoke_share_report", { report_id: id }, env);
+  return json({ ok: true, report: result.report });
+}
+
+async function handleLocalEntityRunCreate(request, env) {
+  const payload = await request.json().catch(() => ({}));
+  const targets = await cloudLlmTargetsFromApiKeys(env, payload.targets);
+  await assertCommandAccess(request, env, "run_entity_lsi", { ...payload, targets, execution_mode: "cloud" });
+  const result = await createCloudEntityRuns({ ...payload, targets, execution_mode: "cloud" }, env);
+  await recordToolUsage(request, env, "run_entity_lsi", { ...payload, project_id: payload.project_id, execution_mode: "cloud" });
+  return await handleLocalEntityBatchDetail(request, env, result.batch.id);
+}
+
+function entityBatchProgress(batch, runs = []) {
+  const total = Number(batch?.target_count || runs.length || 0);
+  const complete = Number(batch?.completed_count || runs.filter((run) => run.status === "complete").length);
+  const failed = Number(batch?.failed_count || runs.filter((run) => run.status === "failed").length);
+  const cancelled = runs.filter((run) => run.status === "cancelled").length;
+  const finished = complete + failed + cancelled;
+  return {
+    total,
+    complete,
+    failed,
+    cancelled,
+    finished,
+    queued: Math.max(0, total - finished),
+    percent: total ? Math.round((finished / total) * 100) : 0,
+    current_run: runs.find((run) => run.status === "running") || null,
+    up_next: runs.find((run) => run.status === "queued") || null,
+    queued_runs: runs.filter((run) => run.status === "queued"),
+    events: runs.filter((run) => ["complete", "failed", "cancelled"].includes(run.status)).map((run) => ({ status: run.status, message: run.error || `${run.provider} ${run.model}`, updated_at: run.completed_at || run.created_at }))
+  };
+}
+
+async function handleLocalEntityBatchDetail(request, env, id) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const response = await handleEntityBatchDetail(request, env, id);
+  const data = await response.json();
+  return json({ ...data, progress: entityBatchProgress(data.batch, data.runs || []) }, response.status);
+}
+
+async function handleLocalEntityRunDelete(request, env, id) {
+  const run = await env.DB.prepare("SELECT * FROM entity_lsi_runs WHERE id = ?").bind(id).first();
+  if (!run) return json({ ok: false, error: "Entity Explorer run not found" }, 404);
+  await requireProjectWriteAccess(request, env, run.project_id);
+  await env.DB.prepare("DELETE FROM entity_lsi_runs WHERE id = ?").bind(id).run();
+  return json({ ok: true, deleted: id });
+}
+
+async function handleLocalEntityBatchRetry(request, env, id) {
+  const batch = await env.DB.prepare("SELECT * FROM entity_lsi_batches WHERE id = ?").bind(id).first();
+  if (!batch) return json({ ok: false, error: "Entity batch not found" }, 404);
+  await requireProjectWriteAccess(request, env, batch.project_id);
+  return await handleLocalEntityBatchDetail(request, env, id);
+}
+
+async function handleLocalEntityBatchCancel(request, env, id) {
+  const batch = await env.DB.prepare("SELECT * FROM entity_lsi_batches WHERE id = ?").bind(id).first();
+  if (!batch) return json({ ok: false, error: "Entity batch not found" }, 404);
+  await requireProjectWriteAccess(request, env, batch.project_id);
+  const now = new Date().toISOString();
+  const result = await env.DB.prepare("UPDATE entity_lsi_runs SET status = 'cancelled', completed_at = COALESCE(completed_at, ?) WHERE batch_id = ? AND status IN ('queued', 'running')").bind(now, id).run();
+  await env.DB.prepare("UPDATE entity_lsi_batches SET status = CASE WHEN completed_count > 0 THEN 'partial' ELSE 'cancelled' END, updated_at = ? WHERE id = ?").bind(now, id).run();
+  const response = await handleLocalEntityBatchDetail(request, env, id);
+  const data = await response.json();
+  return json({ ...data, cancelled_count: result.meta?.changes || 0 });
+}
+
+async function handleLocalRunDetail(request, env, id) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const response = await handleRunDetail(request, env, id);
+  const data = await response.json();
+  return json({
+    ok: data.ok,
+    run: data.run,
+    results: data.serp_results || [],
+    recommendations: data.recommendations || [],
+    lsi: data.lsi_keywords || [],
+    target_matches: []
+  }, response.status);
+}
+
+async function handleLocalRunWorkbook(request, env, id) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const url = new URL(request.url);
+  const sheet = String(url.searchParams.get("sheet") || "").trim();
+  const run = await env.DB.prepare("SELECT id, project_id FROM runs WHERE id = ?").bind(id).first();
+  if (!run) return json({ ok: false, error: "Run not found" }, 404);
+  await assertProjectAccess(request, env, run.project_id);
+  if (!sheet) {
+    const rows = await env.DB.prepare(
+      `SELECT sheet, COUNT(*) AS row_count
+       FROM workbook_rows
+       WHERE run_id = ?
+       GROUP BY sheet
+       UNION ALL
+       SELECT sheet, COUNT(*) AS row_count
+       FROM sheet_rows
+       WHERE run_id = ? AND sheet NOT IN (SELECT DISTINCT sheet FROM workbook_rows WHERE run_id = ?)
+       GROUP BY sheet
+       ORDER BY sheet`
+    ).bind(id, id, id).all();
+    return json({ ok: true, rows: rows.results || [] });
+  }
+  const tableName = await env.DB.prepare("SELECT COUNT(*) AS count FROM workbook_rows WHERE run_id = ? AND sheet = ?").bind(id, sheet).first()
+    .then((row) => Number(row?.count || 0) ? "workbook_rows" : "sheet_rows");
+  const rows = await env.DB.prepare(`SELECT * FROM ${tableName} WHERE run_id = ? AND sheet = ? ORDER BY row_index ASC, id ASC LIMIT 500`).bind(id, sheet).all();
+  return json({
+    ok: true,
+    rows: (rows.results || []).map((row) => {
+      const values = parseJsonField(row.row_json, []);
+      return { ...row, column_count: Array.isArray(values) ? values.length : 0 };
+    })
+  });
+}
+
+async function handleLocalRunAssign(request, env, id) {
+  const payload = await request.json().catch(() => ({}));
+  const projectId = Number(payload.project_id || 0) || null;
+  const run = await env.DB.prepare("SELECT id, project_id FROM runs WHERE id = ?").bind(id).first();
+  if (!run) return json({ ok: false, error: "Run not found" }, 404);
+  await requireProjectWriteAccess(request, env, projectId || run.project_id || null);
+  const now = new Date().toISOString();
+  await env.DB.prepare("UPDATE runs SET project_id = ?, site_id = ?, page_id = ?, keyword_id = ? WHERE id = ?")
+    .bind(projectId, Number(payload.site_id || 0) || null, Number(payload.page_id || 0) || null, Number(payload.keyword_id || 0) || null, id).run();
+  return await handleLocalRunDetail(request, env, id);
+}
+
+async function handleLocalCloudflareNoop(request, env, action) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  return json({
+    ok: true,
+    action,
+    cloud_mode: true,
+    message: "This dashboard is already running in Cloudflare. Local sync and bridge controls are only active in the local dashboard.",
+    status: await handleLocalCloudflareStatus(request, env).then((response) => response.json())
+  });
+}
+
+async function handleLocalToolRun(request, env) {
+  if (!(await hasReadAccess(request, env))) return json({ ok: false, error: "Unauthorized" }, 401);
+  const payload = await request.json().catch(() => ({}));
+  const tool = cleanText(payload.tool || "cora").toLowerCase();
+  if (!tool || tool === "cora") {
+    return json({ ok: false, error: "Cora runs are local-only. Use the local bridge dashboard for Cora jobs." }, 400);
+  }
+  return json({
+    ok: true,
+    placeholder: true,
+    message: `${tool} is wired to the shared dashboard, but has no cloud execution handler yet.`,
+    jobs: []
   });
 }
 
@@ -2911,6 +4619,14 @@ function cloudMirrorHtml() {
       if (page === "commands") {
         state.commandStatus = "all";
         state.commandType = "all";
+        state.commandPrefill = {
+          project_id: clientId === "all" ? 0 : Number(clientId || 0),
+          keyword: options.keyword || "",
+          seed_keyword: options.keyword || "",
+          target: options.target || "",
+          target_url: options.target || "",
+          command: "cloud-tools"
+        };
       }
       if (page === "ranking") {
         state.rankingBase = "";
@@ -3014,7 +4730,7 @@ function cloudMirrorHtml() {
       const syncRows = (data.sync?.tables || []).slice(-14).map((r) => '<div class="status-row"><span>' + esc(r.table_name) + '</span><strong>' + esc(fmtNum(r.rows_received)) + '</strong></div>').join("");
       const artifactRows = (data.artifacts || []).map((r) => '<div class="status-row"><span>' + esc(r.artifact_type) + '</span><strong>' + esc(fmtNum(r.artifact_count)) + ' / ' + esc(fmtBytes(r.total_bytes)) + '</strong></div>').join("");
       const bridgeRows = (data.bridges || []).map((b) => '<div class="status-row"><span>' + esc(b.bridge_id) + '<br><small class="muted">' + esc(fmtDate(b.last_seen_at)) + '</small><br><small class="muted">Cora ' + esc(b.allow_cora ? 'enabled' : 'off') + ' | Paid tools ' + esc(b.allow_paid_tools ? 'enabled' : 'off') + '</small></span><strong class="' + (b.online ? 'ok' : 'warn') + '">' + esc(b.online ? 'Online' : 'Offline') + '</strong></div>').join("");
-      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Content Plans", counts.content_plans],["Entity Sets", counts.entity_sets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
+      return cards([["Clients", counts.projects],["Keywords", counts.keywords],["Cora Runs", counts.runs],["Reports", counts.reports],["Ranking Snapshots", counts.ranking_snapshots],["Optimization Targets", counts.ranking_optimization_targets],["Content Plans", counts.content_plans],["NLP Batches", counts.nlp_category_batches],["Entity Sets", counts.entity_sets],["Pending Commands", counts.pending_commands],["Cloud Files", artifactFiles],["R2 Storage", fmtBytes(artifactBytes)]])
         + '<div class="grid2"><section><div class="head"><h3>Recent Reports</h3><span class="pill ok">Live</span></div>' + reportTable(data.reports || []) + '</section>'
         + '<section><div class="head"><h3>Bridge Status</h3><span class="muted">' + esc(fmtDate(lastSync) || "Never") + '</span></div><div class="status-list">' + (bridgeRows || '<div class="muted">No local bridge heartbeat yet.</div>') + '</div><div class="head"><h3>Cloud Files</h3></div><div class="status-list">' + (artifactRows || '<div class="muted">No files.</div>') + '</div><div class="head"><h3>Tables</h3></div><div class="status-list">' + (syncRows || '<div class="muted">No sync batches.</div>') + '</div></section></div>';
     }
@@ -3583,6 +5299,8 @@ function cloudMirrorHtml() {
         run_cora: "Run Cora",
         create_ranking_snapshot: "Ranking Snapshot",
         run_entity_lsi: "Entity Explorer",
+        run_nlp_categorizer: "NLP Categorizer",
+        run_nlp_llm_comparison: "NLP LLM Comparison",
         sync_cloud_data: "Sync Cloud Data",
         sync_cloud_to_local: "Pull Cloud Changes",
         sync_report_artifacts: "Sync Report Files"
@@ -3600,14 +5318,14 @@ function cloudMirrorHtml() {
       return status === "complete" ? "ok" : status === "failed" ? "warn" : "";
     }
     function isPaidLiveCommand(command_type, payload) {
-      return ["create_ranking_snapshot", "run_entity_lsi"].includes(command_type) && !payload?.dry_run;
+      return ["create_ranking_snapshot", "run_entity_lsi", "run_nlp_categorizer", "run_nlp_llm_comparison"].includes(command_type) && !payload?.dry_run;
     }
     function commandRisk(command_type, payload) {
       if (command_type === "run_cora") return "Needs local bridge with Cora enabled.";
       if (["apply_cora_profile", "push_cora_profile", "apply_cora_domain_lists", "pull_cora_domain_lists"].includes(command_type)) return "Native Cora action. This waits for the local Windows bridge.";
       if (payload?.execution_mode === "cloud") return "Runs in Cloudflare and then needs cloud-to-local sync for local parity.";
       if (isPaidLiveCommand(command_type, payload)) return "Paid/API run. This can use DataForSEO or LLM credits.";
-      if (["create_ranking_snapshot", "run_entity_lsi"].includes(command_type)) return "Dry run only. No paid/API execution.";
+      if (["create_ranking_snapshot", "run_entity_lsi", "run_nlp_categorizer", "run_nlp_llm_comparison"].includes(command_type)) return "Dry run only. No paid/API execution.";
       if (["sync_cloud_data", "sync_report_artifacts"].includes(command_type)) return "Local bridge sync command.";
       return "Cloud write command.";
     }
@@ -3632,7 +5350,9 @@ function cloudMirrorHtml() {
       if (result.content_plan) return (result.duplicate ? 'Reused ' : 'Created ') + 'content plan #' + esc(result.content_plan.id || "");
       if (result.report) return (result.duplicate ? 'Reused ' : 'Created ') + 'report #' + esc(result.report.id || "");
       if (result.snapshot) return 'Created ranking snapshot #' + esc(result.snapshot.id || "");
+      if (result.results && result.runs) return 'NLP LLM comparison: ' + esc(fmtNum(result.results.filter((row) => row.status === "complete").length || 0)) + ' complete, ' + esc(fmtNum(result.results.filter((row) => row.status === "failed").length || 0)) + ' failed.';
       if (result.runs) return 'Completed ' + esc(fmtNum(result.runs.filter((run) => run.status === "complete").length || 0)) + ' of ' + esc(fmtNum(result.runs.length || 0)) + ' Entity Explorer model runs.';
+      if (result.urls && result.batch) return 'NLP batch #' + esc(result.batch.id || "") + ': ' + esc(fmtNum(result.batch.complete_count || 0)) + ' complete, ' + esc(fmtNum(result.batch.failed_count || 0)) + ' failed, ' + esc(fmtNum(result.batch.skipped_count || 0)) + ' skipped.';
       if (result.dry_run) return 'Dry run complete.';
       return 'Completed.';
     }
@@ -3675,7 +5395,7 @@ function cloudMirrorHtml() {
       });
       document.getElementById("sync-review-pull")?.addEventListener("click", () => {
         setPage("commands");
-        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
+        setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "nlp_category_batches", "nlp_category_urls", "nlp_llm_comparison_runs", "nlp_llm_comparison_results", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
       });
       document.getElementById("sync-review-files")?.addEventListener("click", () => {
         setPage("commands");
@@ -4209,6 +5929,139 @@ function cloudMirrorHtml() {
       return smallCards([["Run", data.run?.keyword || data.run?.id || ""],["Sheet", data.sheet || ""],["Source", data.source || ""],["Sheet Rows", fmtNum(data.counts?.sheet_rows || 0)],["Workbook Rows", fmtNum(data.counts?.workbook_rows || 0)],["Displayed", rowsData.length]])
         + '<section><div class="head"><h3>Worksheet Rows</h3><span class="muted">Showing up to ' + esc(data.limit || "") + ' rows.</span></div>' + detailTable(headers, body, "No rows found for this worksheet.") + '</section>';
     }
+    function hcuUrlKey(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return "";
+      try {
+        const lower = raw.toLowerCase();
+        const url = new URL(lower.startsWith("http://") || lower.startsWith("https://") ? raw : "https://" + raw);
+        url.hash = "";
+        url.search = "";
+        let path = url.pathname || "/";
+        while (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
+        let host = url.hostname.toLowerCase();
+        if (host.startsWith("www.")) host = host.slice(4);
+        return host + path.toLowerCase();
+      } catch (_error) {
+        let cleaned = raw.toLowerCase();
+        if (cleaned.startsWith("https://")) cleaned = cleaned.slice(8);
+        else if (cleaned.startsWith("http://")) cleaned = cleaned.slice(7);
+        if (cleaned.startsWith("www.")) cleaned = cleaned.slice(4);
+        cleaned = cleaned.split("?")[0].split("#")[0];
+        while (cleaned.length > 1 && cleaned.endsWith("/")) cleaned = cleaned.slice(0, -1);
+        return cleaned;
+      }
+    }
+    function hcuNumber(value) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : 0;
+    }
+    function hcuSnapshotTime(row) {
+      const parsed = Date.parse(row?.created_at || row?.snapshot_created_at || "");
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    function hcuSelectSnapshotPair(snapshots) {
+      const impactTime = Date.parse("2025-06-01T00:00:00Z");
+      const dated = (snapshots || []).filter((snapshot) => hcuSnapshotTime(snapshot)).sort((a, b) => hcuSnapshotTime(a) - hcuSnapshotTime(b));
+      if (dated.length < 2) return { before: null, after: null, mode: "insufficient", note: "Need at least two ranking snapshots to compare organic traffic movement." };
+      const before = dated.filter((snapshot) => hcuSnapshotTime(snapshot) <= impactTime).pop();
+      const after = dated.find((snapshot) => hcuSnapshotTime(snapshot) > impactTime);
+      if (before && after) return { before, after, mode: "pre_post", note: "Using the nearest ranking snapshots before and after June 1, 2025." };
+      return { before: dated[dated.length - 2], after: dated[dated.length - 1], mode: "latest_pair", note: "No true pre/post June 1, 2025 ranking snapshot pair is synced; using the latest available pair." };
+    }
+    function hcuPageType(row, llmRows) {
+      const combined = [row.title, row.category, row.url].concat((llmRows || []).map((item) => [item.page_type, item.llm_category].join(" "))).join(" ").toLowerCase();
+      let path = "";
+      try {
+        const raw = String(row.url || "");
+        const lower = raw.toLowerCase();
+        path = new URL(lower.startsWith("http://") || lower.startsWith("https://") ? raw : "https://" + raw).pathname.toLowerCase();
+      } catch (_error) {}
+      if (!path || path === "/") return "homepage";
+      if (["contact", "about", "team", "reviews", "testimonials", "portfolio"].some((term) => combined.includes(term))) return "trust";
+      if (["service", "services", "repair", "installation", "design", "construction", "contractor", "marketing", "seo", "agency"].some((term) => combined.includes(term))) return "service";
+      if (["blog", "article", "guide", "news", "tips", "how to", "resources", "learn"].some((term) => combined.includes(term)) || ["/blog/", "/news/", "/articles/", "/guides/", "/resources/"].some((part) => path.includes(part))) return "informational";
+      return "other";
+    }
+    function hcuRisk(row, llmRows, delta) {
+      const reasons = [];
+      let score = 0;
+      const wordCount = hcuNumber(row.word_count);
+      const confidence = hcuNumber(row.confidence);
+      const pageType = hcuPageType(row, llmRows);
+      if (!row.category) { score += 1; reasons.push("No primary NLP category"); }
+      if (wordCount && wordCount < 300) { score += 2; reasons.push("Very thin word count"); }
+      else if (wordCount && wordCount < 650) { score += 1; reasons.push("Lower word count"); }
+      if (confidence && confidence < 0.55) { score += 1; reasons.push("Low NLP confidence"); }
+      if (["informational", "other"].includes(pageType)) { score += 1; reasons.push("Content type needs intent review"); }
+      const distinctLlmCategories = [...new Set((llmRows || []).map((item) => String(item.llm_category || "").toLowerCase()).filter(Boolean))];
+      if (distinctLlmCategories.length > 1) { score += 1; reasons.push("LLM categories disagree"); }
+      if (delta && delta.traffic_delta <= -100) { score += 2; reasons.push("Large organic traffic decline in snapshots"); }
+      else if (delta && delta.traffic_delta < 0) { score += 1; reasons.push("Organic traffic declined in snapshots"); }
+      if (!reasons.length) reasons.push("No obvious HCU risk signal from synced data");
+      const level = score >= 4 ? "high" : score >= 2 ? "medium" : "low";
+      return { level, score, pageType, reasons };
+    }
+    function buildHcuImpact(data) {
+      const batches = (data.nlp_category_batches || []).slice().sort((a, b) => String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")));
+      const batch = batches.find((item) => Number(item.complete_count || 0) > 0) || batches[0];
+      if (!batch) return null;
+      const urls = (data.nlp_category_urls || []).filter((row) => String(row.batch_id || "") === String(batch.id || "") && String(row.status || "").toLowerCase() === "complete");
+      const pair = hcuSelectSnapshotPair(data.snapshots || []);
+      const pageRows = data.ranking_snapshot_pages || [];
+      const beforePages = new Map(pageRows.filter((row) => pair.before && String(row.snapshot_id || "") === String(pair.before.id || "")).map((row) => [hcuUrlKey(row.url), row]));
+      const afterPages = new Map(pageRows.filter((row) => pair.after && String(row.snapshot_id || "") === String(pair.after.id || "")).map((row) => [hcuUrlKey(row.url), row]));
+      const comparisonRows = data.nlp_llm_comparison_results || [];
+      const byBatchUrl = new Map();
+      const byUrl = new Map();
+      comparisonRows.forEach((row) => {
+        if (row.batch_url_id) {
+          const key = String(row.batch_url_id);
+          byBatchUrl.set(key, (byBatchUrl.get(key) || []).concat(row));
+        }
+        const urlKey = hcuUrlKey(row.url);
+        if (urlKey) byUrl.set(urlKey, (byUrl.get(urlKey) || []).concat(row));
+      });
+      let trafficDelta = 0;
+      let matched = 0;
+      const rows = urls.map((row) => {
+        const key = hcuUrlKey(row.url);
+        const before = beforePages.get(key);
+        const after = afterPages.get(key);
+        const delta = before || after ? {
+          traffic_delta: hcuNumber(after?.organic_traffic) - hcuNumber(before?.organic_traffic),
+          keywords_delta: hcuNumber(after?.organic_keywords) - hcuNumber(before?.organic_keywords),
+          before_traffic: hcuNumber(before?.organic_traffic),
+          after_traffic: hcuNumber(after?.organic_traffic)
+        } : null;
+        if (delta) {
+          matched += 1;
+          trafficDelta += delta.traffic_delta;
+        }
+        const llmRows = byBatchUrl.get(String(row.id || "")) || byUrl.get(key) || [];
+        const risk = hcuRisk(row, llmRows, delta);
+        return { row, llmRows, delta, risk };
+      }).sort((a, b) => b.risk.score - a.risk.score || hcuNumber(a.delta?.traffic_delta) - hcuNumber(b.delta?.traffic_delta));
+      const summary = rows.reduce((acc, item) => {
+        acc[item.risk.level] += 1;
+        return acc;
+      }, { high: 0, medium: 0, low: 0 });
+      return { batch, rows, pair, matched, trafficDelta, summary };
+    }
+    function renderHcuImpact(data) {
+      const impact = buildHcuImpact(data);
+      if (!impact) return '<section><div class="head"><h3>HCU Impact</h3><span class="muted">June 2025 review</span></div><div class="empty">No completed NLP batch is synced for this client yet.</div></section>';
+      const pairText = impact.pair.before && impact.pair.after ? fmtDate(impact.pair.before.created_at) + " to " + fmtDate(impact.pair.after.created_at) : "No snapshot pair";
+      const noteRows = '<div class="status-list"><div class="status-row"><span>Impact date</span><strong>June 1, 2025</strong></div><div class="status-row"><span>Snapshot comparison</span><strong>' + esc(pairText) + '</strong></div><div class="status-row"><span>' + esc(impact.pair.note || "") + '</span></div></div>';
+      const cardsHtml = smallCards([["Analyzed URLs", impact.rows.length],["High Risk", impact.summary.high],["Medium Risk", impact.summary.medium],["Traffic Matched", impact.matched],["Organic Traffic Delta", fmtNum(Math.round(impact.trafficDelta))],["NLP Batch", impact.batch.id || ""]]);
+      const pageCards = impact.rows.slice(0, 30).map((item) => {
+        const cls = item.risk.level === "high" ? "warn" : item.risk.level === "low" ? "ok" : "";
+        const delta = item.delta ? '<span class="muted">Traffic ' + esc(fmtNum(item.delta.before_traffic)) + ' -> ' + esc(fmtNum(item.delta.after_traffic)) + ' (' + esc(item.delta.traffic_delta >= 0 ? "+" : "") + esc(fmtNum(Math.round(item.delta.traffic_delta))) + ')</span>' : '<span class="muted">No matching ranking page row</span>';
+        const taxonomies = [...new Set((item.llmRows || []).map((row) => row.taxonomy || "").filter(Boolean))].join(", ");
+        return '<div class="status-row"><span><strong><a href="' + esc(item.row.url || "") + '" target="_blank">' + esc(item.row.title || item.row.url || "") + '</a></strong><br><small class="muted">' + esc(item.row.category || "No NLP category") + ' / ' + esc(item.risk.pageType) + (taxonomies ? ' / taxonomy: ' + esc(taxonomies) : '') + '</small><br>' + delta + '<br><small class="muted">' + esc(item.risk.reasons.join("; ")) + '</small></span><strong class="' + cls + '">' + esc(item.risk.level.toUpperCase()) + '</strong></div>';
+      }).join("");
+      return '<section><div class="head"><h3>HCU Impact</h3><span class="muted">NLP + LLM + ranking snapshot review</span></div>' + cardsHtml + noteRows + '<div class="head"><h3>URL Risk Review</h3><span class="muted">Showing up to 30 synced URLs from the latest completed NLP batch.</span></div><div class="status-list">' + (pageCards || '<div class="empty">No completed URLs in this NLP batch.</div>') + '</div></section>';
+    }
     function clientDetail(data) {
       const client = data.client || {};
       const projectId = String(client.id || "");
@@ -4231,6 +6084,12 @@ function cloudMirrorHtml() {
       const targetRows = (data.targets || []).map((t) => '<tr><td><a href="' + esc(t.url || "") + '" target="_blank">' + esc(t.url || "") + '</a></td><td>' + esc(t.keyword || "") + '</td><td>' + esc(t.best_position || "") + '</td><td>' + esc(t.opportunity_score || "") + '</td><td><span class="pill">' + esc(t.status || "") + '</span></td></tr>');
       const jobRows = (data.jobs || []).map((j) => '<tr><td><strong>' + esc(j.keyword || "") + '</strong><br><span class="muted">' + esc(j.target_domain || "") + '</span></td><td>' + esc(j.tool || "cora") + '<br><span class="muted">' + esc(j.cora_profile || "") + '</span></td><td><span class="pill">' + esc(j.status || "") + '</span></td><td>' + esc(fmtDate(j.updated_at || j.last_activity_at || j.started_at)) + '</td></tr>');
       const planRows = (data.content_plans || []).map((p) => '<tr><td><strong>' + esc(p.title || "") + '</strong><br><span class="muted">' + esc(p.notes || "") + '</span></td><td>' + esc(p.keyword || "") + '</td><td>' + esc(p.content_type || "") + '</td><td><span class="pill">' + esc(p.status || "") + '</span></td><td>' + esc(p.due_date || "") + '</td></tr>');
+      const nlpRows = (data.nlp_category_batches || []).map((b) => {
+        const comparisonRuns = (data.nlp_llm_comparison_runs || []).filter((run) => String(run.batch_id || "") === String(b.id || ""));
+        const comparisonComplete = comparisonRuns.reduce((sum, run) => sum + Number(run.complete_count || 0), 0);
+        return '<tr><td><strong>' + esc(b.source_type || "") + '</strong><br><span class="muted">' + esc(String(b.source_value || "").slice(0, 90)) + '</span></td><td>' + esc(b.provider || "") + '</td><td>' + esc(fmtNum(b.complete_count || 0)) + ' / ' + esc(fmtNum(b.target_count || 0)) + '</td><td>' + esc(fmtNum(comparisonRuns.length)) + ' LLM runs<br><span class="muted">' + esc(fmtNum(comparisonComplete)) + ' provider rows</span></td><td><span class="pill">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td></tr>';
+      });
+      const hcuImpactPanel = renderHcuImpact(data);
       const entityRows = (data.entity_batches || []).map((b) => '<tr><td><strong>' + esc(b.seed_keyword || "") + '</strong></td><td>' + esc(b.depth || "") + '</td><td>' + esc(fmtNum(b.completed_count)) + ' / ' + esc(fmtNum(b.target_count)) + '</td><td><span class="pill">' + esc(b.status || "") + '</span></td><td>' + esc(fmtDate(b.updated_at || b.created_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-batch" data-detail-id="' + esc(b.id) + '">Open</button></td></tr>');
       const entityRunRows = (data.entity_runs || []).map((r) => '<tr><td><strong>' + esc(r.seed_keyword || "") + '</strong></td><td>' + esc(r.provider || "") + '</td><td>' + esc(r.model || "") + '</td><td><span class="pill">' + esc(r.status || "") + '</span></td><td><button class="detail-btn" data-detail-type="entity-run" data-detail-id="' + esc(r.id) + '">Open</button></td></tr>');
       const setRows = (data.entity_sets || []).map((s) => '<tr><td><strong>' + esc(s.name || "") + '</strong><br><span class="muted">' + esc(s.notes || "") + '</span></td><td>' + esc(fmtNum(s.term_count)) + '</td><td>' + esc(fmtDate(s.updated_at)) + '</td><td><button class="detail-btn" data-detail-type="entity-set" data-detail-id="' + esc(s.id) + '">Open</button></td></tr>');
@@ -4257,6 +6116,7 @@ function cloudMirrorHtml() {
         ["Cora", "Run Cora for this client's URL and keywords. Execution happens on the remote bridge machine.", "cora", coraButtonLabel, "page"],
         ["Ranking Snapshot", "Run or review DataForSEO ranking snapshots for this client.", "ranking", "Open Ranking Snapshot", "page"],
         ["Entity Explorer", "Run entity and LSI research from this client's keywords.", "entities", "Open Entity Explorer", "page"],
+        ["Content Classification", "Run NLP Categorizer in Cloudflare and review synced cloud/local category batches.", "commands", "Run Cloud NLP", "page"],
         ["Cora Reports", "Open stored customer reports and source XLSX artifacts.", "reports", "Open Reports", "page"],
         ["Content Plans", "Track briefs, refreshes, and optimization tasks.", "plans", "Open Plans", "page"]
       ].map((tool) => '<div class="tool-card"><strong>' + esc(tool[0]) + '</strong><span class="muted">' + esc(tool[1]) + '</span><button class="' + (tool[4] === "page" ? "client-open-page" : "client-command") + '" data-client-command="' + esc(tool[4]) + '" data-page-target="' + esc(tool[2]) + '" data-project-id="' + esc(projectId) + '" data-keyword="' + esc(firstKeyword) + '" data-target="' + esc(coraTarget) + '" data-profile="' + esc(client.profile_name || "") + '" data-latest-batch="' + esc(latestEntityBatch) + '">' + esc(tool[3]) + '</button></div>').join("");
@@ -4264,7 +6124,7 @@ function cloudMirrorHtml() {
       const toolLauncher = '<section><div class="head"><h3>Client Tools</h3><span class="muted">Primary workflows for this client. Technical controls are under System.</span></div><div class="tool-grid">' + toolCards + '</div>' + secondaryLinks + '</section>';
       const coraLaunchPanel = '<section><div class="head"><h3>Cora Launch Status</h3><span class="pill ' + (bridgeReady ? 'ok' : 'warn') + '">' + esc(bridgeReady ? 'Remote bridge ready' : 'Queue for bridge') + '</span></div><div class="status-list"><div class="status-row"><span>Next run</span><strong>' + esc(firstKeyword || "No keyword") + '</strong></div><div class="status-row"><span>Target URL</span><strong>' + esc(target || "No URL") + '</strong></div><div class="status-row"><span>Profile</span><strong>' + esc(client.profile_name || "No profile") + '</strong></div><div class="muted">Open Cora to run selected keywords. The report runs on the connected Windows machine through the remote bridge.</div></div><div class="head"><h3>Recent Launches</h3><button class="client-open-page secondary" data-page-target="cora" data-project-id="' + esc(projectId) + '">Open Cora</button></div><div class="status-list">' + (recentCommandRows || '<div class="muted">No cloud Cora launch commands for this client yet.</div>') + '</div><div class="head"><h3>Recent Cora Jobs</h3><button class="client-open-page secondary" data-page-target="jobs" data-project-id="' + esc(projectId) + '">Open Jobs</button></div><div class="status-list">' + (recentJobRows || '<div class="muted">No Cora jobs synced for this client yet.</div>') + '</div></section>';
       return workspace
-        + smallCards([["Keywords", (data.keywords || []).length],["Cora Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length],["Entity Batches", (data.entity_batches || []).length],["Entity Sets", (data.entity_sets || []).length]])
+        + smallCards([["Keywords", (data.keywords || []).length],["Cora Runs", (data.runs || []).length],["Reports", (data.reports || []).length],["Snapshots", (data.snapshots || []).length],["Targets", (data.targets || []).length],["Jobs", (data.jobs || []).length],["Plans", (data.content_plans || []).length],["NLP Batches", (data.nlp_category_batches || []).length],["Entity Batches", (data.entity_batches || []).length],["Entity Sets", (data.entity_sets || []).length]])
         + toolLauncher
         + coraLaunchPanel
         + '<section><div class="head"><h3>Keywords</h3></div>' + detailTable(["Keyword","Intent","Priority","Created"], keywordRows, "No keywords synced for this client.") + '</section>'
@@ -4274,6 +6134,8 @@ function cloudMirrorHtml() {
         + '<section><div class="head"><h3>Optimization Targets</h3></div>' + detailTable(["URL","Keyword","Best Pos","Score","Status"], targetRows, "No optimization targets synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Jobs</h3></div>' + detailTable(["Keyword","Tool/Profile","Status","Updated"], jobRows, "No jobs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Content Plans</h3></div>' + detailTable(["Title","Keyword","Type","Status","Due"], planRows, "No content plans synced for this client.") + '</section>'
+        + '<section><div class="head"><h3>NLP Category Activity</h3><span class="muted">Synced from the local dashboard NLP Categorizer.</span></div>' + detailTable(["Source","Provider","Progress","LLM Comparison","Status","Updated"], nlpRows, "No NLP categorizer batches synced for this client.") + '</section>'
+        + hcuImpactPanel
         + '<section><div class="head"><h3>Entity Activity</h3></div>' + detailTable(["Seed","Depth","Progress","Status","Updated",""], entityRows, "No entity batches synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Entity Model Runs</h3></div>' + detailTable(["Seed","Provider","Model","Status",""], entityRunRows, "No entity model runs synced for this client.") + '</section>'
         + '<section><div class="head"><h3>Entity Sets</h3></div>' + detailTable(["Set","Terms","Updated",""], setRows, "No entity sets synced for this client.") + '</section>';
@@ -4307,6 +6169,8 @@ function cloudMirrorHtml() {
       if (command_type === "run_cora") return 'Queue Cora locally for "' + (payload.keyword || "") + '" against ' + (payload.target_url || "") + '. Local bridge must allow Cora execution.';
       if (command_type === "create_ranking_snapshot") return (payload.dry_run ? "Dry-run " : "") + 'Run Ranking Snapshot for ' + (payload.target || "") + '. Real runs require paid/API tools enabled on the local bridge.';
       if (command_type === "run_entity_lsi") return (payload.dry_run ? "Dry-run " : "") + 'Run Entity Explorer for "' + (payload.seed_keyword || "") + '" across ' + ((payload.targets || []).length || 0) + ' model(s)' + (payload.execution_mode === "cloud" ? ' in Cloudflare.' : '. Real local runs require paid/API tools enabled on the local bridge.');
+      if (command_type === "run_nlp_categorizer") return (payload.dry_run ? "Dry-run " : "") + 'Run NLP Categorizer for client ID ' + (payload.project_id || "") + ' from ' + (payload.source_type || "urls") + ' source' + (payload.execution_mode === "cloud" ? ' in Cloudflare.' : '.');
+      if (command_type === "run_nlp_llm_comparison") return (payload.dry_run ? "Dry-run " : "") + 'Run NLP LLM Comparison for batch #' + (payload.batch_id || "") + ' across ' + ((payload.targets || []).length || 0) + ' model(s) in Cloudflare.';
       if (command_type === "sync_cloud_data") return 'Ask the local bridge to push dashboard data to Cloudflare' + (payload.tables?.length ? ': ' + payload.tables.join(', ') : ' for all sync tables') + '.';
       if (command_type === "sync_cloud_to_local") return 'Ask the local bridge to pull Cloudflare changes into the local dashboard' + (payload.tables?.length ? ': ' + payload.tables.join(', ') : '.') ;
       if (command_type === "sync_report_artifacts") return 'Ask the local bridge to upload report HTML/XLSX artifacts' + (payload.force ? ' and force re-upload existing files.' : '.');
@@ -4349,6 +6213,17 @@ function cloudMirrorHtml() {
         if (!Array.isArray(payload.targets) || !payload.targets.length) return "Add at least one Entity Explorer model target.";
         if (payload.execution_mode === "cloud" && payload.targets.some((target) => !target.provider || !target.model)) return "Cloud Entity Explorer targets must use provider:model, for example openai:gpt-5.5.";
         if (payload.execution_mode !== "cloud" && payload.targets.some((target) => !target.api_key_id || !target.model)) return "Local Entity Explorer targets must use apiKeyId:model.";
+      }
+      if (command_type === "run_nlp_categorizer") {
+        if (!payload.project_id) return "Select a client for NLP Categorizer.";
+        if (!["urls", "sitemap", "domain"].includes(payload.source_type || "")) return "Choose URL list, sitemap, or domain source.";
+        if (!(payload.source_value || "").trim()) return "Enter URLs, a sitemap URL, or a domain.";
+        if (Number(payload.max_urls || 0) < 1) return "Max URLs must be at least 1.";
+      }
+      if (command_type === "run_nlp_llm_comparison") {
+        if (!payload.batch_id) return "Enter an NLP batch ID for comparison.";
+        if (!Array.isArray(payload.targets) || !payload.targets.length) return "Add at least one LLM provider:model target.";
+        if (payload.targets.some((target) => !target.provider || !target.model)) return "Cloud LLM comparison targets must use provider:model, for example openai:gpt-5.5.";
       }
       return "";
     }
@@ -4427,7 +6302,7 @@ function cloudMirrorHtml() {
       const clientChecks = clients.map((client) => '<label class="check-item"><input class="admin-client-check" type="checkbox" value="' + esc(client.id) + '"><span><strong>' + esc(client.name || client.client || ("Client #" + client.id)) + '</strong><br><span class="muted">' + esc(client.site_domain || "") + '</span></span></label>').join("");
       const adminCards = cards([["Cloud Users", users.length],["Active Users", users.filter((user) => user.status === "active").length],["Scoped Users", users.filter((user) => (user.client_ids || []).length).length],["Cloud Tools Enabled", policies.filter((policy) => policy.cloud_enabled).length]]);
       const userForm = '<section id="admin-user-form"><div class="head"><h3>Create / Update User</h3><span class="muted">Email code login, role, and optional client scope.</span></div><div class="note-box">Users sign in from the Access panel by requesting a six-digit email code. If email delivery is not configured, admin-token callers can still generate a setup code for testing.</div><div class="status-list"><div class="field-row"><input id="admin-user-email" type="email" placeholder="user@example.com"><input id="admin-user-name" placeholder="Name"><select id="admin-user-role"><option value="read">Read - view only</option><option value="write">Write - queue client tools</option><option value="admin">Admin - full access</option></select><select id="admin-user-status"><option value="active">Active</option><option value="disabled">Disabled</option></select></div><div><div class="muted">Client access. Leave all unchecked for all clients.</div><div class="toolbar" style="margin:8px 0"><button id="admin-select-all-clients" type="button" class="secondary">Select All</button><button id="admin-clear-clients" type="button" class="secondary">Clear Clients</button></div><div class="check-list">' + (clientChecks || '<div class="muted">No clients synced yet.</div>') + '</div></div><div class="toolbar"><button id="admin-save-user">Save User</button><button id="admin-clear-user" type="button" class="secondary">Clear Form</button></div></div></section>';
-      const policyForm = '<section id="admin-tool-guardrails"><div class="head"><h3>Tool Guardrails</h3><span class="muted">Controls paid cloud tool execution and usage limits.</span></div><div class="status-list"><div class="field-row"><select id="policy-tool"><option value="create_ranking_snapshot">Ranking Snapshot</option><option value="run_entity_lsi">Entity Explorer</option></select><select id="policy-cloud"><option value="true">Cloud enabled</option><option value="false">Cloud disabled</option></select><input id="policy-daily" placeholder="Daily limit"><input id="policy-monthly" placeholder="Monthly limit"><input id="policy-client-daily" placeholder="Per-client daily"></div><div class="toolbar"><button id="admin-save-policy">Save Policy</button></div></div>' + table(["Tool","Cloud","Daily","Monthly","Client Daily","Usage"], policyRows, "No tool policies yet.") + '</section>';
+      const policyForm = '<section id="admin-tool-guardrails"><div class="head"><h3>Tool Guardrails</h3><span class="muted">Controls paid cloud tool execution and usage limits.</span></div><div class="status-list"><div class="field-row"><select id="policy-tool"><option value="create_ranking_snapshot">Ranking Snapshot</option><option value="run_entity_lsi">Entity Explorer</option><option value="run_nlp_categorizer">NLP Categorizer</option><option value="run_nlp_llm_comparison">NLP LLM Comparison</option></select><select id="policy-cloud"><option value="true">Cloud enabled</option><option value="false">Cloud disabled</option></select><input id="policy-daily" placeholder="Daily limit"><input id="policy-monthly" placeholder="Monthly limit"><input id="policy-client-daily" placeholder="Per-client daily"></div><div class="toolbar"><button id="admin-save-policy">Save Policy</button></div></div>' + table(["Tool","Cloud","Daily","Monthly","Client Daily","Usage"], policyRows, "No tool policies yet.") + '</section>';
       return adminCards + '<div class="grid2"><section id="admin-current-access"><div class="head"><h3>Current Access</h3><span class="pill ok">' + esc(data.user?.role || "") + '</span></div><div class="status-list"><div class="status-row"><span>User</span><strong>' + esc(data.user?.email || "") + '</strong></div><div class="head"><h3>Provider Secrets</h3><span class="muted">Configured secrets are shown without exposing values.</span></div>' + (secretRows || '<div class="muted">No secret status available.</div>') + '</div></section>' + userForm + '</div>' + policyForm + '<section id="admin-users-table"><div class="head"><h3>Users</h3><span class="muted">Click Edit to load a user into the form.</span></div>' + table(["Email","Role","Status","Client Scope","Last Login",""], userRows, "No cloud users yet.") + '</section>';
     }
     function bindAdminForms() {
@@ -4500,14 +6375,15 @@ function cloudMirrorHtml() {
       const bridge = (data.bridges || [])[0] || {};
       const bridgePanel = '<section><div class="head"><h3>Bridge Control</h3><span class="pill ' + (bridge.online ? 'ok' : 'warn') + '">' + esc(bridge.online ? 'Online' : 'Offline') + '</span></div><div class="bridge-flags"><div class="bridge-flag"><strong>' + esc(bridge.allow_cora ? 'Enabled' : 'Off') + '</strong><span class="muted">Cora execution</span></div><div class="bridge-flag"><strong>' + esc(bridge.allow_paid_tools ? 'Enabled' : 'Off') + '</strong><span class="muted">Paid/API tools</span></div><div class="bridge-flag"><strong>' + esc(bridge.poll_interval || 0) + 's</strong><span class="muted">Poll interval</span></div></div><div class="status-list"><div class="muted">Last seen ' + esc(fmtDate(bridge.last_seen_at)) + '. Real Cora and paid/API runs require the matching local bridge permission. Dry runs are safe for validation.</div><div class="toolbar"><button id="cmd-bridge-dry-sync">Review Sync Dry Run</button><button id="cmd-bridge-dry-ranking" class="secondary">Review Ranking Dry Run</button></div></div></section>';
       const access = '<section><div class="head"><h3>Unlock Writes</h3><span class="pill warn">Protected</span></div><div class="status-list"><div class="muted">Writes can use a write/admin email session or the admin/sync token. Scoped users can only queue commands for assigned clients.</div><input id="admin-token" type="password" placeholder="Admin token" value="' + esc(adminToken()) + '"><input id="operator-name" placeholder="Operator name" value="' + esc(localStorage.getItem("opos_operator_name") || "") + '"><div class="toolbar"><button id="save-token">Save Write Access</button><button id="clear-token" class="secondary">Clear</button></div></div></section>';
-      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,cora_domain_lists,projects,keywords,runs"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, Cora domain lists, clients, keywords, plans, ranking snapshots, saved targets, entity sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,cora_domain_lists,projects,sites,keywords,content_plans,ranking_snapshots,ranking_optimization_targets,entity_sets,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
+      const syncGroup = '<section class="command-group"><div class="head"><h3>Sync</h3><span class="muted">Cloud mirror maintenance</span></div><div class="command-grid"><div class="command-card"><h4>Sync Local to Cloud</h4><div class="muted">Push local dashboard tables back to Cloudflare.</div><input id="cmd-sync-tables" placeholder="Optional tables: profiles,cora_domain_lists,projects,keywords,runs,nlp_category_batches"><label class="muted"><input id="cmd-sync-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-cloud">Review Data Push</button></div><div class="command-card"><h4>Pull Cloud to Local</h4><div class="muted">Import cloud-created profiles, Cora domain lists, clients, keywords, plans, ranking snapshots, saved targets, entity/NLP sets, and report metadata into the local dashboard.</div><input id="cmd-pull-tables" placeholder="Optional tables: profiles,cora_domain_lists,projects,sites,keywords,content_plans,nlp_category_batches,nlp_category_urls,share_reports"><label class="muted"><input id="cmd-pull-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-pull-cloud">Review Pull Sync</button></div><div class="command-card"><h4>Sync Report Files</h4><div class="muted">Upload report HTML and source XLSX artifacts to R2.</div><input id="cmd-artifact-report-ids" placeholder="Optional report IDs: 1,2,3"><label class="muted"><input id="cmd-artifact-force" type="checkbox" style="min-width:auto"> Force re-upload</label><label class="muted"><input id="cmd-artifact-dry" type="checkbox" style="min-width:auto"> Dry run</label><button id="cmd-sync-artifacts">Review Artifact Sync</button></div></div></section>';
       const clientGroup = '<section class="command-group"><div class="head"><h3>Clients & Reports</h3><span class="muted">Lightweight cloud writes</span></div><div class="command-grid"><div class="command-card"><h4>Create Client</h4><input id="cmd-client-name" placeholder="Client name"><input id="cmd-client-site" placeholder="Main URL or domain"><input id="cmd-client-notes" placeholder="Notes"><button id="cmd-create-client">Review Create Client</button></div><div class="command-card"><h4>Add Keyword</h4><select id="cmd-keyword-project">' + projectOptions(prefillProject) + '</select><input id="cmd-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><button id="cmd-add-keyword">Review Keyword</button></div><div class="command-card"><h4>Content Plan</h4><select id="cmd-plan-project">' + projectOptions(prefillProject) + '</select><input id="cmd-plan-title" placeholder="Plan title"><input id="cmd-plan-keyword" placeholder="Optional keyword id"><input id="cmd-plan-notes" placeholder="Notes"><button id="cmd-content-plan">Review Content Plan</button></div><div class="command-card"><h4>Customer Report</h4><select id="cmd-report-run">' + runOptions() + '</select><select id="cmd-report-level"><option value="medium">Medium</option><option value="basic">Basic</option><option value="comprehensive">Comprehensive</option></select><input id="cmd-report-title" placeholder="Optional title"><button id="cmd-share-report">Review Report</button></div></div></section>';
       const toolGroup = '<section class="command-group"><div class="head"><h3>Run Tools</h3><span class="pill warn">Local bridge for Cora</span></div><div class="command-grid"><div class="command-card"><h4>Run Cora</h4><div class="muted">Queues local Cora. Requires Cora execution enabled on the bridge.</div><select id="cmd-cora-project">' + projectOptions(prefillProject) + '</select><input id="cmd-cora-keyword" placeholder="Keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-cora-url" placeholder="Target URL" value="' + esc(prefillTarget) + '"><input id="cmd-cora-profile" placeholder="Optional Cora profile" value="' + esc(prefillProfile) + '"><button id="cmd-run-cora">Review Cora Run</button></div><div class="command-card"><h4>Ranking Snapshot</h4><div class="muted">Runs DataForSEO Labs. Cloud mode runs directly in Cloudflare.</div><select id="cmd-ranking-project">' + projectOptions(prefillProject) + '</select><input id="cmd-ranking-target" placeholder="Domain, example.com" value="' + esc(prefillTarget) + '"><div class="field-row"><input id="cmd-ranking-location" placeholder="Location code" value="2840"><input id="cmd-ranking-language" placeholder="Language" value="en"><input id="cmd-ranking-limit" placeholder="Limit" value="1000"></div><label class="muted"><input id="cmd-ranking-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-ranking-subdomains" type="checkbox" style="min-width:auto"> Include subdomains</label><label class="muted"><input id="cmd-ranking-force" type="checkbox" style="min-width:auto"> Force refresh</label><label class="muted"><input id="cmd-ranking-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-ranking-snapshot">Review Ranking Snapshot</button></div><div class="command-card"><h4>Entity Explorer</h4><div class="muted">Cloud targets use provider:model. Local targets use apiKeyId:model.</div><select id="cmd-entity-project">' + projectOptions(prefillProject) + '</select><input id="cmd-entity-seed" placeholder="Seed keyword" value="' + esc(prefillKeyword) + '"><input id="cmd-entity-depth" placeholder="Depth 1-5" value="3"><textarea id="cmd-entity-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8"></textarea><label class="muted"><input id="cmd-entity-cloud" type="checkbox" checked style="min-width:auto"> Run in Cloudflare</label><label class="muted"><input id="cmd-entity-async" type="checkbox" checked style="min-width:auto"> Run async</label><label class="muted"><input id="cmd-entity-dry" type="checkbox" checked style="min-width:auto"> Dry run</label><button id="cmd-entity-lsi">Review Entity Explorer</button></div></div></section>';
+      const nlpToolGroup = '<section class="command-group"><div class="head"><h3>Content Classification</h3><span class="pill ok">Cloud NLP</span></div><div class="command-grid"><div class="command-card"><h4>NLP Categorizer</h4><div class="muted">Runs Google Natural Language in Cloudflare and saves URL category rows to D1.</div><select id="cmd-nlp-project">' + projectOptions(prefillProject) + '</select><select id="cmd-nlp-source-type"><option value="domain">Domain sitemap discovery</option><option value="sitemap">Sitemap URL</option><option value="urls">URL list</option></select><textarea id="cmd-nlp-source" placeholder="Domain, sitemap URL, or one URL per line">' + esc(prefillTarget) + '</textarea><div class="field-row"><input id="cmd-nlp-max" placeholder="Max URLs" value="10"><label class="muted"><input id="cmd-nlp-same-host" type="checkbox" checked style="min-width:auto"> Same host only</label><label class="muted"><input id="cmd-nlp-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="cmd-nlp-categorizer">Review Cloud NLP Run</button></div><div class="command-card"><h4>LLM Comparison</h4><div class="muted">Compares a completed NLP batch with cloud LLM providers and saves provider result rows.</div><input id="cmd-nlp-llm-batch" placeholder="NLP batch ID"><select id="cmd-nlp-llm-taxonomy"><option value="seo_page_type">SEO page type</option><option value="google_like">Google-like topic</option><option value="custom">Reusable content category</option></select><textarea id="cmd-nlp-llm-targets" placeholder="openai:gpt-5.5&#10;anthropic:claude-opus-4-8&#10;google:gemini-3.5-flash"></textarea><div class="field-row"><input id="cmd-nlp-llm-max" placeholder="Max URLs" value="10"><label class="muted"><input id="cmd-nlp-llm-dry" type="checkbox" style="min-width:auto"> Dry run</label></div><button id="cmd-nlp-llm-comparison">Review LLM Comparison</button></div></div></section>';
       const commandTypes = [...new Set((data.commands || []).map((c) => c.command_type).filter(Boolean))];
       const commandClients = [...new Map((data.commands || []).map((c) => [String(c.project_id || c.payload?.project_id || ""), (data.clients || []).find((client) => String(client.id) === String(c.project_id || c.payload?.project_id || ""))?.name || "Client #" + (c.project_id || c.payload?.project_id || "")]).filter(([id]) => id)).entries()];
       const filteredCommands = (data.commands || []).filter((c) => (state.commandClient === "all" || String(c.project_id || c.payload?.project_id || "") === state.commandClient) && (state.commandStatus === "all" || c.status === state.commandStatus) && (state.commandType === "all" || c.command_type === state.commandType));
       const commandFilters = '<div class="filters"><select id="command-client-filter"><option value="all">All clients</option>' + commandClients.map(([id, name]) => '<option value="' + esc(id) + '"' + (state.commandClient === id ? ' selected' : '') + '>' + esc(name) + '</option>').join("") + '</select><select id="command-status-filter"><option value="all">All statuses</option>' + ["pending", "claimed", "complete", "failed"].map((status) => '<option value="' + status + '"' + (state.commandStatus === status ? ' selected' : '') + '>' + esc(commandStatusLabel(status)) + '</option>').join("") + '</select><select id="command-type-filter"><option value="all">All command types</option>' + commandTypes.map((type) => '<option value="' + esc(type) + '"' + (state.commandType === type ? ' selected' : '') + '>' + esc(commandLabel(type)) + '</option>').join("") + '</select><span class="muted">' + esc(filteredCommands.length) + ' of ' + esc((data.commands || []).length) + ' commands</span></div>';
-      const forms = '<div class="grid2">' + access + bridgePanel + '</div>' + prefillBanner + review + syncGroup + clientGroup + toolGroup + '<section><div class="head"><h3>Command History</h3><span class="muted">Queued, claimed locally, completed, failed, and local result are tracked here.</span></div>' + commandFilters + commandsTable(filteredCommands) + '</section>';
+      const forms = '<div class="grid2">' + access + bridgePanel + '</div>' + prefillBanner + review + syncGroup + clientGroup + toolGroup + nlpToolGroup + '<section><div class="head"><h3>Command History</h3><span class="muted">Queued, claimed locally, completed, failed, and local result are tracked here.</span></div>' + commandFilters + commandsTable(filteredCommands) + '</section>';
       setTimeout(bindCommandForms, 0);
       return forms;
     }
@@ -4528,6 +6404,8 @@ function cloudMirrorHtml() {
       byId("cmd-run-cora")?.addEventListener("click", () => setPendingCommand("run_cora", { project_id: Number(byId("cmd-cora-project").value), keyword: byId("cmd-cora-keyword").value, target_url: byId("cmd-cora-url").value, cora_profile: byId("cmd-cora-profile").value }));
       byId("cmd-ranking-snapshot")?.addEventListener("click", () => setPendingCommand("create_ranking_snapshot", { execution_mode: Boolean(byId("cmd-ranking-cloud").checked) ? "cloud" : "local", project_id: Number(byId("cmd-ranking-project").value), target: byId("cmd-ranking-target").value, location_code: Number(byId("cmd-ranking-location").value || 2840), language_code: byId("cmd-ranking-language").value || "en", limit: Number(byId("cmd-ranking-limit").value || 1000), include_subdomains: Boolean(byId("cmd-ranking-subdomains").checked), force_refresh: Boolean(byId("cmd-ranking-force").checked), dry_run: Boolean(byId("cmd-ranking-dry").checked) }));
       byId("cmd-entity-lsi")?.addEventListener("click", () => setPendingCommand("run_entity_lsi", { execution_mode: Boolean(byId("cmd-entity-cloud").checked) ? "cloud" : "local", project_id: Number(byId("cmd-entity-project").value), seed_keyword: byId("cmd-entity-seed").value, depth: Number(byId("cmd-entity-depth").value || 3), targets: parseEntityTargets(byId("cmd-entity-targets").value), run_async: Boolean(byId("cmd-entity-async").checked), dry_run: Boolean(byId("cmd-entity-dry").checked) }));
+      byId("cmd-nlp-categorizer")?.addEventListener("click", () => setPendingCommand("run_nlp_categorizer", { execution_mode: "cloud", project_id: Number(byId("cmd-nlp-project").value), source_type: byId("cmd-nlp-source-type").value || "domain", source_value: byId("cmd-nlp-source").value, max_urls: Number(byId("cmd-nlp-max").value || 10), same_host_only: Boolean(byId("cmd-nlp-same-host").checked), dry_run: Boolean(byId("cmd-nlp-dry").checked) }));
+      byId("cmd-nlp-llm-comparison")?.addEventListener("click", () => setPendingCommand("run_nlp_llm_comparison", { execution_mode: "cloud", batch_id: Number(byId("cmd-nlp-llm-batch").value || 0), taxonomy: byId("cmd-nlp-llm-taxonomy").value || "seo_page_type", targets: parseEntityTargets(byId("cmd-nlp-llm-targets").value).filter((target) => target.provider && target.model), max_urls: Number(byId("cmd-nlp-llm-max").value || 10), dry_run: Boolean(byId("cmd-nlp-llm-dry").checked) }));
       byId("cmd-sync-cloud")?.addEventListener("click", () => setPendingCommand("sync_cloud_data", { tables: (byId("cmd-sync-tables").value || "").split(",").map((v) => v.trim()).filter(Boolean), dry_run: Boolean(byId("cmd-sync-dry").checked) }));
       byId("cmd-pull-cloud")?.addEventListener("click", () => setPendingCommand("sync_cloud_to_local", { tables: (byId("cmd-pull-tables").value || "").split(",").map((v) => v.trim()).filter(Boolean), dry_run: Boolean(byId("cmd-pull-dry").checked) }));
       byId("cmd-sync-artifacts")?.addEventListener("click", () => setPendingCommand("sync_report_artifacts", { report_ids: (byId("cmd-artifact-report-ids").value || "").split(",").map((v) => Number(v.trim())).filter(Boolean), dry_run: Boolean(byId("cmd-artifact-dry").checked), force: Boolean(byId("cmd-artifact-force").checked) }));
@@ -5279,7 +7157,7 @@ function cloudMirrorHtml() {
             openClientTool("entities", projectId, { keyword, target });
           } else if (button.dataset.clientCommand === "pull") {
             setPage("commands");
-            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
+            setPendingCommand("sync_cloud_to_local", { tables: ["profiles", "cora_domain_lists", "projects", "sites", "keywords", "content_plans", "ranking_snapshots", "ranking_snapshot_keywords", "ranking_snapshot_pages", "ranking_optimization_targets", "entity_lsi_batches", "entity_lsi_runs", "nlp_category_batches", "nlp_category_urls", "nlp_llm_comparison_runs", "nlp_llm_comparison_results", "entity_sets", "entity_set_terms", "share_reports"], dry_run: true });
           }
         };
       });
@@ -5546,7 +7424,10 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (url.pathname === "/" && request.method === "GET") return html(cloudMirrorHtml());
+      if (url.pathname === "/cloud" && request.method === "GET") return html(cloudMirrorHtml());
+      if (request.method === "GET" && env.ASSETS && (url.pathname === "/" || url.pathname.startsWith("/static/"))) {
+        return await env.ASSETS.fetch(request);
+      }
       if (url.pathname === "/health") return json({ ok: true, app: env.APP_NAME || "OPOS" });
       if (url.pathname === "/api/auth/request" && request.method === "POST") return await handleAuthRequest(request, env);
       if (url.pathname === "/api/auth/verify" && request.method === "POST") return await handleAuthVerify(request, env);
@@ -5557,6 +7438,82 @@ export default {
       if (url.pathname === "/api/dashboard/data" && request.method === "GET") return await handleDashboardData(request, env);
       if (url.pathname === "/api/dashboard/mirror" && request.method === "GET") return await handleDashboardMirrorData(request, env);
       if (url.pathname === "/api/secrets/status" && request.method === "GET") return await handleSecretsStatus(request, env);
+      if (url.pathname === "/api/cora/status" && request.method === "GET") return await handleLocalCoraStatus(request, env);
+      if (url.pathname === "/api/overview" && request.method === "GET") return await handleLocalOverview(request, env);
+      if (url.pathname === "/api/cloudflare/status" && request.method === "GET") return await handleLocalCloudflareStatus(request, env);
+      if (url.pathname === "/api/cloudflare/sync" && request.method === "POST") return await handleLocalCloudflareNoop(request, env, "sync");
+      if (url.pathname === "/api/cloudflare/artifacts/sync" && request.method === "POST") return await handleLocalCloudflareNoop(request, env, "artifact_sync");
+      if (url.pathname === "/api/cloudflare/commands/pull" && request.method === "POST") return await handleLocalCloudflareNoop(request, env, "commands_pull");
+      if (url.pathname === "/api/cloudflare/config" && request.method === "POST") return await handleLocalCloudflareNoop(request, env, "config");
+      if (url.pathname === "/api/cloudflare/bridge" && request.method === "POST") return await handleLocalCloudflareNoop(request, env, "bridge");
+      if (url.pathname === "/api/profiles" && request.method === "GET") return await handleLocalProfiles(request, env);
+      if (url.pathname === "/api/projects" && ["GET", "POST"].includes(request.method)) return await handleLocalProjects(request, env);
+      const localProjectRoute = url.pathname.match(/^\/api\/projects\/(\d+)$/);
+      if (localProjectRoute && request.method === "GET") return await handleLocalProjectDetail(request, env, Number(localProjectRoute[1]));
+      if (url.pathname === "/api/sites" && request.method === "POST") return await handleLocalSites(request, env);
+      if (url.pathname === "/api/pages" && request.method === "POST") return await handleLocalPages(request, env);
+      if (url.pathname === "/api/keywords" && request.method === "POST") return await handleLocalKeywords(request, env);
+      if (url.pathname === "/api/tools/run" && request.method === "POST") return await handleLocalToolRun(request, env);
+      if (url.pathname === "/api/runs" && request.method === "GET") return await handleLocalRuns(request, env);
+      const localRunWorkbookRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/workbook$/);
+      if (localRunWorkbookRoute && request.method === "GET") return await handleLocalRunWorkbook(request, env, Number(localRunWorkbookRoute[1]));
+      const localRunAssignRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/assign$/);
+      if (localRunAssignRoute && request.method === "POST") return await handleLocalRunAssign(request, env, Number(localRunAssignRoute[1]));
+      const localRunDownloadRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/download$/);
+      if (localRunDownloadRoute && request.method === "GET") return json({ ok: false, error: "Cora workbook downloads require synced report artifacts from the local dashboard." }, 404);
+      const localRunRoute = url.pathname.match(/^\/api\/runs\/(\d+)$/);
+      if (localRunRoute && request.method === "GET") return await handleLocalRunDetail(request, env, Number(localRunRoute[1]));
+      if (url.pathname === "/api/jobs" && request.method === "GET") return await handleLocalJobs(request, env);
+      if (url.pathname === "/api/jobs/queue" && request.method === "POST") return json({ ok: false, error: "Cora queue controls are local-only. Use the local bridge dashboard for Cora queue changes." }, 400);
+      if (url.pathname === "/api/share-reports" && request.method === "GET") return await handleLocalShareReports(request, env);
+      if (url.pathname === "/api/share-reports" && request.method === "POST") return await handleLocalShareReportCreate(request, env);
+      const localShareReportRoute = url.pathname.match(/^\/api\/share-reports\/(\d+)$/);
+      if (localShareReportRoute && request.method === "DELETE") return await handleLocalShareReportDelete(request, env, Number(localShareReportRoute[1]));
+      if (url.pathname === "/api/content-plans" && request.method === "GET") return await handleLocalContentPlans(request, env);
+      if (url.pathname === "/api/content-plans" && request.method === "POST") return await handleLocalContentPlanCreate(request, env);
+      if (url.pathname === "/api/api-keys" && ["GET", "POST"].includes(request.method)) return await handleLocalApiKeys(request, env);
+      if (url.pathname === "/api/api-keys/test" && request.method === "POST") return await handleLocalApiKeyTest(request, env);
+      const localApiKeyRoute = url.pathname.match(/^\/api\/api-keys\/(\d+)$/);
+      if (localApiKeyRoute && request.method === "DELETE") return await handleLocalApiKeyDelete(request, env, Number(localApiKeyRoute[1]));
+      if (url.pathname === "/api/ai-providers" && request.method === "GET") return json({ ok: true, providers: CLOUD_AI_PROVIDERS });
+      if (url.pathname === "/api/seo/ranking-snapshots" && request.method === "GET") return await handleLocalRankingSnapshots(request, env);
+      if (url.pathname === "/api/seo/ranking-snapshot" && request.method === "POST") return await handleLocalRankingSnapshotCreate(request, env);
+      if (url.pathname === "/api/seo/ranking-snapshot/queue-cora" && request.method === "POST") return json({ ok: false, error: "Queueing Cora from Ranking Snapshot is local-only. Use the local bridge dashboard for Cora jobs." }, 400);
+      if (url.pathname === "/api/seo/ranking-snapshots/compare" && request.method === "GET") return await handleRankingSnapshotCompare(request, env);
+      const localSeoSnapshotRoute = url.pathname.match(/^\/api\/seo\/ranking-snapshots\/(\d+)$/);
+      if (localSeoSnapshotRoute && request.method === "GET") return await handleLocalRankingSnapshotDetail(request, env, Number(localSeoSnapshotRoute[1]));
+      if (url.pathname === "/api/seo/optimization-targets" && request.method === "GET") return await handleLocalOptimizationTargets(request, env);
+      if (url.pathname === "/api/seo/optimization-targets" && request.method === "POST") return await handleOptimizationTargetSave(request, env);
+      if (url.pathname === "/api/seo/optimization-targets/status" && request.method === "POST") return await handleOptimizationTargetStatus(request, env);
+      if (url.pathname === "/api/entity-lsi/runs" && request.method === "GET") return await handleLocalEntityRuns(request, env);
+      if (url.pathname === "/api/entity-lsi/runs" && request.method === "POST") return await handleLocalEntityRunCreate(request, env);
+      const localEntityRunRoute = url.pathname.match(/^\/api\/entity-lsi\/runs\/(\d+)$/);
+      if (localEntityRunRoute && request.method === "DELETE") return await handleLocalEntityRunDelete(request, env, Number(localEntityRunRoute[1]));
+      if (url.pathname === "/api/entity-lsi/batches" && request.method === "GET") return await handleLocalEntityBatches(request, env);
+      const localEntityBatchRoute = url.pathname.match(/^\/api\/entity-lsi\/batches\/(\d+)$/);
+      if (localEntityBatchRoute && request.method === "GET") return await handleLocalEntityBatchDetail(request, env, Number(localEntityBatchRoute[1]));
+      const localEntityRetryRoute = url.pathname.match(/^\/api\/entity-lsi\/batches\/(\d+)\/retry-failed$/);
+      if (localEntityRetryRoute && request.method === "POST") return await handleLocalEntityBatchRetry(request, env, Number(localEntityRetryRoute[1]));
+      const localEntityCancelRoute = url.pathname.match(/^\/api\/entity-lsi\/batches\/(\d+)\/cancel-remaining$/);
+      if (localEntityCancelRoute && request.method === "POST") return await handleLocalEntityBatchCancel(request, env, Number(localEntityCancelRoute[1]));
+      const localEntityCoraImportRoute = url.pathname.match(/^\/api\/entity-lsi\/batches\/(\d+)\/import-cora-report$/);
+      if (localEntityCoraImportRoute && request.method === "POST") return json({ ok: false, error: "Attaching Cora report rows to Entity Explorer is local-only until the Cora workbook artifact is synced." }, 400);
+      if (url.pathname === "/api/entity-sets" && request.method === "GET") return await handleLocalEntitySets(request, env);
+      const localEntitySetGetRoute = url.pathname.match(/^\/api\/entity-sets\/(\d+)$/);
+      if (localEntitySetGetRoute && request.method === "GET") return await handleEntitySetDetail(request, env, Number(localEntitySetGetRoute[1]));
+      if (url.pathname === "/api/nlp-categorizer/batches" && request.method === "GET") return await listCloudNlpBatches(request, env);
+      if (url.pathname === "/api/nlp-categorizer/batches" && request.method === "POST") return await createCloudNlpBatchRoute(request, env);
+      const nlpBatchRoute = url.pathname.match(/^\/api\/nlp-categorizer\/batches\/(\d+)$/);
+      if (nlpBatchRoute && request.method === "GET") return await getCloudNlpBatch(request, env, Number(nlpBatchRoute[1]));
+      if (nlpBatchRoute && request.method === "DELETE") return await deleteCloudNlpBatch(request, env, Number(nlpBatchRoute[1]));
+      const nlpExportRoute = url.pathname.match(/^\/api\/nlp-categorizer\/batches\/(\d+)\/export$/);
+      if (nlpExportRoute && request.method === "GET") return await exportCloudNlpBatch(request, env, Number(nlpExportRoute[1]));
+      const nlpCancelRoute = url.pathname.match(/^\/api\/nlp-categorizer\/batches\/(\d+)\/cancel$/);
+      if (nlpCancelRoute && request.method === "POST") return await cancelCloudNlpBatch(request, env, Number(nlpCancelRoute[1]));
+      const nlpRetryRoute = url.pathname.match(/^\/api\/nlp-categorizer\/batches\/(\d+)\/retry-failed$/);
+      if (nlpRetryRoute && request.method === "POST") return await retryCloudNlpBatch(request, env, Number(nlpRetryRoute[1]));
+      const nlpComparisonRoute = url.pathname.match(/^\/api\/nlp-categorizer\/batches\/(\d+)\/llm-comparison$/);
+      if (nlpComparisonRoute && request.method === "POST") return await createCloudNlpLlmComparisonRoute(request, env, Number(nlpComparisonRoute[1]));
       const clientDetailRoute = url.pathname.match(/^\/api\/clients\/(\d+)\/detail$/);
       if (clientDetailRoute && request.method === "GET") return await handleClientDetail(request, env, Number(clientDetailRoute[1]));
       const runDetailRoute = url.pathname.match(/^\/api\/runs\/(\d+)\/detail$/);

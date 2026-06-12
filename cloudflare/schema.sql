@@ -108,6 +108,22 @@ CREATE TABLE IF NOT EXISTS tool_usage (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS api_keys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL,
+  label TEXT NOT NULL,
+  key_value TEXT NOT NULL,
+  notes TEXT,
+  base_url TEXT,
+  default_model TEXT,
+  status TEXT NOT NULL DEFAULT 'untested',
+  last_tested_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_keys_provider ON api_keys(provider);
+
 CREATE TABLE IF NOT EXISTS profiles (id INTEGER PRIMARY KEY, name TEXT, client TEXT, notes TEXT, created_at TEXT, updated_at TEXT, archived_at TEXT);
 CREATE TABLE IF NOT EXISTS cora_domain_lists (
   id INTEGER PRIMARY KEY,
@@ -265,6 +281,78 @@ CREATE TABLE IF NOT EXISTS entity_lsi_runs (
   error TEXT,
   created_at TEXT,
   completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS nlp_category_batches (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER,
+  source_type TEXT,
+  source_value TEXT,
+  status TEXT,
+  provider TEXT,
+  api_key_id INTEGER,
+  target_count INTEGER,
+  complete_count INTEGER,
+  failed_count INTEGER,
+  skipped_count INTEGER,
+  max_urls INTEGER,
+  same_host_only INTEGER,
+  error TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS nlp_category_urls (
+  id INTEGER PRIMARY KEY,
+  batch_id INTEGER,
+  url TEXT,
+  status TEXT,
+  title TEXT,
+  category TEXT,
+  confidence REAL,
+  primary_result INTEGER,
+  categories_json TEXT,
+  word_count INTEGER,
+  error TEXT,
+  raw_response TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS nlp_llm_comparison_runs (
+  id INTEGER PRIMARY KEY,
+  batch_id INTEGER,
+  project_id INTEGER,
+  provider TEXT,
+  provider_key TEXT,
+  api_key_id INTEGER,
+  model TEXT,
+  taxonomy TEXT,
+  status TEXT,
+  target_count INTEGER,
+  complete_count INTEGER,
+  failed_count INTEGER,
+  prompt_version TEXT,
+  error TEXT,
+  created_at TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS nlp_llm_comparison_results (
+  id INTEGER PRIMARY KEY,
+  comparison_run_id INTEGER,
+  batch_url_id INTEGER,
+  url TEXT,
+  status TEXT,
+  llm_category TEXT,
+  confidence REAL,
+  page_type TEXT,
+  explanation TEXT,
+  recommended_action TEXT,
+  raw_response TEXT,
+  error TEXT,
+  created_at TEXT,
+  updated_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS entity_sets (id INTEGER PRIMARY KEY, project_id INTEGER, source_batch_id INTEGER, name TEXT, notes TEXT, created_at TEXT, updated_at TEXT);
