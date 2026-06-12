@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import csv
 import hashlib
+import io
 import json
 import mimetypes
 import os
@@ -17,11 +19,13 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 from html import escape as html_escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, quote, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
+import xml.etree.ElementTree as ET
 
 from openpyxl import load_workbook
 
@@ -52,6 +56,70 @@ BRIDGE_WORKER_LOCK = threading.Lock()
 BRIDGE_WORKER_THREAD: threading.Thread | None = None
 ENTITY_LSI_WORKERS: dict[int, threading.Thread] = {}
 ENTITY_LSI_WORKER_LOCK = threading.Lock()
+NLP_CATEGORY_WORKERS: dict[int, threading.Thread] = {}
+NLP_CATEGORY_WORKER_LOCK = threading.Lock()
+NLP_LLM_COMPARISON_WORKERS: dict[int, threading.Thread] = {}
+NLP_LLM_COMPARISON_WORKER_LOCK = threading.Lock()
+
+NLP_DEFAULT_MAX_URLS = 50
+NLP_HARD_MAX_URLS = 250
+NLP_FETCH_TIMEOUT_SECONDS = 15
+NLP_MAX_TEXT_CHARS = 5000
+NLP_MIN_WORDS = 20
+NLP_MAX_SITEMAPS = 40
+NLP_GOOGLE_NL_ENDPOINT = "https://language.googleapis.com/v1/documents:classifyText"
+NLP_LLM_COMPARISON_PROMPT_VERSION = "nlp-llm-comparison-v1"
+HCU_DEFAULT_IMPACT_DATE = "2025-06-01"
+NLP_STATIC_ASSET_EXTENSIONS = {
+    ".7z",
+    ".avi",
+    ".avif",
+    ".bmp",
+    ".css",
+    ".csv",
+    ".doc",
+    ".docx",
+    ".eot",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".json",
+    ".m4a",
+    ".m4v",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".mpeg",
+    ".mpg",
+    ".ogg",
+    ".ogv",
+    ".otf",
+    ".pdf",
+    ".png",
+    ".ppt",
+    ".pptx",
+    ".rar",
+    ".rss",
+    ".svg",
+    ".tar",
+    ".tgz",
+    ".tif",
+    ".tiff",
+    ".tsv",
+    ".txt",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".xls",
+    ".xlsx",
+    ".xml",
+    ".zip",
+}
 
 AI_PROVIDERS: dict[str, dict[str, Any]] = {
     "openai": {
@@ -69,11 +137,19 @@ AI_PROVIDERS: dict[str, dict[str, Any]] = {
         "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
     },
     "google": {
-        "name": "Google",
+        "name": "Google Gemini",
         "placeholder": "AIza...",
         "base_url": "https://generativelanguage.googleapis.com",
         "default_model": "gemini-3.5-flash",
         "models": ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-latest"],
+    },
+    "google_nlp": {
+        "name": "Google NLP",
+        "placeholder": "AIza...",
+        "base_url": "https://language.googleapis.com",
+        "default_model": "classifyText-v2",
+        "models": [],
+        "service": "cloud-natural-language",
     },
     "xai": {
         "name": "xAI / Grok",
@@ -537,6 +613,80 @@ def init_db() -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS nlp_category_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                source_type TEXT NOT NULL,
+                source_value TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'running',
+                provider TEXT NOT NULL DEFAULT 'Google Natural Language',
+                api_key_id INTEGER REFERENCES api_keys(id) ON DELETE SET NULL,
+                target_count INTEGER NOT NULL DEFAULT 0,
+                complete_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0,
+                max_urls INTEGER NOT NULL DEFAULT 50,
+                same_host_only INTEGER NOT NULL DEFAULT 1,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS nlp_category_urls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL REFERENCES nlp_category_batches(id) ON DELETE CASCADE,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                title TEXT,
+                category TEXT,
+                confidence REAL,
+                primary_result INTEGER NOT NULL DEFAULT 0,
+                categories_json TEXT,
+                word_count INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                raw_response TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(batch_id, url)
+            );
+
+            CREATE TABLE IF NOT EXISTS nlp_llm_comparison_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                batch_id INTEGER NOT NULL REFERENCES nlp_category_batches(id) ON DELETE CASCADE,
+                project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                provider TEXT NOT NULL,
+                provider_key TEXT NOT NULL,
+                api_key_id INTEGER REFERENCES api_keys(id) ON DELETE SET NULL,
+                model TEXT NOT NULL,
+                taxonomy TEXT NOT NULL DEFAULT 'seo_page_type',
+                status TEXT NOT NULL DEFAULT 'queued',
+                target_count INTEGER NOT NULL DEFAULT 0,
+                complete_count INTEGER NOT NULL DEFAULT 0,
+                failed_count INTEGER NOT NULL DEFAULT 0,
+                prompt_version TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS nlp_llm_comparison_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                comparison_run_id INTEGER NOT NULL REFERENCES nlp_llm_comparison_runs(id) ON DELETE CASCADE,
+                batch_url_id INTEGER NOT NULL REFERENCES nlp_category_urls(id) ON DELETE CASCADE,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'queued',
+                llm_category TEXT,
+                confidence REAL,
+                page_type TEXT,
+                explanation TEXT,
+                recommended_action TEXT,
+                raw_response TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(comparison_run_id, batch_url_id)
+            );
+
             CREATE TABLE IF NOT EXISTS entity_sets (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -693,6 +843,13 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_content_plans_status ON content_plans(status);
             CREATE INDEX IF NOT EXISTS idx_entity_lsi_runs_project ON entity_lsi_runs(project_id);
             CREATE INDEX IF NOT EXISTS idx_entity_lsi_batches_project ON entity_lsi_batches(project_id);
+            CREATE INDEX IF NOT EXISTS idx_nlp_category_batches_project ON nlp_category_batches(project_id);
+            CREATE INDEX IF NOT EXISTS idx_nlp_category_urls_batch ON nlp_category_urls(batch_id);
+            CREATE INDEX IF NOT EXISTS idx_nlp_category_urls_status ON nlp_category_urls(batch_id, status);
+            CREATE INDEX IF NOT EXISTS idx_nlp_llm_comparison_runs_batch ON nlp_llm_comparison_runs(batch_id);
+            CREATE INDEX IF NOT EXISTS idx_nlp_llm_comparison_runs_status ON nlp_llm_comparison_runs(batch_id, status);
+            CREATE INDEX IF NOT EXISTS idx_nlp_llm_comparison_results_run ON nlp_llm_comparison_results(comparison_run_id);
+            CREATE INDEX IF NOT EXISTS idx_nlp_llm_comparison_results_url ON nlp_llm_comparison_results(batch_url_id);
             CREATE INDEX IF NOT EXISTS idx_entity_sets_project ON entity_sets(project_id);
             CREATE INDEX IF NOT EXISTS idx_entity_set_terms_set ON entity_set_terms(set_id);
             CREATE INDEX IF NOT EXISTS idx_share_reports_token ON share_reports(token);
@@ -778,6 +935,7 @@ CLOUDFLARE_SYNC_TABLES = [
     "sites",
     "pages",
     "keywords",
+    "api_keys",
     "runs",
     "serp_results",
     "recommendations",
@@ -787,6 +945,10 @@ CLOUDFLARE_SYNC_TABLES = [
     "content_plans",
     "entity_lsi_batches",
     "entity_lsi_runs",
+    "nlp_category_batches",
+    "nlp_category_urls",
+    "nlp_llm_comparison_runs",
+    "nlp_llm_comparison_results",
     "entity_sets",
     "entity_set_terms",
     "share_reports",
@@ -2422,6 +2584,22 @@ def read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return json.loads(raw) if raw.strip() else {}
 
 
+def is_trusted_local_request(handler: BaseHTTPRequestHandler) -> bool:
+    """Reject cross-site browser requests to mutating endpoints.
+
+    Browsers always attach an Origin header to cross-origin POST/DELETE (including
+    no-preflight "simple" requests), so a foreign Origin means another website is
+    driving this dashboard — which can trigger paid API calls with stored keys.
+    Same-machine tools (curl, tests, the bridge) send no Origin and stay allowed.
+    """
+    origin = handler.headers.get("Origin") or ""
+    if not origin:
+        return True
+    origin_host = (urlparse(origin).hostname or "").lower()
+    served_host = (handler.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+    return origin_host in {"localhost", "127.0.0.1", "::1"} or (bool(served_host) and origin_host == served_host)
+
+
 def query_cora(path: str) -> Any:
     try:
         with urllib.request.urlopen(CORA_API_BASE + path, timeout=4) as resp:
@@ -3510,8 +3688,15 @@ def normalize_ai_provider(provider: str) -> str:
         "chatgpt": "openai",
         "claude": "anthropic",
         "gemini": "google",
+        "google": "google",
         "google ai": "google",
         "google gemini": "google",
+        "google generative language": "google",
+        "google nlp": "google_nlp",
+        "google natural language": "google_nlp",
+        "cloud natural language": "google_nlp",
+        "natural language": "google_nlp",
+        "language.googleapis.com": "google_nlp",
         "grok": "xai",
         "x.ai": "xai",
         "xai": "xai",
@@ -3615,6 +3800,20 @@ def provider_request(provider_key: str, key_value: str, base_url: str | None = N
     if provider_key == "google":
         url = f"{root}/v1beta/models?key={quote(key_value)}"
         return urllib.request.Request(url, headers={"Accept": "application/json"})
+    if provider_key == "google_nlp":
+        payload = {
+            "document": {
+                "type": "PLAIN_TEXT",
+                "content": "This local SEO software analyzes website content, ranking signals, entities, keywords, and page categories for search optimization workflows.",
+            },
+            "classificationModelOptions": {"v2Model": {"contentCategoriesVersion": "V2"}},
+        }
+        return urllib.request.Request(
+            f"{root}/v1/documents:classifyText?key={quote(key_value)}",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="POST",
+        )
     if provider_key == "perplexity":
         return urllib.request.Request(
             f"{root}/v1/models",
@@ -3649,7 +3848,7 @@ def test_ai_provider_key(provider: str, key_value: str, base_url: str | None = N
     provider_key = normalize_ai_provider(provider)
     key_value = (key_value or "").strip()
     if not provider_key:
-        raise ValueError("Choose OpenAI, Anthropic, Google, xAI / Grok, Perplexity, or DataForSEO")
+        raise ValueError("Choose OpenAI, Anthropic, Google Gemini, Google NLP, xAI / Grok, Perplexity, or DataForSEO")
     if not key_value:
         raise ValueError("API credentials are required")
     request = provider_request(provider_key, key_value, base_url)
@@ -4569,6 +4768,1320 @@ def create_or_get_ranking_snapshot(payload: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+class DashboardHTMLTextExtractor(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.skip_stack: list[str] = []
+        self.parts: list[str] = []
+        self.title_parts: list[str] = []
+        self.in_title = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in {"script", "style", "noscript", "svg", "nav", "footer", "header"}:
+            self.skip_stack.append(tag)
+        if tag == "title":
+            self.in_title = True
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self.skip_stack and self.skip_stack[-1] == tag:
+            self.skip_stack.pop()
+        if tag == "title":
+            self.in_title = False
+
+    def handle_data(self, data: str) -> None:
+        text = re.sub(r"\s+", " ", data or "").strip()
+        if not text:
+            return
+        if self.in_title:
+            self.title_parts.append(text)
+        if not self.skip_stack:
+            self.parts.append(text)
+
+    def result(self) -> dict[str, Any]:
+        text = re.sub(r"\s+", " ", " ".join(self.parts)).strip()[:NLP_MAX_TEXT_CHARS]
+        title = re.sub(r"\s+", " ", " ".join(self.title_parts)).strip()[:250]
+        return {"text": text, "title": title, "word_count": len(text.split())}
+
+
+def normalize_nlp_url(value: Any) -> str:
+    text = clean_text(value) or ""
+    if not text:
+        return ""
+    if not re.match(r"^https?://", text, re.I):
+        text = f"https://{text}"
+    parsed = urlparse(text)
+    if not parsed.netloc:
+        return ""
+    scheme = parsed.scheme.lower() if parsed.scheme.lower() in {"http", "https"} else "https"
+    host = parsed.netloc.lower()
+    path = parsed.path or "/"
+    return f"{scheme}://{host}{path}{('?' + parsed.query) if parsed.query else ''}"
+
+
+def nlp_url_host(value: str) -> str:
+    return (urlparse(value).hostname or "").lower().removeprefix("www.")
+
+
+def nlp_same_host(url: str, host: str) -> bool:
+    current = nlp_url_host(url)
+    expected = (host or "").lower().removeprefix("www.")
+    return bool(current and expected and (current == expected or current.endswith(f".{expected}")))
+
+
+def nlp_url_static_asset_extension(url: str) -> str:
+    path = unquote(urlparse(url).path or "").lower()
+    suffix = Path(path).suffix
+    return suffix if suffix in NLP_STATIC_ASSET_EXTENSIONS else ""
+
+
+def nlp_is_crawlable_page_url(url: str) -> bool:
+    return bool(url and not nlp_url_static_asset_extension(url))
+
+
+def parse_nlp_url_list(value: Any) -> list[str]:
+    raw = str(value or "")
+    candidates = re.split(r"[\r\n,]+", raw)
+    seen: set[str] = set()
+    urls: list[str] = []
+    for candidate in candidates:
+        url = normalize_nlp_url(candidate)
+        if url and nlp_is_crawlable_page_url(url) and url not in seen:
+            seen.add(url)
+            urls.append(url)
+    return urls
+
+
+def nlp_http_get(url: str, timeout: int = NLP_FETCH_TIMEOUT_SECONDS) -> tuple[bytes, str]:
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "CoraDashboard/0.1 (+local NLP categorizer)",
+            "Accept": "text/html,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as response:
+        body = response.read(3_000_000)
+        content_type = response.headers.get("Content-Type", "")
+        return body, content_type
+
+
+def extract_sitemap_locs(body: bytes) -> tuple[list[str], list[str]]:
+    text = body.decode("utf-8", errors="replace")
+    try:
+        root = ET.fromstring(text)
+        tag = root.tag.rsplit("}", 1)[-1].lower()
+        locs: list[str] = []
+        sitemaps: list[str] = []
+        for elem in root.iter():
+            if elem.tag.rsplit("}", 1)[-1].lower() != "loc" or not elem.text:
+                continue
+            loc = clean_text(elem.text) or ""
+            if not loc:
+                continue
+            parent_tag = ""
+            # ElementTree does not expose parents, so infer from the root type.
+            if tag == "sitemapindex":
+                parent_tag = "sitemap"
+            elif tag == "urlset":
+                parent_tag = "url"
+            if parent_tag == "sitemap":
+                sitemaps.append(loc)
+            else:
+                locs.append(loc)
+        return locs, sitemaps
+    except ET.ParseError:
+        locs = re.findall(r"<loc>\s*([^<]+?)\s*</loc>", text, flags=re.I)
+        return [clean_text(loc) or "" for loc in locs if clean_text(loc)], []
+
+
+def discover_sitemap_urls(source_type: str, source_value: str, max_urls: int, same_host_only: bool = True) -> list[str]:
+    max_urls = max(1, min(int(max_urls or NLP_DEFAULT_MAX_URLS), NLP_HARD_MAX_URLS))
+    source_type = clean_text(source_type) or "urls"
+    source_value = clean_text(source_value) or ""
+    if source_type == "urls":
+        urls = parse_nlp_url_list(source_value)[:max_urls]
+        if not urls:
+            raise ValueError("No crawlable URLs were found for that source")
+        return urls
+
+    sitemaps: list[str] = []
+    root_host = ""
+    if source_type == "sitemap":
+        sitemap = normalize_nlp_url(source_value)
+        if not sitemap:
+            raise ValueError("Enter a valid sitemap URL")
+        sitemaps.append(sitemap)
+        root_host = nlp_url_host(sitemap)
+    elif source_type == "domain":
+        root = normalize_nlp_url(source_value)
+        if not root:
+            raise ValueError("Enter a valid domain")
+        parsed = urlparse(root)
+        root_host = nlp_url_host(root)
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        robots_url = urljoin(base, "/robots.txt")
+        try:
+            robots_body, _ctype = nlp_http_get(robots_url, 10)
+            for line in robots_body.decode("utf-8", errors="replace").splitlines():
+                if line.lower().startswith("sitemap:"):
+                    candidate = normalize_nlp_url(line.split(":", 1)[1].strip())
+                    if candidate:
+                        sitemaps.append(candidate)
+        except Exception:
+            pass
+        for path in ["/sitemap.xml", "/sitemap_index.xml", "/sitemap-index.xml"]:
+            candidate = urljoin(base, path)
+            if candidate not in sitemaps:
+                sitemaps.append(candidate)
+    else:
+        raise ValueError("Choose URL list, sitemap, or domain source")
+
+    seen_sitemaps: set[str] = set()
+    queued = list(dict.fromkeys(sitemaps))
+    urls: list[str] = []
+    seen_urls: set[str] = set()
+    while queued and len(seen_sitemaps) < NLP_MAX_SITEMAPS and len(urls) < max_urls:
+        sitemap_url = queued.pop(0)
+        if sitemap_url in seen_sitemaps:
+            continue
+        seen_sitemaps.add(sitemap_url)
+        try:
+            body, _ctype = nlp_http_get(sitemap_url, 12)
+        except Exception:
+            continue
+        page_locs, sitemap_locs = extract_sitemap_locs(body)
+        for child in sitemap_locs:
+            child_url = normalize_nlp_url(child)
+            if child_url and child_url not in seen_sitemaps and len(seen_sitemaps) + len(queued) < NLP_MAX_SITEMAPS:
+                queued.append(child_url)
+        for loc in page_locs:
+            url = normalize_nlp_url(loc)
+            if not url or url in seen_urls:
+                continue
+            if not nlp_is_crawlable_page_url(url):
+                continue
+            if same_host_only and root_host and not nlp_same_host(url, root_host):
+                continue
+            seen_urls.add(url)
+            urls.append(url)
+            if len(urls) >= max_urls:
+                break
+    if not urls:
+        raise ValueError("No crawlable URLs were found for that source")
+    return urls
+
+
+def fetch_nlp_page_text(url: str) -> dict[str, Any]:
+    body, content_type = nlp_http_get(url)
+    if content_type and "html" not in content_type.lower() and "text/plain" not in content_type.lower():
+        raise ValueError(f"Unsupported content type: {content_type.split(';', 1)[0]}")
+    parser = DashboardHTMLTextExtractor()
+    parser.feed(body.decode("utf-8", errors="replace"))
+    result = parser.result()
+    if int(result["word_count"]) < NLP_MIN_WORDS:
+        raise ValueError(f"Only {result['word_count']} words found after extraction")
+    return result
+
+
+def fake_nlp_categories(url: str, title: str, text: str) -> list[dict[str, Any]]:
+    haystack = f"{url} {title} {text[:500]}".lower()
+    rules = [
+        ("/Home & Garden", ["home", "pool", "roof", "plumbing", "hvac", "landscape"]),
+        ("/Health", ["health", "doctor", "medical", "clinic", "dental"]),
+        ("/Law & Government", ["law", "attorney", "legal", "government"]),
+        ("/Internet & Telecom", ["software", "seo", "website", "hosting", "api"]),
+        ("/Business & Industrial", ["service", "company", "business", "pricing", "quote"]),
+    ]
+    for category, tokens in rules:
+        if any(token in haystack for token in tokens):
+            return [{"name": category, "confidence": 0.72}]
+    return [{"name": "/Business & Industrial", "confidence": 0.51}]
+
+
+def google_nlp_classify_text(text: str, key_value: str) -> tuple[list[dict[str, Any]], str]:
+    payload = {
+        "document": {"type": "PLAIN_TEXT", "content": text[:NLP_MAX_TEXT_CHARS]},
+        "classificationModelOptions": {"v2Model": {"contentCategoriesVersion": "V2"}},
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{NLP_GOOGLE_NL_ENDPOINT}?key={quote(key_value)}",
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as response:
+        raw = response.read(200_000).decode("utf-8", errors="replace")
+    data = json.loads(raw or "{}")
+    categories = [
+        {"name": clean_text(item.get("name")) or "", "confidence": float(item.get("confidence") or 0)}
+        for item in data.get("categories", [])
+        if clean_text(item.get("name"))
+    ]
+    categories.sort(key=lambda item: item["confidence"], reverse=True)
+    return categories, raw
+
+
+def skip_static_nlp_category_url(row_id: int, url: str) -> bool:
+    extension = nlp_url_static_asset_extension(url)
+    if not extension:
+        return False
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE nlp_category_urls
+            SET status = 'skipped',
+                title = NULL,
+                category = NULL,
+                confidence = NULL,
+                primary_result = 0,
+                categories_json = '[]',
+                word_count = 0,
+                error = ?,
+                raw_response = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (f"Skipped static asset URL ({extension})", now, row_id),
+        )
+    return True
+
+
+def nlp_category_batch_public(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return row_to_dict(row)
+
+
+def nlp_category_url_public(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    data = row_to_dict(row)
+    if not data:
+        return None
+    try:
+        data["categories"] = json.loads(data.get("categories_json") or "[]")
+    except Exception:
+        data["categories"] = []
+    data.pop("raw_response", None)
+    return data
+
+
+def refresh_nlp_category_batch_status(batch_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        counts = con.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS active_count,
+                SUM(CASE WHEN status = 'cancelled' THEN 1 ELSE 0 END) AS cancelled_count,
+                COUNT(*) AS target_count
+            FROM nlp_category_urls
+            WHERE batch_id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+        complete_count = int(counts["complete_count"] or 0)
+        failed_count = int(counts["failed_count"] or 0)
+        skipped_count = int(counts["skipped_count"] or 0)
+        active_count = int(counts["active_count"] or 0)
+        cancelled_count = int(counts["cancelled_count"] or 0)
+        target_count = int(counts["target_count"] or 0)
+        batch = con.execute("SELECT status FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone()
+        if not batch:
+            raise ValueError("NLP categorizer batch not found")
+        if batch["status"] == "cancelled":
+            status = "cancelled"
+        elif active_count:
+            status = "running"
+        elif failed_count and complete_count:
+            status = "partial"
+        elif failed_count and not complete_count:
+            status = "failed"
+        elif cancelled_count and not complete_count:
+            status = "cancelled"
+        else:
+            status = "complete" if target_count else "failed"
+        con.execute(
+            """
+            UPDATE nlp_category_batches
+            SET status = ?, target_count = ?, complete_count = ?, failed_count = ?, skipped_count = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, target_count, complete_count, failed_count, skipped_count, now, batch_id),
+        )
+        row = con.execute("SELECT * FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone()
+    return nlp_category_batch_public(row) or {}
+
+
+def parse_iso_datetime(value: Any) -> datetime | None:
+    text = clean_text(value) or ""
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def hcu_page_type_from_row(row: dict[str, Any]) -> str:
+    llm_types = [
+        clean_text(result.get("page_type"))
+        for result in row.get("llm_results") or []
+        if clean_text(result.get("page_type"))
+    ]
+    if llm_types:
+        return max(set(llm_types), key=llm_types.count)
+    url = str(row.get("url") or "").lower()
+    title = str(row.get("title") or "").lower()
+    if "/blog" in url or any(token in title for token in ["why ", "how ", "cost", "guide"]):
+        return "informational"
+    if any(token in url for token in ["/service", "/services", "/builder", "/construction"]):
+        return "service"
+    if url.rstrip("/").count("/") <= 2:
+        return "homepage"
+    return "other"
+
+
+def hcu_local_terms(project: dict[str, Any] | None) -> list[str]:
+    """Locality/brand tokens for the local-specificity risk signal, derived per client.
+
+    Uses the project name and account label (full phrase plus word bigrams) and the
+    site domain's first label, in plain, hyphenated, and collapsed forms.
+    """
+    terms: set[str] = set()
+    sources: list[str] = []
+    if project:
+        sources = [str(project.get("name") or ""), str(project.get("client") or "")]
+        domain = re.sub(r"^www\.", "", str(project.get("site_domain") or project.get("main_url") or "").lower())
+        domain = re.sub(r"^https?://", "", domain).split("/")[0].split(".")[0]
+        if len(domain) >= 5:
+            terms.add(domain)
+    for source in sources:
+        text = re.sub(r"[^a-z0-9]+", " ", source.lower()).strip()
+        if not text:
+            continue
+        words = text.split()
+        candidates = [text] + [" ".join(words[i:i + 2]) for i in range(len(words) - 1)]
+        for candidate in candidates:
+            if len(candidate.replace(" ", "")) < 5:
+                continue
+            terms.add(candidate)
+            terms.add(candidate.replace(" ", "-"))
+            terms.add(candidate.replace(" ", ""))
+    return sorted(terms)
+
+
+def hcu_url_risk(
+    row: dict[str, Any],
+    page_delta: dict[str, Any] | None = None,
+    local_terms: list[str] | None = None,
+) -> dict[str, Any]:
+    score = 0
+    reasons: list[str] = []
+    page_type = hcu_page_type_from_row(row)
+    category = clean_text(row.get("category")) or "Uncategorized"
+    word_count = int(row.get("word_count") or 0)
+    confidence = as_float(row.get("confidence")) or 0
+    url = str(row.get("url") or "").lower()
+    title = str(row.get("title") or "").lower()
+    informational = page_type in {"blog", "post", "article", "informational"} or "/blog" in url
+    if informational:
+        score += 25
+        reasons.append("informational/blog style page")
+    if any(token in title for token in ["how much", "cost", "expensive", "why ", "do ", "does "]):
+        score += 15
+        reasons.append("question/query-led topic")
+    if local_terms:
+        # Match against the title and the URL path only; the host would match the
+        # client's own domain on every page and make the signal meaningless.
+        url_path = urlparse(url).path
+        if not any(term in title or term in url_path for term in local_terms):
+            score += 10
+            reasons.append("weak local specificity signal")
+    if word_count and word_count < 700:
+        score += 15
+        reasons.append("short content body")
+    if confidence and confidence < 0.55:
+        score += 10
+        reasons.append("low NLP confidence")
+    llm_results = [result for result in row.get("llm_results") or [] if result.get("status") == "complete"]
+    llm_categories = {str(result.get("llm_category") or "").strip().lower() for result in llm_results if result.get("llm_category")}
+    if len(llm_categories) > 1:
+        score += 10
+        reasons.append("LLM category disagreement")
+    if page_delta:
+        traffic_delta = as_float(page_delta.get("organicTrafficDelta")) or 0
+        base_traffic = as_float(page_delta.get("baseOrganicTraffic")) or 0
+        if page_delta.get("status") in {"lost", "lost_traffic"} or traffic_delta < 0:
+            score += 25
+            reasons.append("post-impact organic traffic loss")
+        if base_traffic and traffic_delta < 0:
+            loss_pct = abs(traffic_delta) / max(base_traffic, 1)
+            if loss_pct >= 0.5:
+                score += 15
+                reasons.append("lost at least half of page traffic")
+    score = max(0, min(100, score))
+    if score >= 70:
+        level = "high"
+        action = "Prioritize for HCU review: verify original experience, local proof, depth, and search intent match."
+    elif score >= 40:
+        level = "medium"
+        action = "Review content quality and local specificity before expanding or refreshing."
+    else:
+        level = "low"
+        action = "Monitor; use ranking or GSC data to confirm impact before major rewrites."
+    return {
+        "score": score,
+        "level": level,
+        "reasons": reasons or ["no major deterministic HCU risk signal"],
+        "page_type": page_type,
+        "category": category,
+        "recommended_action": action,
+    }
+
+
+def select_hcu_snapshot_pair(project_id: int, impact_date: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str]:
+    impact_dt = parse_iso_datetime(impact_date) or parse_iso_datetime(HCU_DEFAULT_IMPACT_DATE) or datetime(2025, 6, 1)
+    snapshots = list_ranking_snapshots(project_id)
+    before = [snapshot for snapshot in snapshots if (parse_iso_datetime(snapshot.get("created_at")) or datetime.max) < impact_dt]
+    after = [snapshot for snapshot in snapshots if (parse_iso_datetime(snapshot.get("created_at")) or datetime.min) >= impact_dt]
+    if before and after:
+        base = max(before, key=lambda snapshot: parse_iso_datetime(snapshot.get("created_at")) or datetime.min)
+        compare = min(after, key=lambda snapshot: parse_iso_datetime(snapshot.get("created_at")) or datetime.max)
+        return base, compare, "pre_post"
+    if len(snapshots) >= 2:
+        ordered = sorted(snapshots, key=lambda snapshot: parse_iso_datetime(snapshot.get("created_at")) or datetime.min)
+        return ordered[-2], ordered[-1], "available_pair"
+    return None, snapshots[0] if snapshots else None, "insufficient"
+
+
+def build_hcu_impact_analysis(
+    project_id: int,
+    result_rows: list[dict[str, Any]],
+    impact_date: str = HCU_DEFAULT_IMPACT_DATE,
+) -> dict[str, Any]:
+    base_snapshot, compare_snapshot, snapshot_mode = select_hcu_snapshot_pair(project_id, impact_date)
+    with connect() as con:
+        project = con.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        site = con.execute("SELECT domain FROM sites WHERE project_id = ? ORDER BY id ASC LIMIT 1", (project_id,)).fetchone()
+    project_info = dict(project) if project else None
+    if project_info is not None and site:
+        project_info["site_domain"] = site["domain"]
+    local_terms = hcu_local_terms(project_info)
+    ranking_compare: dict[str, Any] | None = None
+    page_deltas: dict[str, dict[str, Any]] = {}
+    if base_snapshot and compare_snapshot and base_snapshot.get("id") != compare_snapshot.get("id"):
+        try:
+            ranking_compare = compare_ranking_snapshots(int(base_snapshot["id"]), int(compare_snapshot["id"]))
+            page_deltas = {comparable_url(row.get("url")): row for row in ranking_compare.get("pages") or [] if comparable_url(row.get("url"))}
+        except Exception as exc:
+            ranking_compare = {"error": str(exc)}
+    rows: list[dict[str, Any]] = []
+    for row in result_rows:
+        if row.get("status") != "complete":
+            continue
+        delta = page_deltas.get(comparable_url(row.get("url")))
+        risk = hcu_url_risk(row, delta, local_terms)
+        rows.append(
+            {
+                "url": row.get("url"),
+                "title": row.get("title"),
+                "category": risk["category"],
+                "page_type": risk["page_type"],
+                "risk_score": risk["score"],
+                "risk_level": risk["level"],
+                "risk_reasons": risk["reasons"],
+                "recommended_action": risk["recommended_action"],
+                "word_count": row.get("word_count"),
+                "confidence": row.get("confidence"),
+                "traffic": delta or None,
+            }
+        )
+    rows.sort(key=lambda item: (item["risk_score"], abs(as_float((item.get("traffic") or {}).get("organicTrafficDelta")) or 0)), reverse=True)
+    by_page_type: dict[str, dict[str, Any]] = {}
+    by_category: dict[str, dict[str, Any]] = {}
+    for item in rows:
+        for target, key in [(by_page_type, item["page_type"] or "other"), (by_category, item["category"] or "Uncategorized")]:
+            bucket = target.setdefault(key, {"label": key, "count": 0, "high_risk": 0, "medium_risk": 0, "avg_risk": 0.0, "traffic_delta": 0.0})
+            bucket["count"] += 1
+            bucket["avg_risk"] += float(item["risk_score"] or 0)
+            if item["risk_level"] == "high":
+                bucket["high_risk"] += 1
+            if item["risk_level"] == "medium":
+                bucket["medium_risk"] += 1
+            bucket["traffic_delta"] += as_float((item.get("traffic") or {}).get("organicTrafficDelta")) or 0
+    for buckets in (by_page_type, by_category):
+        for bucket in buckets.values():
+            bucket["avg_risk"] = round(bucket["avg_risk"] / max(1, bucket["count"]), 1)
+            bucket["traffic_delta"] = round(bucket["traffic_delta"], 2)
+    high = len([row for row in rows if row["risk_level"] == "high"])
+    medium = len([row for row in rows if row["risk_level"] == "medium"])
+    traffic_rows = [row for row in rows if row.get("traffic")]
+    total_delta = sum(as_float((row.get("traffic") or {}).get("organicTrafficDelta")) or 0 for row in traffic_rows)
+    notes: list[str] = []
+    if snapshot_mode == "pre_post":
+        notes.append(f"Using ranking snapshots around {impact_date}.")
+    elif snapshot_mode == "available_pair":
+        notes.append(f"No true pre/post {impact_date} ranking snapshot pair found; using the latest available pair instead.")
+    else:
+        notes.append(f"No ranking snapshot pair is available around {impact_date}; risk scores are NLP/LLM-only until traffic data is imported.")
+    return {
+        "impact_date": impact_date,
+        "snapshot_mode": snapshot_mode,
+        "base_snapshot": base_snapshot,
+        "compare_snapshot": compare_snapshot,
+        "ranking_summary": (ranking_compare or {}).get("summary") if ranking_compare else None,
+        "notes": notes,
+        "summary": {
+            "analyzed_urls": len(rows),
+            "high_risk": high,
+            "medium_risk": medium,
+            "traffic_matched_urls": len(traffic_rows),
+            "organic_traffic_delta": round(total_delta, 2),
+        },
+        "by_page_type": sorted(by_page_type.values(), key=lambda item: (item["high_risk"], item["avg_risk"], item["count"]), reverse=True),
+        "by_category": sorted(by_category.values(), key=lambda item: (item["high_risk"], item["avg_risk"], item["count"]), reverse=True),
+        "urls": rows,
+    }
+
+
+def list_nlp_category_batches(project_id: int | None = None) -> list[dict[str, Any]]:
+    where = "WHERE b.project_id = ?" if project_id else ""
+    params: list[Any] = [project_id] if project_id else []
+    with connect() as con:
+        rows = con.execute(
+            f"""
+            SELECT b.*, p.name AS project_name
+            FROM nlp_category_batches b
+            JOIN projects p ON p.id = b.project_id
+            {where}
+            ORDER BY b.created_at DESC, b.id DESC
+            """,
+            params,
+        ).fetchall()
+    return [nlp_category_batch_public(row) or {} for row in rows]
+
+
+def get_nlp_category_batch(batch_id: int) -> dict[str, Any]:
+    with connect() as con:
+        batch = con.execute(
+            """
+            SELECT b.*, p.name AS project_name
+            FROM nlp_category_batches b
+            JOIN projects p ON p.id = b.project_id
+            WHERE b.id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+        if not batch:
+            raise ValueError("NLP categorizer batch not found")
+        rows = con.execute(
+            """
+            SELECT *
+            FROM nlp_category_urls
+            WHERE batch_id = ?
+            ORDER BY status = 'complete' DESC, confidence DESC, id
+            """,
+            (batch_id,),
+        ).fetchall()
+        llm_run_rows = con.execute(
+            """
+            SELECT *
+            FROM nlp_llm_comparison_runs
+            WHERE batch_id = ?
+            ORDER BY created_at DESC, id DESC
+            """,
+            (batch_id,),
+        ).fetchall()
+        llm_result_rows = con.execute(
+            """
+            SELECT r.*, cr.provider, cr.provider_key, cr.model, cr.taxonomy, cr.status AS run_status
+            FROM nlp_llm_comparison_results r
+            JOIN nlp_llm_comparison_runs cr ON cr.id = r.comparison_run_id
+            WHERE cr.batch_id = ?
+            ORDER BY cr.created_at DESC, cr.id DESC, r.id
+            """,
+            (batch_id,),
+        ).fetchall()
+    result_rows = [nlp_category_url_public(row) or {} for row in rows]
+    llm_runs = [nlp_llm_comparison_run_public(row) or {} for row in llm_run_rows]
+    llm_results = [nlp_llm_comparison_result_public(row) or {} for row in llm_result_rows]
+    llm_results_by_url: dict[int, list[dict[str, Any]]] = {}
+    for result in llm_results:
+        llm_results_by_url.setdefault(int(result.get("batch_url_id") or 0), []).append(result)
+    for row in result_rows:
+        row["llm_results"] = llm_results_by_url.get(int(row.get("id") or 0), [])
+    category_counts: dict[str, dict[str, Any]] = {}
+    for row in result_rows:
+        if row.get("status") != "complete" or not row.get("category"):
+            continue
+        item = category_counts.setdefault(row["category"], {"category": row["category"], "count": 0, "avg_confidence": 0.0})
+        item["count"] += 1
+        item["avg_confidence"] += float(row.get("confidence") or 0)
+    categories = []
+    for item in category_counts.values():
+        item["avg_confidence"] = round(item["avg_confidence"] / max(1, item["count"]), 3)
+        categories.append(item)
+    categories.sort(key=lambda item: (-int(item["count"]), item["category"]))
+    progress = {
+        "total": int(batch["target_count"] or len(result_rows)),
+        "complete": int(batch["complete_count"] or 0),
+        "failed": int(batch["failed_count"] or 0),
+        "skipped": int(batch["skipped_count"] or 0),
+    }
+    progress["cancelled"] = len([row for row in result_rows if row.get("status") == "cancelled"])
+    finished = progress["complete"] + progress["failed"] + progress["skipped"] + progress["cancelled"]
+    progress["finished"] = finished
+    progress["percent"] = round((finished / progress["total"]) * 100, 1) if progress["total"] else 0
+    low_confidence = [
+        row for row in result_rows
+        if row.get("status") == "complete" and row.get("confidence") is not None and float(row.get("confidence") or 0) < 0.55
+    ]
+    comparison = {
+        "baseline_provider": batch["provider"] or "Google Natural Language",
+        "provider_columns": [batch["provider"] or "Google Natural Language"] + [nlp_llm_run_label(run) for run in llm_runs],
+        "ready_url_count": progress["complete"],
+        "category_count": len(categories),
+        "review_count": len(low_confidence),
+        "llm_comparison_ready": progress["complete"] > 0,
+        "next_provider_slots": ["OpenAI", "Anthropic", "Google Gemini", "xAI / Grok", "Perplexity"],
+        "run_count": len(llm_runs),
+        "result_count": len(llm_results),
+    }
+    return {
+        "batch": nlp_category_batch_public(batch),
+        "urls": result_rows,
+        "categories": categories,
+        "progress": progress,
+        "comparison": comparison,
+        "comparison_runs": llm_runs,
+        "comparison_results": llm_results,
+        "hcu_impact": build_hcu_impact_analysis(int(batch["project_id"]), result_rows, HCU_DEFAULT_IMPACT_DATE),
+    }
+
+
+def classify_nlp_url(row_id: int) -> None:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT u.*, b.api_key_id, b.provider, b.status AS batch_status
+            FROM nlp_category_urls u
+            JOIN nlp_category_batches b ON b.id = u.batch_id
+            WHERE u.id = ?
+            """,
+            (row_id,),
+        ).fetchone()
+        if not row:
+            return
+        if row["batch_status"] == "cancelled":
+            con.execute(
+                "UPDATE nlp_category_urls SET status = 'cancelled', error = 'Cancelled before run started', updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(timespec="seconds"), row_id),
+            )
+            return
+        api_key = con.execute("SELECT * FROM api_keys WHERE id = ?", (row["api_key_id"],)).fetchone() if row["api_key_id"] else None
+    if skip_static_nlp_category_url(row_id, row["url"]):
+        return
+    with connect() as con:
+        con.execute(
+            "UPDATE nlp_category_urls SET status = 'running', error = NULL, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(timespec="seconds"), row_id),
+        )
+    raw_response = ""
+    try:
+        page = fetch_nlp_page_text(row["url"])
+        if row["provider"] == "Dry Run":
+            categories = fake_nlp_categories(row["url"], page.get("title") or "", page.get("text") or "")
+            raw_response = json.dumps({"categories": categories, "dry_run": True})
+        else:
+            if not api_key:
+                raise ValueError("Google Natural Language API key is missing")
+            categories, raw_response = google_nlp_classify_text(page.get("text") or "", api_key["key_value"])
+        if not categories:
+            status = "skipped"
+            error = "No category returned"
+            primary = {}
+        else:
+            status = "complete"
+            error = None
+            primary = categories[0]
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        with connect() as con:
+            con.execute(
+                """
+                UPDATE nlp_category_urls
+                SET status = ?, title = ?, category = ?, confidence = ?, primary_result = ?,
+                    categories_json = ?, word_count = ?, error = ?, raw_response = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    page.get("title"),
+                    primary.get("name"),
+                    primary.get("confidence"),
+                    1 if primary else 0,
+                    json.dumps(categories),
+                    int(page.get("word_count") or 0),
+                    error,
+                    raw_response,
+                    updated_at,
+                    row_id,
+                ),
+            )
+    except urllib.error.HTTPError as exc:
+        body = exc.read(2048).decode("utf-8", errors="replace")
+        message = sanitize_provider_message(body or exc.reason or str(exc), api_key["key_value"] if api_key else "")
+        with connect() as con:
+            con.execute(
+                "UPDATE nlp_category_urls SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+                (message or f"HTTP {exc.code}", datetime.now().isoformat(timespec="seconds"), row_id),
+            )
+    except Exception as exc:
+        with connect() as con:
+            con.execute(
+                "UPDATE nlp_category_urls SET status = 'failed', error = ?, updated_at = ? WHERE id = ?",
+                (sanitize_provider_message(str(exc), api_key["key_value"] if api_key else ""), datetime.now().isoformat(timespec="seconds"), row_id),
+            )
+
+
+def process_nlp_category_batch(batch_id: int) -> dict[str, Any]:
+    while True:
+        with connect() as con:
+            batch = con.execute("SELECT status FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone()
+            if not batch:
+                raise ValueError("NLP categorizer batch not found")
+            if batch["status"] == "cancelled":
+                con.execute(
+                    "UPDATE nlp_category_urls SET status = 'cancelled', error = 'Cancelled before run started', updated_at = ? WHERE batch_id = ? AND status = 'queued'",
+                    (datetime.now().isoformat(timespec="seconds"), batch_id),
+                )
+                break
+            row = con.execute(
+                "SELECT id FROM nlp_category_urls WHERE batch_id = ? AND status = 'queued' ORDER BY id LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+        if not row:
+            break
+        classify_nlp_url(int(row["id"]))
+        refresh_nlp_category_batch_status(batch_id)
+    return get_nlp_category_batch(batch_id)
+
+
+def start_nlp_category_worker(batch_id: int) -> None:
+    with NLP_CATEGORY_WORKER_LOCK:
+        worker = NLP_CATEGORY_WORKERS.get(batch_id)
+        if worker and worker.is_alive():
+            return
+
+        def run_worker() -> None:
+            try:
+                process_nlp_category_batch(batch_id)
+            finally:
+                with NLP_CATEGORY_WORKER_LOCK:
+                    NLP_CATEGORY_WORKERS.pop(batch_id, None)
+
+        thread = threading.Thread(target=run_worker, name=f"nlp-category-batch-{batch_id}", daemon=True)
+        NLP_CATEGORY_WORKERS[batch_id] = thread
+        thread.start()
+
+
+def create_nlp_category_batch(payload: dict[str, Any], run_async: bool = True) -> dict[str, Any]:
+    project_id = int(payload.get("project_id") or 0)
+    source_type = clean_text(payload.get("source_type")) or "urls"
+    source_value = clean_text(payload.get("source_value")) or ""
+    max_urls = max(1, min(int(payload.get("max_urls") or NLP_DEFAULT_MAX_URLS), NLP_HARD_MAX_URLS))
+    same_host_only = bool(payload.get("same_host_only", True))
+    dry_run = bool(payload.get("dry_run"))
+    api_key_id = int(payload.get("api_key_id") or 0) or None
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        if not con.execute("SELECT id FROM projects WHERE id = ?", (project_id,)).fetchone():
+            raise ValueError("Client not found")
+        api_key = con.execute("SELECT * FROM api_keys WHERE id = ?", (api_key_id,)).fetchone() if api_key_id else None
+        if not dry_run:
+            if not api_key:
+                raise ValueError("Choose a saved Google NLP API key or enable dry run")
+            if normalize_ai_provider(api_key["provider"]) != "google_nlp":
+                raise ValueError("NLP categorizer requires a saved Google NLP key, not a Google Gemini key")
+    urls = discover_sitemap_urls(source_type, source_value, max_urls, same_host_only)
+    provider = "Dry Run" if dry_run else "Google Natural Language"
+    with connect() as con:
+        cur = con.execute(
+            """
+            INSERT INTO nlp_category_batches
+            (project_id, source_type, source_value, status, provider, api_key_id, target_count,
+             complete_count, failed_count, skipped_count, max_urls, same_host_only, created_at, updated_at)
+            VALUES (?, ?, ?, 'running', ?, ?, ?, 0, 0, 0, ?, ?, ?, ?)
+            """,
+            (project_id, source_type, source_value, provider, api_key_id, len(urls), max_urls, 1 if same_host_only else 0, now, now),
+        )
+        batch_id = int(cur.lastrowid)
+        con.executemany(
+            """
+            INSERT OR IGNORE INTO nlp_category_urls
+            (batch_id, url, status, created_at, updated_at)
+            VALUES (?, ?, 'queued', ?, ?)
+            """,
+            [(batch_id, url, now, now) for url in urls],
+        )
+    refresh_nlp_category_batch_status(batch_id)
+    if run_async:
+        start_nlp_category_worker(batch_id)
+    else:
+        process_nlp_category_batch(batch_id)
+    return get_nlp_category_batch(batch_id)
+
+
+def cancel_nlp_category_batch(batch_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        if not con.execute("SELECT id FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone():
+            raise ValueError("NLP categorizer batch not found")
+        con.execute(
+            "UPDATE nlp_category_batches SET status = 'cancelled', updated_at = ? WHERE id = ?",
+            (now, batch_id),
+        )
+        con.execute(
+            "UPDATE nlp_category_urls SET status = 'cancelled', error = 'Cancelled before run started', updated_at = ? WHERE batch_id = ? AND status = 'queued'",
+            (now, batch_id),
+        )
+    refresh_nlp_category_batch_status(batch_id)
+    return get_nlp_category_batch(batch_id)
+
+
+def delete_nlp_category_batch(batch_id: int) -> None:
+    with connect() as con:
+        if not con.execute("SELECT id FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone():
+            return
+        run_ids = [
+            int(row["id"])
+            for row in con.execute(
+                "SELECT id FROM nlp_llm_comparison_runs WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchall()
+        ]
+        if run_ids:
+            placeholders = ",".join("?" for _ in run_ids)
+            con.execute(
+                f"DELETE FROM nlp_llm_comparison_results WHERE comparison_run_id IN ({placeholders})",
+                run_ids,
+            )
+        con.execute("DELETE FROM nlp_llm_comparison_runs WHERE batch_id = ?", (batch_id,))
+        con.execute("DELETE FROM nlp_category_urls WHERE batch_id = ?", (batch_id,))
+        con.execute("DELETE FROM nlp_category_batches WHERE id = ?", (batch_id,))
+
+
+def retry_failed_nlp_category_batch(batch_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    should_start_worker = True
+    with connect() as con:
+        if not con.execute("SELECT id FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone():
+            raise ValueError("NLP categorizer batch not found")
+        retry_rows = con.execute(
+            """
+            SELECT id, url
+            FROM nlp_category_urls
+            WHERE batch_id = ? AND status IN ('failed', 'skipped')
+            """,
+            (batch_id,),
+        ).fetchall()
+        static_ids = [int(row["id"]) for row in retry_rows if nlp_url_static_asset_extension(row["url"])]
+        page_ids = [int(row["id"]) for row in retry_rows if not nlp_url_static_asset_extension(row["url"])]
+        for row_id in static_ids:
+            extension = nlp_url_static_asset_extension(next(row["url"] for row in retry_rows if int(row["id"]) == row_id))
+            con.execute(
+                """
+                UPDATE nlp_category_urls
+                SET status = 'skipped',
+                    title = NULL,
+                    category = NULL,
+                    confidence = NULL,
+                    primary_result = 0,
+                    categories_json = '[]',
+                    word_count = 0,
+                    error = ?,
+                    raw_response = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (f"Skipped static asset URL ({extension})", now, row_id),
+            )
+        if page_ids:
+            placeholders = ",".join("?" for _ in page_ids)
+            con.execute(
+                f"""
+                UPDATE nlp_category_urls
+                SET status = 'queued', error = NULL, updated_at = ?
+                WHERE batch_id = ? AND id IN ({placeholders})
+                """,
+                [now, batch_id, *page_ids],
+            )
+        else:
+            con.execute(
+                "UPDATE nlp_category_batches SET updated_at = ? WHERE id = ?",
+                (now, batch_id),
+            )
+            should_start_worker = False
+        con.execute(
+            "UPDATE nlp_category_batches SET status = 'running', updated_at = ? WHERE id = ?",
+            (now, batch_id),
+        ) if should_start_worker else None
+    refresh_nlp_category_batch_status(batch_id)
+    if should_start_worker:
+        start_nlp_category_worker(batch_id)
+    return get_nlp_category_batch(batch_id)
+
+
+def nlp_category_export_csv(batch_id: int) -> bytes:
+    data = get_nlp_category_batch(batch_id)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["URL", "Status", "Title", "Primary Category", "Confidence", "Word Count", "All Categories", "Error"])
+    for row in data["urls"]:
+        categories = "; ".join(f"{item.get('name')} ({float(item.get('confidence') or 0):.3f})" for item in row.get("categories") or [])
+        writer.writerow([
+            row.get("url") or "",
+            row.get("status") or "",
+            row.get("title") or "",
+            row.get("category") or "",
+            row.get("confidence") if row.get("confidence") is not None else "",
+            row.get("word_count") or 0,
+            categories,
+            row.get("error") or "",
+        ])
+    return output.getvalue().encode("utf-8-sig")
+
+
+def nlp_llm_comparison_run_public(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    return row_to_dict(row)
+
+
+def nlp_llm_comparison_result_public(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    data = row_to_dict(row)
+    if not data:
+        return None
+    data.pop("raw_response", None)
+    return data
+
+
+def nlp_llm_run_label(run: dict[str, Any]) -> str:
+    provider = clean_text(run.get("provider")) or clean_text(run.get("provider_name")) or "LLM"
+    model = clean_text(run.get("model")) or "Default"
+    return f"{provider} ({model})"
+
+
+def normalize_nlp_llm_taxonomy(value: Any) -> str:
+    taxonomy = clean_text(value) or "seo_page_type"
+    return taxonomy if taxonomy in {"seo_page_type", "google_like", "custom"} else "seo_page_type"
+
+
+def build_nlp_llm_comparison_prompt(url_row: sqlite3.Row, taxonomy: str) -> str:
+    category_lines = []
+    try:
+        categories = json.loads(url_row["categories_json"] or "[]")
+    except Exception:
+        categories = []
+    for item in categories[:5]:
+        if not isinstance(item, dict):
+            continue
+        name = clean_text(item.get("name"))
+        if name:
+            category_lines.append(f"- {name}: {float(item.get('confidence') or 0):.3f}")
+    taxonomy_instruction = {
+        "seo_page_type": "Classify the URL by practical SEO page type and content intent.",
+        "google_like": "Classify the URL into a concise topic category similar to a Google Natural Language category.",
+        "custom": "Classify the URL into the best reusable content inventory category for this website.",
+    }[normalize_nlp_llm_taxonomy(taxonomy)]
+    return f"""You are reviewing a URL categorization batch for an SEO content inventory.
+
+Return only valid JSON with these exact keys:
+category: string
+page_type: one of homepage, service, location, blog, product, category, pricing, faq, other
+confidence: number from 0 to 1
+explanation: string, one short sentence
+recommended_action: string, one short sentence
+
+{taxonomy_instruction}
+
+URL: {url_row['url']}
+Title: {url_row['title'] or 'Not available'}
+Google NLP primary category: {url_row['category'] or 'Not available'}
+Google NLP confidence: {float(url_row['baseline_confidence'] or 0):.3f}
+Google NLP category candidates:
+{chr(10).join(category_lines) if category_lines else '- Not available'}
+Extracted word count: {int(url_row['word_count'] or 0)}
+
+Use the URL path, title, baseline category, and available confidence signals. Do not invent crawl facts beyond the provided fields."""
+
+
+def normalize_nlp_llm_comparison_result(parsed: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(parsed, dict):
+        raise ValueError("The LLM response JSON must be an object")
+    if "category" not in parsed:
+        raise ValueError("The LLM response JSON did not include a category")
+    if "confidence" not in parsed:
+        raise ValueError("The LLM response JSON did not include confidence")
+    page_type = (clean_text(parsed.get("page_type")) or "").lower().replace(" ", "_") or "other"
+    allowed_page_types = {"homepage", "service", "location", "blog", "product", "category", "pricing", "faq", "other"}
+    if page_type not in allowed_page_types:
+        page_type = "other"
+    try:
+        confidence = float(parsed.get("confidence") or 0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = max(0.0, min(1.0, confidence))
+    return {
+        "category": clean_text(parsed.get("category")) or "Uncategorized",
+        "page_type": page_type,
+        "confidence": confidence,
+        "explanation": (clean_text(parsed.get("explanation")) or "")[:800],
+        "recommended_action": (clean_text(parsed.get("recommended_action")) or "")[:800],
+    }
+
+
+def refresh_nlp_llm_comparison_run_status(run_id: int) -> dict[str, Any]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        counts = con.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = 'complete' THEN 1 ELSE 0 END) AS complete_count,
+                SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+                SUM(CASE WHEN status IN ('queued', 'running') THEN 1 ELSE 0 END) AS active_count,
+                COUNT(*) AS target_count
+            FROM nlp_llm_comparison_results
+            WHERE comparison_run_id = ?
+            """,
+            (run_id,),
+        ).fetchone()
+        complete_count = int(counts["complete_count"] or 0)
+        failed_count = int(counts["failed_count"] or 0)
+        active_count = int(counts["active_count"] or 0)
+        target_count = int(counts["target_count"] or 0)
+        if active_count:
+            status = "running"
+        elif failed_count and complete_count:
+            status = "partial"
+        elif failed_count:
+            status = "failed"
+        else:
+            status = "complete" if target_count else "failed"
+        con.execute(
+            """
+            UPDATE nlp_llm_comparison_runs
+            SET status = ?, target_count = ?, complete_count = ?, failed_count = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, target_count, complete_count, failed_count, now, run_id),
+        )
+        row = con.execute("SELECT * FROM nlp_llm_comparison_runs WHERE id = ?", (run_id,)).fetchone()
+    return nlp_llm_comparison_run_public(row) or {}
+
+
+def execute_nlp_llm_comparison_result(result_id: int) -> None:
+    with connect() as con:
+        row = con.execute(
+            """
+            SELECT r.*, cr.provider_key, cr.api_key_id, cr.model, cr.taxonomy, u.title, u.category,
+                   u.confidence AS baseline_confidence, u.categories_json, u.word_count
+            FROM nlp_llm_comparison_results r
+            JOIN nlp_llm_comparison_runs cr ON cr.id = r.comparison_run_id
+            JOIN nlp_category_urls u ON u.id = r.batch_url_id
+            WHERE r.id = ?
+            """,
+            (result_id,),
+        ).fetchone()
+        if not row:
+            return
+        api_key = con.execute("SELECT * FROM api_keys WHERE id = ?", (row["api_key_id"],)).fetchone() if row["api_key_id"] else None
+        if not api_key:
+            con.execute(
+                "UPDATE nlp_llm_comparison_results SET status = 'failed', error = 'Saved LLM API key is missing', updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(timespec="seconds"), result_id),
+            )
+            return
+        con.execute(
+            "UPDATE nlp_llm_comparison_results SET status = 'running', error = NULL, updated_at = ? WHERE id = ?",
+            (datetime.now().isoformat(timespec="seconds"), result_id),
+        )
+    key_value = api_key["key_value"]
+    raw_response = ""
+    try:
+        provider_key = row["provider_key"]
+        base_url = clean_text(api_key["base_url"]) or AI_PROVIDERS[provider_key]["base_url"]
+        model = row["model"] or clean_text(api_key["default_model"]) or AI_PROVIDERS[provider_key].get("default_model") or ""
+        prompt = build_nlp_llm_comparison_prompt(row, row["taxonomy"])
+        raw_response = call_llm_provider(
+            provider_key,
+            key_value,
+            base_url,
+            model,
+            prompt,
+            timeout=120,
+            anthropic_tool_name="save_nlp_llm_classification",
+            anthropic_tool_description="Save the structured NLP/LLM URL classification result.",
+            anthropic_output_schema=NLP_LLM_COMPARISON_OUTPUT_SCHEMA,
+        )
+        parsed = normalize_nlp_llm_comparison_result(parse_llm_json_text(raw_response))
+        status = "complete"
+        error = None
+    except Exception as exc:
+        parsed = {"category": None, "page_type": None, "confidence": None, "explanation": None, "recommended_action": None}
+        status = "failed"
+        error = sanitize_provider_message(str(exc), key_value)
+    updated_at = datetime.now().isoformat(timespec="seconds")
+    with connect() as con:
+        con.execute(
+            """
+            UPDATE nlp_llm_comparison_results
+            SET status = ?, llm_category = ?, confidence = ?, page_type = ?, explanation = ?,
+                recommended_action = ?, raw_response = ?, error = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                parsed.get("category"),
+                parsed.get("confidence"),
+                parsed.get("page_type"),
+                parsed.get("explanation"),
+                parsed.get("recommended_action"),
+                raw_response,
+                error,
+                updated_at,
+                result_id,
+            ),
+        )
+
+
+def process_nlp_llm_comparison_run(run_id: int) -> dict[str, Any]:
+    while True:
+        with connect() as con:
+            row = con.execute(
+                """
+                SELECT id
+                FROM nlp_llm_comparison_results
+                WHERE comparison_run_id = ? AND status = 'queued'
+                ORDER BY id
+                LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        if not row:
+            break
+        execute_nlp_llm_comparison_result(int(row["id"]))
+        refresh_nlp_llm_comparison_run_status(run_id)
+    run = refresh_nlp_llm_comparison_run_status(run_id)
+    return get_nlp_category_batch(int(run["batch_id"])) if run.get("batch_id") else {"run": run}
+
+
+def start_nlp_llm_comparison_worker(run_id: int) -> None:
+    with NLP_LLM_COMPARISON_WORKER_LOCK:
+        worker = NLP_LLM_COMPARISON_WORKERS.get(run_id)
+        if worker and worker.is_alive():
+            return
+
+        def run_worker() -> None:
+            try:
+                process_nlp_llm_comparison_run(run_id)
+            finally:
+                with NLP_LLM_COMPARISON_WORKER_LOCK:
+                    NLP_LLM_COMPARISON_WORKERS.pop(run_id, None)
+
+        thread = threading.Thread(target=run_worker, name=f"nlp-llm-comparison-{run_id}", daemon=True)
+        NLP_LLM_COMPARISON_WORKERS[run_id] = thread
+        thread.start()
+
+
+def create_nlp_llm_comparison_runs(batch_id: int, payload: dict[str, Any], run_async: bool = True) -> dict[str, Any]:
+    targets = payload.get("targets") if isinstance(payload.get("targets"), list) else []
+    taxonomy = normalize_nlp_llm_taxonomy(payload.get("taxonomy"))
+    if not targets:
+        raise ValueError("Choose at least one LLM model")
+    now = datetime.now().isoformat(timespec="seconds")
+    run_ids: list[int] = []
+    with connect() as con:
+        batch = con.execute("SELECT * FROM nlp_category_batches WHERE id = ?", (batch_id,)).fetchone()
+        if not batch:
+            raise ValueError("NLP categorizer batch not found")
+        url_rows = con.execute(
+            """
+            SELECT id, url
+            FROM nlp_category_urls
+            WHERE batch_id = ? AND status = 'complete'
+            ORDER BY id
+            """,
+            (batch_id,),
+        ).fetchall()
+        if not url_rows:
+            raise ValueError("Run the categorizer successfully before comparing LLMs")
+        seen: set[tuple[int, str]] = set()
+        for target in targets[:10]:
+            api_key_id = int((target or {}).get("api_key_id") or 0)
+            model_override = clean_text((target or {}).get("model"))
+            if not api_key_id:
+                continue
+            key = con.execute("SELECT * FROM api_keys WHERE id = ?", (api_key_id,)).fetchone()
+            if not key:
+                raise ValueError("Choose a saved LLM API key")
+            provider_key = normalize_ai_provider(key["provider"])
+            if provider_key not in LLM_PROVIDER_KEYS:
+                raise ValueError("Choose an OpenAI, Anthropic, Google Gemini, xAI / Grok, or Perplexity key")
+            model = model_override or clean_text(key["default_model"]) or AI_PROVIDERS[provider_key].get("default_model") or ""
+            if not model:
+                raise ValueError("Choose a model for each selected provider")
+            dedupe_key = (api_key_id, model)
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            cur = con.execute(
+                """
+                INSERT INTO nlp_llm_comparison_runs
+                (batch_id, project_id, provider, provider_key, api_key_id, model, taxonomy, status,
+                 target_count, complete_count, failed_count, prompt_version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, 0, 0, ?, ?, ?)
+                """,
+                (
+                    batch_id,
+                    batch["project_id"],
+                    key["provider"],
+                    provider_key,
+                    api_key_id,
+                    model,
+                    taxonomy,
+                    len(url_rows),
+                    NLP_LLM_COMPARISON_PROMPT_VERSION,
+                    now,
+                    now,
+                ),
+            )
+            run_id = int(cur.lastrowid)
+            run_ids.append(run_id)
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO nlp_llm_comparison_results
+                (comparison_run_id, batch_url_id, url, status, created_at, updated_at)
+                VALUES (?, ?, ?, 'queued', ?, ?)
+                """,
+                [(run_id, int(url["id"]), url["url"], now, now) for url in url_rows],
+            )
+            con.execute(
+                "UPDATE nlp_llm_comparison_runs SET status = 'running', updated_at = ? WHERE id = ?",
+                (now, run_id),
+            )
+    if not run_ids:
+        raise ValueError("Choose at least one LLM model")
+    if run_async:
+        for run_id in run_ids:
+            start_nlp_llm_comparison_worker(run_id)
+    else:
+        for run_id in run_ids:
+            process_nlp_llm_comparison_run(run_id)
+    return get_nlp_category_batch(batch_id)
+
+
 ENTITY_LSI_PROMPT_VERSION = "entity-lsi-v1"
 CORA_ENTITY_IMPORT_PROMPT_VERSION = "cora-xlsx-import-v1"
 ENTITY_LSI_DEPTH_LIMITS = {
@@ -4647,6 +6160,22 @@ ENTITY_LSI_OUTPUT_SCHEMA: dict[str, Any] = {
         "warnings": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["summary", "entities", "lsi_terms", "related_keywords", "questions", "topic_clusters", "warnings"],
+}
+
+
+NLP_LLM_COMPARISON_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "category": {"type": "string"},
+        "page_type": {
+            "type": "string",
+            "enum": ["homepage", "service", "location", "blog", "product", "category", "pricing", "faq", "other"],
+        },
+        "confidence": {"type": "number"},
+        "explanation": {"type": "string"},
+        "recommended_action": {"type": "string"},
+    },
+    "required": ["category", "page_type", "confidence", "explanation", "recommended_action"],
 }
 
 
@@ -4827,10 +6356,14 @@ def call_llm_provider(
     model: str,
     prompt: str,
     timeout: int = 90,
+    anthropic_tool_name: str = "save_entity_lsi_exploration",
+    anthropic_tool_description: str = "Save the structured Entity and LSI exploration result.",
+    anthropic_output_schema: dict[str, Any] | None = None,
 ) -> str:
     root = base_url.rstrip("/")
     timeout = llm_request_timeout(provider_key, timeout)
     if provider_key == "anthropic":
+        tool_schema = anthropic_output_schema or ENTITY_LSI_OUTPUT_SCHEMA
         data = post_json_request(
             f"{root}/v1/messages",
             {
@@ -4844,12 +6377,12 @@ def call_llm_provider(
                 "max_tokens": 5000,
                 "tools": [
                     {
-                        "name": "save_entity_lsi_exploration",
-                        "description": "Save the structured Entity and LSI exploration result.",
-                        "input_schema": ENTITY_LSI_OUTPUT_SCHEMA,
+                        "name": anthropic_tool_name,
+                        "description": anthropic_tool_description,
+                        "input_schema": tool_schema,
                     }
                 ],
-                "tool_choice": {"type": "tool", "name": "save_entity_lsi_exploration"},
+                "tool_choice": {"type": "tool", "name": anthropic_tool_name},
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout,
@@ -4957,7 +6490,7 @@ def create_entity_lsi_run_shell(
             raise ValueError("Choose a saved LLM API key")
         provider_key = normalize_ai_provider(api_key["provider"])
         if provider_key not in LLM_PROVIDER_KEYS:
-            raise ValueError("Choose an OpenAI, Anthropic, Google, xAI / Grok, or Perplexity key")
+            raise ValueError("Choose an OpenAI, Anthropic, Google Gemini, xAI / Grok, or Perplexity key")
         main_url = con.execute(
             """
             SELECT COALESCE(
@@ -6672,6 +8205,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 self.api_entity_lsi_runs(query)
             elif path == "/api/entity-lsi/batches":
                 self.api_entity_lsi_batches(query)
+            elif path == "/api/nlp-categorizer/batches":
+                project_id = int(query["project_id"][0]) if query.get("project_id") else None
+                json_response(self, {"batches": list_nlp_category_batches(project_id)})
             elif path == "/api/entity-sets":
                 project_id = int(query["project_id"][0]) if query.get("project_id") else None
                 json_response(self, {"sets": list_entity_sets(project_id)})
@@ -6741,6 +8277,11 @@ class AppHandler(BaseHTTPRequestHandler):
                 json_response(self, get_entity_lsi_batch(int(path.rsplit("/", 1)[1])))
             elif re.match(r"^/api/entity-lsi/runs/\d+$", path):
                 json_response(self, {"run": get_entity_lsi_run(int(path.rsplit("/", 1)[1]))})
+            elif re.match(r"^/api/nlp-categorizer/batches/\d+$", path):
+                json_response(self, get_nlp_category_batch(int(path.rsplit("/", 1)[1])))
+            elif re.match(r"^/api/nlp-categorizer/batches/\d+/export$", path):
+                batch_id = int(path.split("/")[4])
+                self.download_nlp_category_batch(batch_id)
             elif re.match(r"^/api/entity-sets/\d+$", path):
                 json_response(self, get_entity_set(int(path.rsplit("/", 1)[1])))
             else:
@@ -6750,6 +8291,9 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if not is_trusted_local_request(self):
+            error_response(self, "Cross-origin requests are not allowed", 403)
+            return
         try:
             body = read_json_body(self)
             if parsed.path == "/api/ingest":
@@ -6966,12 +8510,23 @@ class AppHandler(BaseHTTPRequestHandler):
                         )
                     ]
                 json_response(self, {"run": runs[0], "runs": runs}, 201)
+            elif parsed.path == "/api/nlp-categorizer/batches":
+                json_response(self, create_nlp_category_batch(body, True), 201)
             elif re.match(r"^/api/entity-lsi/batches/\d+/retry-failed$", parsed.path):
                 batch_id = int(parsed.path.split("/")[4])
                 json_response(self, retry_failed_entity_lsi_batch(batch_id))
             elif re.match(r"^/api/entity-lsi/batches/\d+/cancel-remaining$", parsed.path):
                 batch_id = int(parsed.path.split("/")[4])
                 json_response(self, cancel_remaining_entity_lsi_batch(batch_id))
+            elif re.match(r"^/api/nlp-categorizer/batches/\d+/retry-failed$", parsed.path):
+                batch_id = int(parsed.path.split("/")[4])
+                json_response(self, retry_failed_nlp_category_batch(batch_id))
+            elif re.match(r"^/api/nlp-categorizer/batches/\d+/cancel$", parsed.path):
+                batch_id = int(parsed.path.split("/")[4])
+                json_response(self, cancel_nlp_category_batch(batch_id))
+            elif re.match(r"^/api/nlp-categorizer/batches/\d+/llm-comparison$", parsed.path):
+                batch_id = int(parsed.path.split("/")[4])
+                json_response(self, create_nlp_llm_comparison_runs(batch_id, body, True), 201)
             elif re.match(r"^/api/entity-lsi/batches/\d+/import-cora-report$", parsed.path):
                 batch_id = int(parsed.path.split("/")[4])
                 json_response(self, import_cora_report_to_entity_batch(batch_id, int(body.get("run_id"))), 201)
@@ -7054,6 +8609,9 @@ class AppHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self) -> None:
         parsed = urlparse(self.path)
+        if not is_trusted_local_request(self):
+            error_response(self, "Cross-origin requests are not allowed", 403)
+            return
         try:
             if re.match(r"^/api/api-keys/\d+$", parsed.path):
                 delete_api_key(int(parsed.path.rsplit("/", 1)[1]))
@@ -7066,6 +8624,9 @@ class AppHandler(BaseHTTPRequestHandler):
                 json_response(self, {"archived": True, "report": report})
             elif re.match(r"^/api/entity-lsi/runs/\d+$", parsed.path):
                 delete_entity_lsi_run(int(parsed.path.rsplit("/", 1)[1]))
+                json_response(self, {"deleted": True})
+            elif re.match(r"^/api/nlp-categorizer/batches/\d+$", parsed.path):
+                delete_nlp_category_batch(int(parsed.path.rsplit("/", 1)[1]))
                 json_response(self, {"deleted": True})
             elif re.match(r"^/api/entity-sets/\d+$", parsed.path):
                 delete_entity_set(int(parsed.path.rsplit("/", 1)[1]))
@@ -7114,6 +8675,23 @@ class AppHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         self.send_header("Content-Disposition", f'attachment; filename="{run["file_name"]}"')
         self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def download_nlp_category_batch(self, batch_id: int) -> None:
+        data = get_nlp_category_batch(batch_id)
+        batch = data.get("batch") or {}
+        body = nlp_category_export_csv(batch_id)
+        filename = f"nlp-categories-{batch_id}.csv"
+        if batch.get("project_name"):
+            slug = re.sub(r"[^a-z0-9]+", "-", str(batch["project_name"]).lower()).strip("-")
+            if slug:
+                filename = f"{slug}-nlp-categories-{batch_id}.csv"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store, max-age=0")
         self.end_headers()
         self.wfile.write(body)
 

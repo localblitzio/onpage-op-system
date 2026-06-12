@@ -147,6 +147,357 @@ class DashboardSmokeTests(unittest.TestCase):
 
         self.assertEqual(app.api_key_value_from_payload("dataforseo", payload), "login@example.com:api-password")
 
+    def test_google_gemini_and_google_nlp_are_separate_providers(self) -> None:
+        gemini = app.create_api_key("Google Gemini", "Gemini", "AIza-gemini-test")
+        nlp = app.create_api_key("Google NLP", "NLP", "AIza-nlp-test")
+        gemini_request = app.provider_request("google", "AIza-gemini-test")
+        nlp_request = app.provider_request("google_nlp", "AIza-nlp-test")
+
+        self.assertEqual(gemini["provider_key"], "google")
+        self.assertEqual(gemini["provider_name"], "Google Gemini")
+        self.assertEqual(nlp["provider_key"], "google_nlp")
+        self.assertEqual(nlp["provider_name"], "Google NLP")
+        self.assertIn("generativelanguage.googleapis.com", gemini_request.full_url)
+        self.assertIn("language.googleapis.com", nlp_request.full_url)
+        self.assertEqual(nlp_request.get_method(), "POST")
+
+    def test_nlp_categorizer_dry_run_batch_completes_and_exports(self) -> None:
+        project = app.create_project("NLP Client", site_domain="example.com")
+
+        with patch.object(
+            app,
+            "fetch_nlp_page_text",
+            return_value={
+                "title": "Pool service page",
+                "text": "Pool service company pricing quote content " * 12,
+                "word_count": 72,
+            },
+        ):
+            data = app.create_nlp_category_batch(
+                {
+                    "project_id": project["id"],
+                    "source_type": "urls",
+                    "source_value": "https://example.com/pools\nhttps://example.com/service",
+                    "dry_run": True,
+                    "max_urls": 10,
+                },
+                run_async=False,
+            )
+
+        self.assertEqual(data["batch"]["status"], "complete")
+        self.assertEqual(data["batch"]["complete_count"], 2)
+        self.assertEqual(len(data["urls"]), 2)
+        self.assertTrue(data["categories"])
+        self.assertTrue(data["comparison"]["llm_comparison_ready"])
+        self.assertEqual(data["comparison"]["ready_url_count"], 2)
+        self.assertIn("Google Gemini", data["comparison"]["next_provider_slots"])
+        self.assertIn("/Home & Garden", {row["category"] for row in data["urls"]})
+        csv_bytes = app.nlp_category_export_csv(data["batch"]["id"])
+        self.assertIn("Primary Category", csv_bytes.decode("utf-8-sig"))
+
+    def test_nlp_url_list_filters_static_assets_before_queueing(self) -> None:
+        urls = app.parse_nlp_url_list(
+            "\n".join(
+                [
+                    "https://example.com/service",
+                    "https://example.com/wp-content/uploads/pool.jpg",
+                    "https://example.com/app.css?v=1",
+                    "https://example.com/download.pdf",
+                    "https://example.com/blog/",
+                ]
+            )
+        )
+
+        self.assertEqual(urls, ["https://example.com/service", "https://example.com/blog/"])
+
+    def test_nlp_sitemap_discovery_filters_static_assets_before_queueing(self) -> None:
+        sitemap = b"""<?xml version="1.0" encoding="UTF-8"?>
+        <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+          <url><loc>https://sandiegopools.com/blog/</loc></url>
+          <url><loc>https://sandiegopools.com/wp-content/uploads/2026/06/Modern-pool-consultation-with-coastal-view.png</loc></url>
+          <url><loc>https://sandiegopools.com/wp-content/uploads/2026/05/Do-In-Ground-Pools-Use-a-Lot-of-Electricity-scaled.jpeg</loc></url>
+          <url><loc>https://sandiegopools.com/how-much-does-a-new-pool-cost-in-san-diego/</loc></url>
+          <url><loc>https://sandiegopools.com/wp-content/uploads/brochure.pdf</loc></url>
+        </urlset>
+        """
+
+        with patch.object(app, "nlp_http_get", return_value=(sitemap, "application/xml")):
+            urls = app.discover_sitemap_urls("sitemap", "https://sandiegopools.com/sitemap.xml", 10, True)
+
+        self.assertEqual(
+            urls,
+            [
+                "https://sandiegopools.com/blog/",
+                "https://sandiegopools.com/how-much-does-a-new-pool-cost-in-san-diego/",
+            ],
+        )
+
+    def test_nlp_static_asset_row_is_skipped_without_fetching(self) -> None:
+        project = app.create_project("NLP Static Client", site_domain="sandiegopools.com")
+        now = "2026-06-08T10:30:00"
+        with app.connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO nlp_category_batches
+                (project_id, source_type, source_value, status, provider, target_count,
+                 complete_count, failed_count, skipped_count, max_urls, same_host_only, created_at, updated_at)
+                VALUES (?, 'domain', 'sandiegopools.com', 'running', 'Dry Run', 1, 0, 0, 0, 10, 1, ?, ?)
+                """,
+                (project["id"], now, now),
+            )
+            batch_id = int(cur.lastrowid)
+            url_cur = con.execute(
+                """
+                INSERT INTO nlp_category_urls
+                (batch_id, url, status, created_at, updated_at)
+                VALUES (?, 'https://sandiegopools.com/wp-content/uploads/pool.jpeg', 'queued', ?, ?)
+                """,
+                (batch_id, now, now),
+            )
+            row_id = int(url_cur.lastrowid)
+
+        with patch.object(app, "fetch_nlp_page_text", side_effect=AssertionError("static URL should not be fetched")) as fetch:
+            app.classify_nlp_url(row_id)
+
+        self.assertEqual(fetch.call_count, 0)
+        batch = app.refresh_nlp_category_batch_status(batch_id)
+        self.assertEqual(batch["status"], "complete")
+        self.assertEqual(batch["skipped_count"], 1)
+        data = app.get_nlp_category_batch(batch_id)
+        self.assertEqual(data["urls"][0]["status"], "skipped")
+        self.assertIn("Skipped static asset URL", data["urls"][0]["error"])
+
+    def test_nlp_hcu_impact_matches_pre_post_ranking_page_loss(self) -> None:
+        project = app.create_project("San Diego Pools", site_domain="sandiegopools.com")
+        url = "https://sandiegopools.com/how-much-does-a-new-pool-cost-in-san-diego/"
+        with app.connect() as con:
+            base = con.execute(
+                """
+                INSERT INTO ranking_snapshots
+                (project_id, target, location_code, language_code, limit_value, include_subdomains,
+                 overview_json, errors_json, source, freshness, created_at)
+                VALUES (?, 'sandiegopools.com', 2840, 'en', 100, 0, '{}', '{}', 'Test', 'manual', '2025-05-15T00:00:00')
+                """,
+                (project["id"],),
+            )
+            compare = con.execute(
+                """
+                INSERT INTO ranking_snapshots
+                (project_id, target, location_code, language_code, limit_value, include_subdomains,
+                 overview_json, errors_json, source, freshness, created_at)
+                VALUES (?, 'sandiegopools.com', 2840, 'en', 100, 0, '{}', '{}', 'Test', 'manual', '2025-07-15T00:00:00')
+                """,
+                (project["id"],),
+            )
+            for snapshot_id, traffic in [(int(base.lastrowid), 100), (int(compare.lastrowid), 20)]:
+                con.execute(
+                    """
+                    INSERT INTO ranking_snapshot_pages
+                    (snapshot_id, url, organic_keywords, organic_traffic, organic_traffic_cost,
+                     top1, top3, top10, top20, top100, paid_keywords, paid_traffic, created_at)
+                    VALUES (?, ?, 12, ?, 0, 0, 1, 4, 7, 12, 0, 0, '2025-07-15T00:00:00')
+                    """,
+                    (snapshot_id, url, traffic),
+                )
+
+        with patch.object(
+            app,
+            "fetch_nlp_page_text",
+            return_value={
+                "title": "How Much Does a New Pool Cost in San Diego?",
+                "text": "Pool cost pricing quote budget San Diego homeowner guide " * 12,
+                "word_count": 96,
+            },
+        ):
+            data = app.create_nlp_category_batch(
+                {
+                    "project_id": project["id"],
+                    "source_type": "urls",
+                    "source_value": url,
+                    "dry_run": True,
+                    "max_urls": 10,
+                },
+                run_async=False,
+            )
+
+        hcu = data["hcu_impact"]
+        self.assertEqual(hcu["snapshot_mode"], "pre_post")
+        self.assertEqual(hcu["summary"]["traffic_matched_urls"], 1)
+        self.assertEqual(hcu["summary"]["organic_traffic_delta"], -80)
+        self.assertEqual(hcu["urls"][0]["risk_level"], "high")
+        self.assertIn("post-impact organic traffic loss", hcu["urls"][0]["risk_reasons"])
+
+    def test_nlp_llm_comparison_run_saves_provider_results(self) -> None:
+        project = app.create_project("NLP LLM Client", site_domain="example.com")
+        key = app.create_api_key("OpenAI", "OpenAI Test", "sk-test-123456", default_model="gpt-5.4-mini")
+
+        with patch.object(
+            app,
+            "fetch_nlp_page_text",
+            return_value={
+                "title": "Pool service page",
+                "text": "Pool service company pricing quote content " * 12,
+                "word_count": 72,
+            },
+        ):
+            batch = app.create_nlp_category_batch(
+                {
+                    "project_id": project["id"],
+                    "source_type": "urls",
+                    "source_value": "https://example.com/pools\nhttps://example.com/service",
+                    "dry_run": True,
+                    "max_urls": 10,
+                },
+                run_async=False,
+            )
+
+        llm_response = json.dumps(
+            {
+                "category": "Service Page",
+                "page_type": "service",
+                "confidence": 0.91,
+                "explanation": "The URL and title indicate a commercial service page.",
+                "recommended_action": "Use it in the service page inventory.",
+            }
+        )
+        with patch.object(app, "call_llm_provider", return_value=llm_response) as call:
+            compared = app.create_nlp_llm_comparison_runs(
+                batch["batch"]["id"],
+                {"targets": [{"api_key_id": key["id"], "model": "gpt-5.4-mini"}], "taxonomy": "seo_page_type"},
+                run_async=False,
+            )
+
+        self.assertEqual(call.call_count, 2)
+        self.assertEqual(compared["comparison"]["run_count"], 1)
+        self.assertEqual(compared["comparison_runs"][0]["status"], "complete")
+        self.assertEqual(compared["comparison_runs"][0]["complete_count"], 2)
+        self.assertEqual(compared["comparison_results"][0]["llm_category"], "Service Page")
+        self.assertEqual(compared["urls"][0]["llm_results"][0]["page_type"], "service")
+        self.assertIn("OpenAI", compared["comparison"]["provider_columns"][1])
+
+    def test_nlp_llm_comparison_result_accepts_null_fields(self) -> None:
+        parsed = app.normalize_nlp_llm_comparison_result(
+            {
+                "category": None,
+                "page_type": None,
+                "confidence": None,
+                "explanation": None,
+                "recommended_action": None,
+            }
+        )
+
+        self.assertEqual(parsed["category"], "Uncategorized")
+        self.assertEqual(parsed["page_type"], "other")
+        self.assertEqual(parsed["confidence"], 0.0)
+        self.assertEqual(parsed["explanation"], "")
+        self.assertEqual(parsed["recommended_action"], "")
+
+    def test_nlp_categorizer_requires_google_key_without_dry_run(self) -> None:
+        project = app.create_project("NLP Key Client", site_domain="example.com")
+
+        with self.assertRaisesRegex(ValueError, "Google NLP API key"):
+            app.create_nlp_category_batch(
+                {
+                    "project_id": project["id"],
+                    "source_type": "urls",
+                    "source_value": "https://example.com/page",
+                    "dry_run": False,
+                },
+                run_async=False,
+            )
+
+    def test_nlp_categorizer_rejects_google_gemini_key(self) -> None:
+        project = app.create_project("NLP Gemini Client", site_domain="example.com")
+        key = app.create_api_key("Google Gemini", "Gemini", "AIza-gemini-test")
+
+        with self.assertRaisesRegex(ValueError, "Google NLP key"):
+            app.create_nlp_category_batch(
+                {
+                    "project_id": project["id"],
+                    "source_type": "urls",
+                    "source_value": "https://example.com/page",
+                    "api_key_id": key["id"],
+                    "dry_run": False,
+                },
+                run_async=False,
+            )
+
+    def test_nlp_cancel_survives_in_flight_row_completion(self) -> None:
+        project = app.create_project("NLP Cancel Client", site_domain="example.com")
+        now = "2026-06-11T10:00:00"
+        with app.connect() as con:
+            cur = con.execute(
+                """
+                INSERT INTO nlp_category_batches
+                (project_id, source_type, source_value, status, provider, target_count,
+                 complete_count, failed_count, skipped_count, max_urls, same_host_only, created_at, updated_at)
+                VALUES (?, 'urls', 'https://example.com/a', 'running', 'Dry Run', 2, 0, 0, 0, 10, 1, ?, ?)
+                """,
+                (project["id"], now, now),
+            )
+            batch_id = int(cur.lastrowid)
+            running_cur = con.execute(
+                "INSERT INTO nlp_category_urls (batch_id, url, status, created_at, updated_at) VALUES (?, 'https://example.com/a', 'running', ?, ?)",
+                (batch_id, now, now),
+            )
+            running_id = int(running_cur.lastrowid)
+            con.execute(
+                "INSERT INTO nlp_category_urls (batch_id, url, status, created_at, updated_at) VALUES (?, 'https://example.com/b', 'queued', ?, ?)",
+                (batch_id, now, now),
+            )
+
+        cancelled = app.cancel_nlp_category_batch(batch_id)
+        self.assertEqual(cancelled["batch"]["status"], "cancelled")
+
+        with app.connect() as con:
+            con.execute(
+                "UPDATE nlp_category_urls SET status = 'complete', category = '/Home & Garden', updated_at = ? WHERE id = ?",
+                (now, running_id),
+            )
+        batch = app.refresh_nlp_category_batch_status(batch_id)
+        self.assertEqual(batch["status"], "cancelled")
+
+        data = app.get_nlp_category_batch(batch_id)
+        self.assertEqual(data["batch"]["status"], "cancelled")
+        self.assertEqual(data["progress"]["cancelled"], 1)
+        self.assertEqual(data["progress"]["percent"], 100.0)
+
+    def test_hcu_local_terms_derive_from_project_not_hardcoded(self) -> None:
+        terms = app.hcu_local_terms({"name": "Indy Roofing Pros", "client": "", "site_domain": "www.indyroofing.com"})
+        self.assertIn("indy roofing", terms)
+        self.assertIn("indy-roofing", terms)
+        self.assertIn("indyroofing", terms)
+        self.assertNotIn("san diego", terms)
+
+        row = {
+            "url": "https://indyroofing.com/blog/roof-repair-cost/",
+            "title": "How Much Does Roof Repair Cost?",
+            "category": "/Home & Garden",
+            "word_count": 400,
+            "confidence": 0.9,
+        }
+        risk_without_terms = app.hcu_url_risk(dict(row))
+        self.assertNotIn("weak local specificity signal", risk_without_terms["reasons"])
+
+        risk_with_terms = app.hcu_url_risk(dict(row), None, terms)
+        self.assertIn("weak local specificity signal", risk_with_terms["reasons"])
+
+        localized = dict(row, title="How Much Does Roof Repair Cost in Indy Roofing Service Areas?")
+        risk_localized = app.hcu_url_risk(localized, None, terms)
+        self.assertNotIn("weak local specificity signal", risk_localized["reasons"])
+
+    def test_mutating_requests_reject_foreign_origin(self) -> None:
+        class FakeHandler:
+            def __init__(self, headers: dict[str, str]) -> None:
+                self.headers = headers
+
+        self.assertTrue(app.is_trusted_local_request(FakeHandler({})))
+        self.assertTrue(app.is_trusted_local_request(FakeHandler({"Origin": "http://127.0.0.1:9191", "Host": "127.0.0.1:9191"})))
+        self.assertTrue(app.is_trusted_local_request(FakeHandler({"Origin": "http://localhost:9191", "Host": "127.0.0.1:9191"})))
+        self.assertTrue(app.is_trusted_local_request(FakeHandler({"Origin": "http://192.168.1.50:9191", "Host": "192.168.1.50:9191"})))
+        self.assertFalse(app.is_trusted_local_request(FakeHandler({"Origin": "https://evil.example", "Host": "127.0.0.1:9191"})))
+        self.assertFalse(app.is_trusted_local_request(FakeHandler({"Origin": "null", "Host": "127.0.0.1:9191"})))
+
     def test_cloudflare_sync_dry_run_counts_local_tables(self) -> None:
         project = app.create_project("Example", site_domain="example.com")
         app.create_keyword(project["id"], "example keyword")
