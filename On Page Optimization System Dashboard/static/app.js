@@ -8,6 +8,11 @@ const state = {
   entityLsiRuns: [],
   entityLsiBatches: [],
   entitySets: [],
+  nlpCategoryBatches: [],
+  selectedNlpCategoryBatchId: null,
+  nlpCategoryProgressTimer: null,
+  nlpCategoryTab: "urls",
+  nlpComparisonFilter: "all",
   rankingSnapshots: [],
   rankingSnapshot: null,
   selectedRankingSnapshotId: null,
@@ -45,6 +50,7 @@ const state = {
   activeProfileId: "",
   jobTimer: null,
   coraStatus: null,
+  cloudRuntime: detectCloudRuntime(),
   coraLog: [],
   coraActivity: [],
   coraLiveLogKey: "",
@@ -62,6 +68,35 @@ const state = {
 
 const el = (id) => document.getElementById(id);
 const THEME_STORAGE_KEY = "opos.theme";
+const AUTH_TOKEN_STORAGE_KEY = "opos.cloudAuthToken";
+
+function detectCloudRuntime() {
+  const host = String(window.location.hostname || "").toLowerCase();
+  return Boolean(host && !["localhost", "127.0.0.1", "::1"].includes(host));
+}
+
+function isCloudRuntime() {
+  return Boolean(state.cloudRuntime || state.coraStatus?.cloud_mode);
+}
+
+function cloudCoraMessage() {
+  return "Cora desktop runs are local-only. In cloud, use the bridge-connected local dashboard for Cora and run cloud-capable NLP/LLM/API tools here.";
+}
+
+function applyRuntimeMode() {
+  const cloud = isCloudRuntime();
+  document.documentElement.dataset.runtime = cloud ? "cloud" : "local";
+  const importLatestButton = el("import-latest");
+  const forceStopButton = el("force-stop-cora");
+  if (importLatestButton) {
+    importLatestButton.disabled = cloud;
+    importLatestButton.title = cloud ? cloudCoraMessage() : "";
+  }
+  if (forceStopButton) {
+    forceStopButton.disabled = cloud;
+    forceStopButton.title = cloud ? cloudCoraMessage() : "";
+  }
+}
 
 function applyTheme(mode = "system") {
   const normalized = ["light", "dark", "system"].includes(mode) ? mode : "system";
@@ -98,15 +133,163 @@ function toast(message) {
 }
 
 async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  let token = "";
+  try {
+    token = isCloudRuntime() ? (localStorage.getItem(AUTH_TOKEN_STORAGE_KEY) || "") : "";
+  } catch (_err) {
+    token = "";
+  }
+  if (token && !headers.Authorization && !headers.authorization) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     ...options,
+    headers,
   });
   const data = await response.json();
   if (!response.ok) {
+    if (response.status === 401 && isCloudRuntime() && !path.startsWith("/api/auth/")) {
+      showCloudAuthGate();
+    }
     throw new Error(data.error || "Request failed");
   }
   return data;
+}
+
+function showCloudAuthGate(message = "Sign in to use the cloud dashboard.") {
+  if (!isCloudRuntime() || el("cloud-auth-gate")) return;
+  const gate = document.createElement("div");
+  gate.id = "cloud-auth-gate";
+  gate.className = "cloud-auth-gate";
+  gate.innerHTML = `
+    <div class="cloud-auth-panel">
+      <div class="panel-head">
+        <div>
+          <h2>Cloud Sign In</h2>
+          <p>${htmlEscape(message)}</p>
+        </div>
+      </div>
+      <div class="cloud-auth-grid">
+        <form id="cloud-token-form" class="cloud-auth-form">
+          <h3>Access Token</h3>
+          <label>
+            Cloud Token
+            <input id="cloud-auth-token" type="password" autocomplete="off" placeholder="Paste admin/write/read token">
+          </label>
+          <button type="submit">Use Token</button>
+          <div id="cloud-token-status" class="ai-test-result"></div>
+        </form>
+        <form id="cloud-email-form" class="cloud-auth-form">
+          <h3>Email Code</h3>
+          <label>
+            Email
+            <input id="cloud-auth-email" type="email" autocomplete="email" placeholder="you@example.com">
+          </label>
+          <button type="submit">Send Code</button>
+          <div id="cloud-email-status" class="ai-test-result"></div>
+          <div id="cloud-code-row" class="cloud-code-row hidden">
+            <label>
+              Code
+              <input id="cloud-auth-code" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code">
+            </label>
+            <button id="cloud-code-submit" type="button" class="secondary">Verify Code</button>
+          </div>
+        </form>
+      </div>
+      <p class="field-help">Creating clients and saving API keys requires a write or admin account/token.</p>
+    </div>
+  `;
+  document.body.appendChild(gate);
+  bindCloudAuthGate();
+}
+
+function closeCloudAuthGate() {
+  el("cloud-auth-gate")?.remove();
+}
+
+async function verifyCloudToken(token) {
+  const response = await fetch("/api/auth/me", {
+    credentials: "same-origin",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "Token was not accepted.");
+  return data;
+}
+
+function bindCloudAuthGate() {
+  el("cloud-token-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const status = el("cloud-token-status");
+    const token = el("cloud-auth-token")?.value.trim() || "";
+    if (!token) {
+      if (status) {
+        status.className = "ai-test-result error";
+        status.textContent = "Paste a cloud token.";
+      }
+      return;
+    }
+    try {
+      await verifyCloudToken(token);
+      localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+      closeCloudAuthGate();
+      window.location.reload();
+    } catch (err) {
+      if (status) {
+        status.className = "ai-test-result error";
+        status.textContent = err.message;
+      }
+    }
+  });
+  el("cloud-email-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const status = el("cloud-email-status");
+    const email = el("cloud-auth-email")?.value.trim() || "";
+    try {
+      const response = await fetch("/api/auth/request", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not request login code.");
+      if (status) {
+        status.className = "ai-test-result ok";
+        status.textContent = data.dev_code ? `Code generated: ${data.dev_code}` : (data.message || "If the account exists, a login code was sent.");
+      }
+      el("cloud-code-row")?.classList.remove("hidden");
+      if (data.dev_code && el("cloud-auth-code")) el("cloud-auth-code").value = data.dev_code;
+    } catch (err) {
+      if (status) {
+        status.className = "ai-test-result error";
+        status.textContent = err.message;
+      }
+    }
+  });
+  el("cloud-code-submit")?.addEventListener("click", async () => {
+    const status = el("cloud-email-status");
+    const email = el("cloud-auth-email")?.value.trim() || "";
+    const code = el("cloud-auth-code")?.value.trim() || "";
+    try {
+      const response = await fetch("/api/auth/verify", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || "Could not verify login code.");
+      try { localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY); } catch (_err) {}
+      closeCloudAuthGate();
+      window.location.reload();
+    } catch (err) {
+      if (status) {
+        status.className = "ai-test-result error";
+        status.textContent = err.message;
+      }
+    }
+  });
 }
 
 function fmtDate(value) {
@@ -268,6 +451,57 @@ function showEmpty() {
   el("run-detail").classList.add("hidden");
 }
 
+const MENU_GROUP_STORAGE_KEY = "opos.openMenuGroups";
+
+function readOpenMenuGroups() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(MENU_GROUP_STORAGE_KEY) || "[]"));
+  } catch (err) {
+    return new Set();
+  }
+}
+
+function saveOpenMenuGroups(openSet) {
+  try {
+    localStorage.setItem(MENU_GROUP_STORAGE_KEY, JSON.stringify([...openSet]));
+  } catch (err) {
+    /* storage unavailable */
+  }
+}
+
+function setMenuGroupOpen(group, open) {
+  group.classList.toggle("open", open);
+  group.querySelector(".menu-group-toggle")?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function syncMenuGroupsToActiveTab() {
+  const group = document.querySelector(".main-tab.active")?.closest(".menu-group");
+  if (!group || group.classList.contains("open")) return;
+  setMenuGroupOpen(group, true);
+  const openSet = readOpenMenuGroups();
+  openSet.add(group.dataset.group);
+  saveOpenMenuGroups(openSet);
+}
+
+function setupMenuGroups() {
+  const stored = readOpenMenuGroups();
+  document.querySelectorAll(".menu-group").forEach((group) => {
+    setMenuGroupOpen(group, stored.has(group.dataset.group));
+    group.querySelector(".menu-group-toggle")?.addEventListener("click", () => {
+      const open = !group.classList.contains("open");
+      setMenuGroupOpen(group, open);
+      const openSet = readOpenMenuGroups();
+      if (open) {
+        openSet.add(group.dataset.group);
+      } else {
+        openSet.delete(group.dataset.group);
+      }
+      saveOpenMenuGroups(openSet);
+    });
+  });
+  syncMenuGroupsToActiveTab();
+}
+
 function showMainView(viewId, options = {}) {
   state.activeView = viewId;
   document.querySelectorAll(".app-view").forEach((view) => view.classList.add("hidden"));
@@ -280,10 +514,12 @@ function showMainView(viewId, options = {}) {
   if (viewId === "ranking-targets-view") {
     document.querySelector(`.main-tab[data-view="ranking-snapshot-view"]`)?.classList.add("active");
   }
+  syncMenuGroupsToActiveTab();
   const isCora = viewId === "cora-view";
-  el("import-latest").classList.toggle("hidden", !isCora);
-  el("force-stop-cora").classList.toggle("hidden", !isCora);
+  el("import-latest").classList.toggle("hidden", !isCora || isCloudRuntime());
+  el("force-stop-cora").classList.toggle("hidden", !isCora || isCloudRuntime());
   el("cora-status").classList.toggle("hidden", !isCora);
+  applyRuntimeMode();
   if (viewId === "clients-view" && !options.skipClientSelect) {
     selectFirstClientIfNeeded().catch((err) => toast(err.message));
   }
@@ -333,6 +569,9 @@ function showMainView(viewId, options = {}) {
   if (viewId === "planner-view") {
     loadPlanner().catch((err) => toast(err.message));
   }
+  if (viewId === "nlp-categorizer-view") {
+    renderNlpCategorizerPage().catch((err) => toast(err.message));
+  }
   if (viewId === "api-keys-view") {
     loadApiKeys().catch((err) => toast(err.message));
   }
@@ -362,6 +601,9 @@ function refreshCurrentProfileView() {
   }
   if (state.activeView === "planner-view") {
     return loadPlanner();
+  }
+  if (state.activeView === "nlp-categorizer-view") {
+    return renderNlpCategorizerPage();
   }
   if (state.activeView === "entity-view") {
     return renderEntityExplorer();
@@ -398,9 +640,15 @@ async function showCoraSettings() {
 async function refreshCoraStatus() {
   const data = await api("/api/cora/status");
   state.coraStatus = data;
+  if (data.cloud_mode) state.cloudRuntime = true;
+  applyRuntimeMode();
   const status = el("cora-status");
   if (data.error) {
     status.textContent = "Cora API is not reachable.";
+    return;
+  }
+  if (isCloudRuntime()) {
+    status.innerHTML = `<span class="badge">cloud</span> ${htmlEscape(data.message || cloudCoraMessage())}`;
     return;
   }
   const running = data.running ? "running" : "idle";
@@ -1224,6 +1472,9 @@ async function selectClient(projectId) {
     await renderEntityBatchDetailPage();
   } else if (state.activeView === "entity-sets-view") {
     await renderEntitySetsPage();
+  } else if (state.activeView === "nlp-categorizer-view") {
+    state.selectedNlpCategoryBatchId = null;
+    await renderNlpCategorizerPage();
   } else if (state.activeView === "tools2-view") {
     await renderPlaceholderTool("tools2-tool-content", "Tools 2");
   } else if (state.activeView === "aeo-view") {
@@ -1330,6 +1581,10 @@ function updateClientToolState() {
 
 async function runSelectedClientTool(event, projectId, tool = "cora", profileSelectId = "tool-cora-profile", scope = document) {
   event.preventDefault();
+  if (tool === "cora" && isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const keywordIds = Array.from(scope.querySelectorAll(".tool-keyword-check:checked")).map((box) => Number(box.value));
   if (!keywordIds.length) {
     toast("Select one or more keywords.");
@@ -1459,8 +1714,10 @@ async function renderCoraTool() {
   const matchedProfile = project.profile_name || state.profiles.find((profile) => profile.name.toLowerCase() === project.name.toLowerCase())?.name || "";
   const attachedProfile = project.profile_name || "";
   const coraJobs = state.jobs.filter((job) => Number(job.project_id) === Number(project.id) && (job.tool || "cora") === "cora");
+  const cloud = isCloudRuntime();
   root.innerHTML = `
     <div class="cora-tool-page">
+      ${cloud ? `<div class="note-box">${htmlEscape(cloudCoraMessage())}</div>` : ""}
       <div id="cora-status-strip-slot">${coraToolStatusStrip(detail, coraJobs)}</div>
       <div class="cora-workspace">
         <section class="client-panel cora-run-panel">
@@ -1492,7 +1749,7 @@ async function renderCoraTool() {
             </div>
           </div>
           ${keywordChecklist(detail)}
-          <button id="tool-run-cora" type="button">Run Selected Keywords</button>
+          <button id="tool-run-cora" type="button"${cloud ? " disabled" : ""}>${cloud ? "Cora Local Bridge Only" : "Run Selected Keywords"}</button>
         </section>
         <aside class="cora-side-panel">
           <div id="cora-queue-summary-slot">${renderCoraQueueSummary(coraJobs)}</div>
@@ -2018,6 +2275,19 @@ function renderCoraQueueSummary(jobs) {
 
 function renderCoraHealthPanel(jobs) {
   const cora = state.coraStatus || {};
+  if (isCloudRuntime()) {
+    return `
+      <section id="cora-health-panel" class="cora-health-panel">
+        <div class="health-head">
+          <div>
+            <h3>Cora Health</h3>
+            <p>${htmlEscape(cloudCoraMessage())}</p>
+          </div>
+          <span class="health-badge warn">Local bridge</span>
+        </div>
+      </section>
+    `;
+  }
   const activeJobs = jobs.filter((job) => ["running", "submitting"].includes(job.status));
   const queuedJobs = jobs.filter((job) => job.status === "queued");
   const stalledJobs = activeJobs.filter((job) => job.stalled);
@@ -2093,6 +2363,7 @@ function renderCoraHealthPanel(jobs) {
 }
 
 function bindQueueControls() {
+  if (isCloudRuntime()) return;
   const toggle = el("queue-toggle");
   if (toggle) {
     toggle.addEventListener("click", async () => {
@@ -2307,6 +2578,10 @@ function savedLlmKeys() {
     const provider = (key.provider_key || "").toLowerCase();
     return ["openai", "anthropic", "google", "xai", "perplexity"].includes(provider);
   });
+}
+
+function savedGoogleNlpKeys() {
+  return state.apiKeys.filter((key) => (key.provider_key || "").toLowerCase() === "google_nlp");
 }
 
 function providerForKey(keyId) {
@@ -4948,12 +5223,1145 @@ async function createProject(event) {
   await selectProject(data.project.id);
 }
 
+async function loadNlpCategoryBatches(projectId) {
+  const data = await api(`/api/nlp-categorizer/batches?project_id=${encodeURIComponent(projectId)}`);
+  state.nlpCategoryBatches = data.batches || [];
+  if (state.selectedNlpCategoryBatchId && !state.nlpCategoryBatches.some((batch) => Number(batch.id) === Number(state.selectedNlpCategoryBatchId))) {
+    state.selectedNlpCategoryBatchId = null;
+  }
+}
+
+function defaultNlpSourceValue(detail) {
+  const urls = (detail.pages || []).map((page) => page.url).filter(Boolean);
+  if (urls.length) return urls.join("\n");
+  return clientMainUrl(detail);
+}
+
+function nlpProgressLabel(batch) {
+  if (!batch) return "";
+  const complete = Number(batch.complete_count || 0);
+  const failed = Number(batch.failed_count || 0);
+  const skipped = Number(batch.skipped_count || 0);
+  const total = Number(batch.target_count || 0);
+  return `${fmtNum(complete)} complete, ${fmtNum(failed)} failed, ${fmtNum(skipped)} skipped of ${fmtNum(total)}`;
+}
+
+function nlpHasRunningWork(data) {
+  return data?.batch?.status === "running" || (data?.comparison_runs || []).some((run) => ["queued", "running"].includes(run.status));
+}
+
+async function renderNlpCategorizerPage() {
+  const root = el("nlp-categorizer-content");
+  const detail = await currentClientDetail();
+  if (!detail) {
+    root.innerHTML = toolEmptyState("NLP Categorizer");
+    bindToolEmptyActions(root);
+    return;
+  }
+  await loadApiKeys(false);
+  await loadNlpCategoryBatches(detail.project.id);
+  const googleNlpKeys = savedGoogleNlpKeys();
+  const latestBatch = state.selectedNlpCategoryBatchId
+    ? state.nlpCategoryBatches.find((batch) => Number(batch.id) === Number(state.selectedNlpCategoryBatchId))
+    : state.nlpCategoryBatches[0];
+  root.innerHTML = `
+    <div class="client-tool-page nlp-categorizer-page">
+      ${clientToolContext(detail, "NLP Categorizer")}
+      <section class="client-panel nlp-categorizer-run-panel">
+        <div class="panel-head">
+          <div>
+            <h3>Classify URLs</h3>
+            <p>Run Google Natural Language categories against a capped URL set.</p>
+          </div>
+        </div>
+        <form id="nlp-categorizer-form" class="nlp-categorizer-form">
+          <label>
+            Source
+            <select id="nlp-source-type">
+              <option value="urls">URL list</option>
+              <option value="domain">Domain sitemap discovery</option>
+              <option value="sitemap">Manual sitemap URL</option>
+            </select>
+          </label>
+          <label>
+            Max URLs
+            <input id="nlp-max-urls" type="number" min="1" max="250" value="50">
+          </label>
+          <label>
+            Google NLP Key
+            <select id="nlp-api-key" ${googleNlpKeys.length ? "" : "disabled"}>
+              ${googleNlpKeys.length ? googleNlpKeys.map((key) => `<option value="${key.id}">${htmlEscape(key.label)} | ${htmlEscape(key.key_preview || "")}</option>`).join("") : `<option value="">Add a Google NLP key in Settings</option>`}
+            </select>
+          </label>
+          <label class="nlp-checkbox-label">
+            <input id="nlp-dry-run" type="checkbox">
+            <span>Dry run</span>
+          </label>
+          <label class="nlp-checkbox-label">
+            <input id="nlp-same-host" type="checkbox" checked>
+            <span>Same host only</span>
+          </label>
+          <label class="wide">
+            Source Value
+            <textarea id="nlp-source-value" spellcheck="false">${htmlEscape(defaultNlpSourceValue(detail))}</textarea>
+          </label>
+          <div class="nlp-categorizer-actions">
+            <button type="submit">Run Categorizer</button>
+            <button id="nlp-api-settings" type="button" class="secondary">API Providers</button>
+          </div>
+        </form>
+        <div id="nlp-categorizer-status" class="ai-test-result"></div>
+      </section>
+      <section class="client-panel nlp-categorizer-results-panel">
+        <div class="panel-head">
+          <div>
+            <h3>Analysis Workspace</h3>
+            <p>${latestBatch ? `${htmlEscape(latestBatch.source_type)} | ${nlpProgressLabel(latestBatch)}` : "No NLP category batch has been run for this client."}</p>
+          </div>
+        </div>
+        <div id="nlp-categorizer-results">${latestBatch ? renderNlpBatchSummaryCard(latestBatch) : `<div class="note-box">Run the categorizer to build a content category inventory.</div>`}</div>
+      </section>
+      <section class="client-panel nlp-categorizer-history-panel">
+        <div class="panel-head">
+          <h3>Saved NLP Batches</h3>
+          <button id="nlp-categorizer-refresh" type="button" class="secondary">Refresh</button>
+        </div>
+        <div id="nlp-categorizer-history">${renderNlpBatchHistory()}</div>
+      </section>
+    </div>
+  `;
+  bindNlpCategorizerPage(detail.project.id);
+}
+
+function bindNlpCategorizerPage(projectId) {
+  const sourceType = el("nlp-source-type");
+  const sourceValue = el("nlp-source-value");
+  sourceType?.addEventListener("change", () => {
+    if (sourceType.value === "domain") {
+      sourceValue.placeholder = "example.com";
+    } else if (sourceType.value === "sitemap") {
+      sourceValue.placeholder = "https://example.com/sitemap.xml";
+    } else {
+      sourceValue.placeholder = "https://example.com/page\nhttps://example.com/another-page";
+    }
+  });
+  el("nlp-api-settings")?.addEventListener("click", () => showMainView("api-keys-view"));
+  el("nlp-categorizer-refresh")?.addEventListener("click", () => renderNlpCategorizerPage().catch((err) => toast(err.message)));
+  el("nlp-categorizer-form")?.addEventListener("submit", (event) => runNlpCategorizer(event, projectId).catch((err) => {
+    el("nlp-categorizer-status").className = "ai-test-result error";
+    el("nlp-categorizer-status").textContent = err.message;
+    toast(err.message);
+  }));
+  bindNlpBatchOpenButtons();
+}
+
+function bindNlpBatchOpenButtons() {
+  document.querySelectorAll(".nlp-batch-open").forEach((button) => {
+    button.onclick = () => openNlpCategoryBatch(Number(button.dataset.batchId)).catch((err) => toast(err.message));
+  });
+  bindNlpBatchDeleteButtons();
+}
+
+function bindNlpBatchDeleteButtons() {
+  document.querySelectorAll(".nlp-batch-delete").forEach((button) => {
+    button.onclick = () => deleteNlpCategoryBatch(Number(button.dataset.batchId), Number(button.dataset.projectId || 0)).catch((err) => toast(err.message));
+  });
+}
+
+async function runNlpCategorizer(event, projectId) {
+  event.preventDefault();
+  const status = el("nlp-categorizer-status");
+  const button = event.submitter || el("nlp-categorizer-form")?.querySelector("button[type='submit']");
+  const dryRun = Boolean(el("nlp-dry-run")?.checked);
+  const payload = {
+    project_id: projectId,
+    source_type: el("nlp-source-type").value,
+    source_value: el("nlp-source-value").value.trim(),
+    max_urls: Number(el("nlp-max-urls").value || 50),
+    same_host_only: Boolean(el("nlp-same-host")?.checked),
+    dry_run: dryRun,
+    api_key_id: dryRun ? null : Number(el("nlp-api-key").value || 0),
+  };
+  if (!payload.source_value) {
+    toast("Source value is required.");
+    return;
+  }
+  if (!payload.dry_run && !payload.api_key_id) {
+    toast("Choose a Google NLP key or enable dry run.");
+    return;
+  }
+  if (button) button.disabled = true;
+  status.className = "ai-test-result";
+  status.textContent = "Discovering URLs and queueing categorization...";
+  try {
+    const data = await api("/api/nlp-categorizer/batches", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    state.selectedNlpCategoryBatchId = data.batch?.id;
+    await loadNlpCategoryBatches(projectId);
+    el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(data);
+    bindNlpBatchActions(data);
+    if (nlpHasRunningWork(data)) startNlpCategoryProgressPolling(data.batch.id, projectId);
+    toast("NLP categorizer batch queued.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderNlpBatchSummaryCard(batch) {
+  return `
+    <div class="nlp-batch-summary">
+      <div class="entity-result-summary">
+        <div>
+          <label>Status</label>
+          <strong>${htmlEscape(batch.status || "")}</strong>
+          <span>${nlpProgressLabel(batch)}</span>
+        </div>
+        <div>
+          <label>Source</label>
+          <strong>${htmlEscape(batch.source_type || "")}</strong>
+          <span title="${htmlEscape(batch.source_value || "")}">${htmlEscape(String(batch.source_value || "").slice(0, 80))}</span>
+        </div>
+        <div>
+          <label>Provider</label>
+          <strong>${htmlEscape(batch.provider || "")}</strong>
+          <span>${fmtDate(batch.created_at)}</span>
+        </div>
+      </div>
+      <div class="nlp-categorizer-actions">
+        <button type="button" class="secondary nlp-batch-open" data-batch-id="${batch.id}">Open Batch</button>
+        <a class="button-link" href="/api/nlp-categorizer/batches/${batch.id}/export">Export CSV</a>
+        <button type="button" class="danger nlp-batch-delete" data-batch-id="${batch.id}" data-project-id="${batch.project_id || ""}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderNlpBatchHistory() {
+  if (!state.nlpCategoryBatches.length) return `<div class="note-box">No saved NLP categorizer batches yet.</div>`;
+  return `
+    <div class="nlp-history-list">
+      ${state.nlpCategoryBatches.map((batch) => `
+        <article class="nlp-history-item">
+          <div>
+            <strong>${htmlEscape(batch.source_type)}</strong>
+            <small>${htmlEscape(String(batch.source_value || "").slice(0, 110))}</small>
+          </div>
+          <div>
+            <label>Provider</label>
+            <span>${htmlEscape(batch.provider || "")}</span>
+          </div>
+          <div>
+            <label>Progress</label>
+            <span>${nlpProgressLabel(batch)}</span>
+          </div>
+          <div>
+            <span class="status-pill ${batch.status === "complete" ? "imported" : (batch.status === "failed" ? "error" : (batch.status === "cancelled" ? "cancelled" : ""))}">${htmlEscape(batch.status || "")}</span>
+            <small>${fmtDate(batch.created_at)}</small>
+          </div>
+          <div class="row-actions">
+            <button type="button" class="secondary nlp-batch-open" data-batch-id="${batch.id}">Open</button>
+            <button type="button" class="danger nlp-batch-delete" data-batch-id="${batch.id}" data-project-id="${batch.project_id || ""}">Delete</button>
+          </div>
+        </article>
+      `).join("")}
+    </div>
+  `;
+}
+
+async function openNlpCategoryBatch(batchId) {
+  const data = await api(`/api/nlp-categorizer/batches/${batchId}`);
+  state.selectedNlpCategoryBatchId = batchId;
+  el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(data);
+  bindNlpBatchActions(data);
+  if (nlpHasRunningWork(data)) startNlpCategoryProgressPolling(batchId, data.batch.project_id);
+}
+
+function stopNlpCategoryProgressPolling() {
+  if (state.nlpCategoryProgressTimer) {
+    window.clearTimeout(state.nlpCategoryProgressTimer);
+    state.nlpCategoryProgressTimer = null;
+  }
+}
+
+async function deleteNlpCategoryBatch(batchId, projectId = 0) {
+  if (!batchId) return;
+  if (!window.confirm("Delete this saved NLP batch and all comparison results? This cannot be undone.")) return;
+  stopNlpCategoryProgressPolling();
+  await api(`/api/nlp-categorizer/batches/${batchId}`, { method: "DELETE" });
+  if (String(state.selectedNlpCategoryBatchId || "") === String(batchId)) {
+    state.selectedNlpCategoryBatchId = null;
+    const target = el("nlp-categorizer-results");
+    if (target) target.innerHTML = `<div class="note-box">NLP batch deleted.</div>`;
+  }
+  const activeProjectId = projectId || Number(el("active-client")?.value || 0);
+  if (activeProjectId) await loadNlpCategoryBatches(activeProjectId);
+  if (!state.nlpCategoryBatches.some((batch) => String(batch.id) === String(state.selectedNlpCategoryBatchId || ""))) {
+    state.selectedNlpCategoryBatchId = null;
+  }
+  const history = el("nlp-categorizer-history");
+  if (history) {
+    history.innerHTML = renderNlpBatchHistory();
+    bindNlpBatchOpenButtons();
+  }
+  toast("NLP batch deleted.");
+}
+
+function startNlpCategoryProgressPolling(batchId, projectId) {
+  stopNlpCategoryProgressPolling();
+  const tick = async () => {
+    const data = await api(`/api/nlp-categorizer/batches/${batchId}`);
+    const target = el("nlp-categorizer-results");
+    if (!target) {
+      stopNlpCategoryProgressPolling();
+      return;
+    }
+    target.innerHTML = renderNlpBatchDetail(data);
+    bindNlpBatchActions(data);
+    await loadNlpCategoryBatches(projectId);
+    const history = el("nlp-categorizer-history");
+    if (history) history.innerHTML = renderNlpBatchHistory();
+    bindNlpBatchOpenButtons();
+    if (nlpHasRunningWork(data)) {
+      state.nlpCategoryProgressTimer = window.setTimeout(() => tick().catch((err) => toast(err.message)), 2500);
+    } else {
+      stopNlpCategoryProgressPolling();
+      toast(`NLP categorizer finished: ${nlpProgressLabel(data.batch)}.`);
+    }
+  };
+  state.nlpCategoryProgressTimer = window.setTimeout(() => tick().catch((err) => toast(err.message)), 1200);
+}
+
+function renderNlpBatchDetail(data) {
+  const batch = data.batch || {};
+  const progress = data.progress || {};
+  const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
+  const activeTab = state.nlpCategoryTab || "urls";
+  return `
+    <div class="nlp-batch-detail">
+      <div class="entity-result-summary">
+        <div>
+          <label>Status</label>
+          <strong>${htmlEscape(batch.status || "")}</strong>
+          <span>${nlpProgressLabel(batch)}</span>
+        </div>
+        <div>
+          <label>Source</label>
+          <strong>${htmlEscape(batch.source_type || "")}</strong>
+          <span title="${htmlEscape(batch.source_value || "")}">${htmlEscape(String(batch.source_value || "").slice(0, 80))}</span>
+        </div>
+        <div>
+          <label>Provider</label>
+          <strong>${htmlEscape(batch.provider || "")}</strong>
+          <span>${fmtDate(batch.created_at)}</span>
+        </div>
+      </div>
+      <div class="entity-progress-bar" aria-label="NLP categorizer progress"><span style="width: ${percent}%"></span></div>
+      <div class="nlp-categorizer-actions">
+        ${batch.status === "running" ? `<button type="button" class="danger nlp-batch-cancel" data-batch-id="${batch.id}">Cancel</button>` : ""}
+        ${Number(batch.failed_count || 0) || Number(batch.skipped_count || 0) ? `<button type="button" class="secondary nlp-batch-retry" data-batch-id="${batch.id}">Retry Failed</button>` : ""}
+        <a class="button-link" href="/api/nlp-categorizer/batches/${batch.id}/export">Export CSV</a>
+        <button type="button" class="danger nlp-batch-delete" data-batch-id="${batch.id}" data-project-id="${batch.project_id || ""}">Delete Batch</button>
+      </div>
+      ${renderNlpAnalysisTabs(activeTab)}
+      <section class="nlp-analysis-tab-panel">
+        ${renderNlpAnalysisTabContent(data, activeTab)}
+      </section>
+    </div>
+  `;
+}
+
+function renderNlpAnalysisTabs(activeTab) {
+  const tabs = [
+    ["urls", "URL Results"],
+    ["distribution", "Category Distribution"],
+    ["comparison", "Comparison Matrix"],
+    ["hcu", "HCU Impact"],
+    ["review", "LLM/API Review"],
+    ["exports", "Exports"],
+  ];
+  return `<nav class="nlp-analysis-tabs" aria-label="NLP analysis views">${tabs.map(([key, label]) => `
+    <button type="button" class="nlp-analysis-tab ${activeTab === key ? "active" : ""}" data-nlp-tab="${key}">${htmlEscape(label)}</button>
+  `).join("")}</nav>`;
+}
+
+function renderNlpAnalysisTabContent(data, activeTab) {
+  if (activeTab === "distribution") return renderNlpCategoryDistribution(data.categories || []);
+  if (activeTab === "comparison") return renderNlpComparisonMatrix(data);
+  if (activeTab === "hcu") return renderNlpHcuImpact(data);
+  if (activeTab === "review") return renderNlpLlmReview(data);
+  if (activeTab === "exports") return renderNlpExports(data);
+  return `
+    <section class="nlp-url-results">
+      <div class="panel-head compact">
+        <h4>URL Results</h4>
+        <span class="muted">${fmtNum((data.urls || []).length)} URLs</span>
+      </div>
+      ${renderNlpUrlTable(data.urls || [])}
+    </section>
+  `;
+}
+
+function renderNlpCategoryDistribution(categories) {
+  return `
+    <section class="nlp-category-summary">
+      <div class="panel-head compact">
+        <h4>Category Distribution</h4>
+        <span class="muted">${fmtNum(categories.length)} categories</span>
+      </div>
+      ${categories.length ? table(["Category", "URLs", "Avg Confidence"], categories.map((item) => `
+        <tr>
+          <td><strong>${htmlEscape(item.category)}</strong></td>
+          <td>${fmtNum(item.count)}</td>
+          <td>${fmtNum(Number(item.avg_confidence || 0) * 100)}%</td>
+        </tr>
+      `)) : `<div class="note-box">No complete categories yet.</div>`}
+    </section>
+  `;
+}
+
+function renderNlpComparisonMatrix(data) {
+  const rows = (data.urls || []).filter((row) => row.status === "complete");
+  const comparison = data.comparison || {};
+  const runs = data.comparison_runs || [];
+  const taxonomySummary = nlpComparisonTaxonomySummary(runs);
+  const comparisonRows = buildNlpComparisonRows(rows, runs);
+  const filteredRows = comparisonRows.filter((item) => nlpComparisonFilterMatches(item, state.nlpComparisonFilter || "all"));
+  const reviewCount = comparisonRows.filter((item) => item.needsReview).length;
+  const failedCount = comparisonRows.reduce((sum, item) => sum + item.failedResults.length, 0);
+  const avgConfidence = comparisonRows.reduce((sum, item) => sum + item.avgConfidence, 0) / Math.max(1, comparisonRows.length);
+  return `
+    <section class="nlp-comparison-matrix">
+      <div class="panel-head compact">
+        <h4>Comparison Matrix</h4>
+        <span class="muted">${htmlEscape(comparison.baseline_provider || "Google NLP")} baseline with ${fmtNum(runs.length)} LLM/API pass${runs.length === 1 ? "" : "es"}${runs.length ? ` | ${htmlEscape(taxonomySummary.label)}` : ""}</span>
+      </div>
+      <div class="entity-result-summary">
+        <div><label>Provider Columns</label><strong>${fmtNum((comparison.provider_columns || []).length)}</strong><span>${htmlEscape((comparison.provider_columns || []).join(", ") || "Baseline")}</span></div>
+        <div><label>Taxonomy Used</label><strong>${htmlEscape(taxonomySummary.shortLabel)}</strong><span>${htmlEscape(taxonomySummary.detail)}</span></div>
+        <div><label>Consensus Ready</label><strong>${fmtNum(comparisonRows.length)}</strong><span>Complete URLs with comparison context</span></div>
+        <div><label>Needs Review</label><strong>${fmtNum(reviewCount)}</strong><span>LLM disagreement, low confidence, or provider errors</span></div>
+        <div><label>Avg LLM Confidence</label><strong>${fmtNum(avgConfidence * 100)}%</strong><span>Across completed provider rows</span></div>
+      </div>
+      ${runs.length ? renderNlpComparisonFilters(comparisonRows) : ""}
+      ${runs.length && filteredRows.length ? renderNlpConsensusCards(filteredRows, comparison.baseline_provider || "Google NLP") : ""}
+      ${runs.length && !filteredRows.length && rows.length ? `<div class="note-box">No URLs match the selected comparison filter.</div>` : ""}
+      ${failedCount ? renderNlpComparisonFailures(comparisonRows) : ""}
+      ${!runs.length && rows.length ? renderNlpCategoryRollup(rows) : ""}
+      ${!rows.length ? `<div class="note-box">No complete URL categories are available for comparison yet.</div>` : ""}
+      ${rows.length && !runs.length ? `<div class="note-box">Select LLM models in the LLM/API Review tab to add provider columns.</div>` : ""}
+    </section>
+  `;
+}
+
+function renderNlpHcuImpact(data) {
+  const hcu = data.hcu_impact || {};
+  const summary = hcu.summary || {};
+  const urls = hcu.urls || [];
+  const base = hcu.base_snapshot || {};
+  const compare = hcu.compare_snapshot || {};
+  const hasSnapshots = base.id && compare.id;
+  return `
+    <section class="nlp-hcu-impact">
+      <div class="panel-head compact">
+        <h4>HCU Impact</h4>
+        <span class="muted">Impact date: ${htmlEscape(hcu.impact_date || "2025-06-01")}</span>
+      </div>
+      <div class="note-box">
+        ${(hcu.notes || []).map(htmlEscape).join(" ")}
+      </div>
+      <div class="entity-result-summary">
+        <div><label>URLs Analyzed</label><strong>${fmtNum(summary.analyzed_urls || 0)}</strong><span>NLP-complete URLs in this batch</span></div>
+        <div><label>High Risk</label><strong>${fmtNum(summary.high_risk || 0)}</strong><span>Likely HCU/content-quality review targets</span></div>
+        <div><label>Medium Risk</label><strong>${fmtNum(summary.medium_risk || 0)}</strong><span>Needs review before rewrite decisions</span></div>
+        <div><label>Traffic Matched</label><strong>${fmtNum(summary.traffic_matched_urls || 0)}</strong><span>${hasSnapshots ? `${htmlEscape(snapshotOptionLabel(base))} -> ${htmlEscape(snapshotOptionLabel(compare))}` : "No snapshot pair matched"}</span></div>
+        <div><label>Traffic Delta</label><strong>${fmtNum(summary.organic_traffic_delta || 0)}</strong><span>Matched ranking snapshot page traffic</span></div>
+      </div>
+      <div class="nlp-hcu-rollups">
+        ${renderNlpHcuRollup("By Page Type", hcu.by_page_type || [])}
+        ${renderNlpHcuRollup("By Topic / Category", hcu.by_category || [])}
+      </div>
+      ${urls.length ? renderNlpHcuUrlCards(urls) : `<div class="note-box">No complete NLP URLs are available for HCU impact analysis yet.</div>`}
+    </section>
+  `;
+}
+
+function renderNlpHcuRollup(title, rows) {
+  if (!rows.length) return `<section class="nlp-hcu-rollup"><h5>${htmlEscape(title)}</h5><div class="note-box">No rollup data yet.</div></section>`;
+  return `
+    <section class="nlp-hcu-rollup">
+      <h5>${htmlEscape(title)}</h5>
+      <div class="nlp-hcu-rollup-list">
+        ${rows.slice(0, 8).map((row) => `
+          <article class="nlp-hcu-rollup-row">
+            <div>
+              <strong>${htmlEscape(nlpTitleCase(row.label || "Other"))}</strong>
+              <small>${fmtNum(row.count || 0)} URL${Number(row.count || 0) === 1 ? "" : "s"}</small>
+            </div>
+            <div>
+              <label>Avg Risk</label>
+              <span>${fmtNum(row.avg_risk || 0)}</span>
+            </div>
+            <div>
+              <label>High</label>
+              <span>${fmtNum(row.high_risk || 0)}</span>
+            </div>
+            <div>
+              <label>Traffic Delta</label>
+              <span class="${Number(row.traffic_delta || 0) < 0 ? "negative" : ""}">${fmtNum(row.traffic_delta || 0)}</span>
+            </div>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderNlpHcuUrlCards(urls) {
+  return `
+    <div class="nlp-hcu-url-list">
+      ${urls.slice(0, 30).map((row) => {
+        const traffic = row.traffic || {};
+        const levelClass = row.risk_level === "high" ? "error" : (row.risk_level === "medium" ? "warn" : "imported");
+        return `
+          <article class="nlp-hcu-url-card ${htmlEscape(row.risk_level || "")}">
+            <div class="nlp-hcu-url-main">
+              <strong>${htmlEscape(row.title || row.url || "Untitled URL")}</strong>
+              <a href="${htmlEscape(row.url || "#")}" target="_blank" rel="noopener">${htmlEscape(row.url || "")}</a>
+            </div>
+            <div>
+              <label>Risk</label>
+              <span class="status-pill ${levelClass}">${htmlEscape(nlpTitleCase(row.risk_level || "low"))} ${fmtNum(row.risk_score || 0)}</span>
+            </div>
+            <div>
+              <label>Page Type</label>
+              <span>${htmlEscape(nlpTitleCase(row.page_type || "other"))}</span>
+            </div>
+            <div>
+              <label>Category</label>
+              <span>${htmlEscape(row.category || "Uncategorized")}</span>
+            </div>
+            <div>
+              <label>Traffic Delta</label>
+              <span class="${Number(traffic.organicTrafficDelta || 0) < 0 ? "negative" : ""}">${traffic.organicTrafficDelta === null || traffic.organicTrafficDelta === undefined ? "n/a" : fmtNum(traffic.organicTrafficDelta)}</span>
+            </div>
+            <div class="nlp-hcu-reasons">
+              ${(row.risk_reasons || []).map((reason) => `<span>${htmlEscape(reason)}</span>`).join("")}
+            </div>
+            <p>${htmlEscape(row.recommended_action || "")}</p>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function nlpTaxonomyLabel(value) {
+  const taxonomy = String(value || "seo_page_type").trim();
+  if (taxonomy === "seo_page_type") return "SEO page type";
+  if (taxonomy === "google_like") return "Google-like topic";
+  if (taxonomy === "custom") return "Reusable content category";
+  return nlpTitleCase(taxonomy);
+}
+
+function nlpComparisonTaxonomySummary(runs) {
+  if (!runs.length) {
+    return {
+      shortLabel: "None",
+      label: "No taxonomy selected",
+      detail: "Run an LLM comparison to choose a taxonomy.",
+    };
+  }
+  const labels = Array.from(new Set(runs.map((run) => nlpTaxonomyLabel(run.taxonomy))));
+  if (labels.length === 1) {
+    return {
+      shortLabel: labels[0],
+      label: `Taxonomy: ${labels[0]}`,
+      detail: "All LLM/API passes used this taxonomy.",
+    };
+  }
+  return {
+    shortLabel: "Mixed",
+    label: `Mixed taxonomies: ${labels.join(", ")}`,
+    detail: labels.join(", "),
+  };
+}
+
+function buildNlpComparisonRows(rows, runs) {
+  return rows.map((row) => {
+    const resultByRun = (row.llm_results || []).reduce((acc, result) => {
+      acc[Number(result.comparison_run_id)] = result;
+      return acc;
+    }, {});
+    const runResults = runs.map((run) => ({ run, result: resultByRun[Number(run.id)] || null }));
+    const completeResults = runResults.filter((item) => item.result?.status === "complete");
+    const failedResults = runResults.filter((item) => item.result && item.result.status !== "complete" && item.result.status !== "queued");
+    const categoryVote = nlpVote(completeResults.map((item) => item.result.llm_category || "Uncategorized"));
+    const pageTypeVote = nlpVote(completeResults.map((item) => item.result.page_type || "other"));
+    const avgConfidence = completeResults.reduce((sum, item) => sum + Number(item.result.confidence || 0), 0) / Math.max(1, completeResults.length);
+    const pageTypeDisagreement = nlpDistinctNormalized(completeResults.map((item) => item.result.page_type || "other")).length > 1;
+    const categoryDisagreement = nlpDistinctNormalized(completeResults.map((item) => item.result.llm_category || "")).length > 1;
+    const agreementRatio = completeResults.length ? Math.max(categoryVote.count, pageTypeVote.count) / completeResults.length : 0;
+    const lowConfidence = avgConfidence < 0.65 || Number(row.confidence || 0) < 0.55;
+    const needsReview = !completeResults.length || failedResults.length > 0 || lowConfidence || pageTypeDisagreement || categoryDisagreement;
+    return {
+      row,
+      runResults,
+      completeResults,
+      failedResults,
+      category: categoryVote.value || "Uncategorized",
+      pageType: pageTypeVote.value || "other",
+      avgConfidence,
+      agreementRatio,
+      lowConfidence,
+      pageTypeDisagreement,
+      categoryDisagreement,
+      needsReview,
+    };
+  });
+}
+
+function nlpVote(values) {
+  const counts = {};
+  const labels = {};
+  values.forEach((value) => {
+    const label = String(value || "").trim() || "Uncategorized";
+    const key = label.toLowerCase();
+    counts[key] = (counts[key] || 0) + 1;
+    labels[key] = labels[key] || label;
+  });
+  const winner = Object.entries(counts).sort((a, b) => b[1] - a[1] || labels[a[0]].localeCompare(labels[b[0]]))[0];
+  return winner ? { value: labels[winner[0]], count: winner[1] } : { value: "", count: 0 };
+}
+
+function nlpDistinctNormalized(values) {
+  return Array.from(new Set(values.map((value) => String(value || "").trim().toLowerCase()).filter(Boolean)));
+}
+
+function nlpComparisonFilterMatches(item, filter) {
+  if (filter === "review") return item.needsReview;
+  if (filter === "low-confidence") return item.lowConfidence;
+  if (filter === "disagreement") return item.pageTypeDisagreement || item.categoryDisagreement;
+  if (filter === "failed") return item.failedResults.length > 0;
+  if (filter === "homepage") return String(item.pageType || "").toLowerCase() === "homepage";
+  if (filter === "service") return String(item.pageType || "").toLowerCase() === "service";
+  return true;
+}
+
+function renderNlpComparisonFilters(items) {
+  const filters = [
+    ["all", "All", items.length],
+    ["review", "Review", items.filter((item) => item.needsReview).length],
+    ["low-confidence", "Low Confidence", items.filter((item) => item.lowConfidence).length],
+    ["disagreement", "LLM Disagreement", items.filter((item) => item.pageTypeDisagreement || item.categoryDisagreement).length],
+    ["failed", "Failed Providers", items.filter((item) => item.failedResults.length).length],
+    ["homepage", "Homepage", items.filter((item) => String(item.pageType || "").toLowerCase() === "homepage").length],
+    ["service", "Service Pages", items.filter((item) => String(item.pageType || "").toLowerCase() === "service").length],
+  ];
+  const active = state.nlpComparisonFilter || "all";
+  return `
+    <div class="nlp-comparison-filters" aria-label="NLP comparison filters">
+      ${filters.map(([key, label, count]) => `
+        <button type="button" class="nlp-comparison-filter ${active === key ? "active" : ""}" data-nlp-filter="${key}">
+          ${htmlEscape(label)} <span>${fmtNum(count)}</span>
+        </button>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderNlpConsensusCards(items, baselineProvider) {
+  return `
+    <div class="nlp-comparison-card-list">
+      ${items.map((item) => renderNlpConsensusCard(item, baselineProvider)).join("")}
+    </div>
+  `;
+}
+
+function renderNlpConsensusCard(item, baselineProvider) {
+  const row = item.row;
+  const reviewReasons = nlpReviewReasons(item);
+  const confidenceLabel = `${fmtNum(item.avgConfidence * 100)}%`;
+  const baselineConfidence = row.confidence === null || row.confidence === undefined ? "" : `${fmtNum(Number(row.confidence) * 100)}%`;
+  return `
+    <article class="nlp-comparison-card ${item.needsReview ? "needs-review" : ""}">
+      <div class="nlp-comparison-card-head">
+        <div class="nlp-comparison-title">
+          <strong>${htmlEscape(row.title || row.url || "Untitled URL")}</strong>
+          <a href="${htmlEscape(row.url || "#")}" target="_blank" rel="noopener">${htmlEscape(row.url || "")}</a>
+        </div>
+        <div class="nlp-comparison-verdict">
+          ${item.needsReview ? `<span class="status-pill error">Review</span>` : `<span class="status-pill imported">Consensus</span>`}
+          <span class="nlp-score">${confidenceLabel}</span>
+        </div>
+      </div>
+
+      <div class="nlp-consensus-hero">
+        <div>
+          <label>Recommended Category</label>
+          <strong>${htmlEscape(item.category)}</strong>
+        </div>
+        <div>
+          <label>Page Type</label>
+          <strong>${htmlEscape(nlpTitleCase(item.pageType))}</strong>
+        </div>
+        <div>
+          <label>Provider Agreement</label>
+          <strong>${fmtNum(item.completeResults.length)} / ${fmtNum(item.runResults.length)}</strong>
+        </div>
+      </div>
+
+      ${reviewReasons.length ? `<div class="nlp-review-reasons">${reviewReasons.map((reason) => `<span>${htmlEscape(reason)}</span>`).join("")}</div>` : ""}
+
+      <div class="nlp-card-panels">
+        <section>
+          <label>${htmlEscape(baselineProvider)}</label>
+          <strong>${htmlEscape(row.category || "Uncategorized")}</strong>
+          <span>${baselineConfidence ? `${baselineConfidence} confidence` : "No confidence score"}</span>
+        </section>
+        <section>
+          <label>LLM/API Summary</label>
+          ${renderNlpProviderSummary(item)}
+        </section>
+        <section>
+          <label>Next Action</label>
+          <span>${htmlEscape(nlpRecommendedAction(item))}</span>
+        </section>
+      </div>
+
+      ${renderNlpProviderDetails(item)}
+    </article>
+  `;
+}
+
+function nlpReviewReasons(item) {
+  const reasons = [];
+  if (!item.completeResults.length) reasons.push("no completed LLM rows");
+  if (item.failedResults.length) reasons.push(`${fmtNum(item.failedResults.length)} provider error${item.failedResults.length === 1 ? "" : "s"}`);
+  if (item.lowConfidence) reasons.push("low confidence");
+  if (item.pageTypeDisagreement) reasons.push("page type disagreement");
+  if (item.categoryDisagreement) reasons.push("category disagreement");
+  return reasons;
+}
+
+function renderNlpProviderDetails(item) {
+  const detailRows = item.runResults.map(({ run, result }) => {
+    if (!result) {
+      return `
+        <article class="nlp-provider-detail-card">
+          <strong>${htmlEscape(nlpRunLabel(run))}</strong>
+          <div>
+            <label>Taxonomy</label>
+            <span>${htmlEscape(nlpTaxonomyLabel(run.taxonomy))}</span>
+          </div>
+          <span class="status-pill">Queued</span>
+        </article>
+      `;
+    }
+    if (result.status !== "complete") {
+      return `
+        <article class="nlp-provider-detail-card">
+          <strong>${htmlEscape(nlpRunLabel(run))}</strong>
+          <div>
+            <label>Taxonomy</label>
+            <span>${htmlEscape(nlpTaxonomyLabel(run.taxonomy))}</span>
+          </div>
+          <span class="status-pill error">${htmlEscape(result.status || "failed")}</span>
+          <p>${htmlEscape(compactProviderError(result.error || "", 220))}</p>
+        </article>
+      `;
+    }
+    return `
+      <article class="nlp-provider-detail-card">
+        <div>
+          <strong>${htmlEscape(nlpRunLabel(run))}</strong>
+          <small>${htmlEscape(nlpTitleCase(result.page_type || "other"))} | ${fmtNum(Number(result.confidence || 0) * 100)}%</small>
+        </div>
+        <div>
+          <label>Taxonomy</label>
+          <span>${htmlEscape(nlpTaxonomyLabel(run.taxonomy))}</span>
+        </div>
+        <div>
+          <label>Output</label>
+          <span>${htmlEscape(result.llm_category || "Uncategorized")}</span>
+        </div>
+        ${result.explanation ? `<div><label>Reason</label><p>${htmlEscape(result.explanation || "")}</p></div>` : ""}
+        ${result.recommended_action ? `<div><label>Action</label><p>${htmlEscape(result.recommended_action || "")}</p></div>` : ""}
+      </article>
+    `;
+  }).join("");
+  return `
+    <details class="nlp-provider-details">
+      <summary>Provider details</summary>
+      <div class="nlp-provider-detail-list">${detailRows}</div>
+    </details>
+  `;
+}
+
+function renderNlpProviderSummary(item) {
+  const summary = item.completeResults.map(({ run, result }) => `
+    <span class="nlp-provider-chip ${Number(result.confidence || 0) < 0.6 ? "warn" : ""}">
+      ${htmlEscape(run.provider || "LLM")}: ${htmlEscape(nlpTitleCase(result.page_type || "other"))} / ${fmtNum(Number(result.confidence || 0) * 100)}%
+    </span>
+  `).join("");
+  const failed = item.failedResults.map(({ run, result }) => `
+    <span class="nlp-provider-chip error">${htmlEscape(run.provider || "LLM")}: ${htmlEscape(result.status || "failed")}</span>
+  `).join("");
+  return `<div class="nlp-provider-summary">${summary}${failed || ""}</div>`;
+}
+
+function nlpRecommendedAction(item) {
+  const actions = item.completeResults
+    .map(({ result }) => result.recommended_action || "")
+    .filter(Boolean);
+  if (actions.length) return actions[0];
+  if (item.needsReview) return "Review this row before using it in reporting or planning.";
+  return "Use the consensus output as the recommended classification.";
+}
+
+function nlpTitleCase(value) {
+  return String(value || "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function renderNlpComparisonFailures(items) {
+  const failures = items.flatMap((item) => item.failedResults.map(({ run, result }) => ({ item, run, result })));
+  if (!failures.length) return "";
+  return `
+    <section class="nlp-comparison-failures">
+      <div class="panel-head compact">
+        <h4>Provider Errors</h4>
+        <span class="muted">${fmtNum(failures.length)} failed or incomplete provider rows</span>
+      </div>
+      <div class="nlp-provider-error-list">
+        ${failures.map(({ item, run, result }) => `
+          <article class="nlp-provider-error-card">
+            <div>
+              <strong>${htmlEscape(item.row.title || item.row.url || "")}</strong>
+              <small>${htmlEscape(item.row.url || "")}</small>
+            </div>
+            <div>
+              <label>Provider</label>
+              <span>${htmlEscape(nlpRunLabel(run))}</span>
+            </div>
+            <span class="status-pill error">${htmlEscape(result.status || "failed")}</span>
+            <p>${htmlEscape(compactProviderError(result.error || "", 260))}</p>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderNlpCategoryRollup(rows) {
+  const grouped = rows.reduce((acc, row) => {
+    const key = row.category || "Uncategorized";
+    acc[key] = acc[key] || [];
+    acc[key].push(row);
+    return acc;
+  }, {});
+  const rollupRows = Object.entries(grouped)
+    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+    .map(([category, items]) => {
+      const avgConfidence = items.reduce((sum, row) => sum + Number(row.confidence || 0), 0) / Math.max(1, items.length);
+      const weak = items.filter((row) => Number(row.confidence || 0) < 0.55).length;
+      return `
+        <tr>
+          <td><strong>${htmlEscape(category)}</strong></td>
+          <td>${fmtNum(items.length)}</td>
+          <td>${fmtNum(avgConfidence * 100)}%</td>
+          <td>${weak ? `<span class="status-pill error">${fmtNum(weak)} review</span>` : `<span class="status-pill imported">Aligned</span>`}</td>
+          <td>${htmlEscape(items.slice(0, 3).map((row) => row.title || row.url).join(", "))}</td>
+        </tr>
+      `;
+    });
+  return table(["Baseline Category", "URLs", "Avg Confidence", "Review Signal", "Examples"], rollupRows);
+}
+
+function nlpRunLabel(run) {
+  return `${run.provider || "LLM"} (${run.model || "Default"})`;
+}
+
+function renderNlpComparisonCell(result, baselineRow) {
+  if (!result) return `<td><span class="status-pill">Queued</span></td>`;
+  if (result.status !== "complete") {
+    return `<td><span class="status-pill ${result.status === "failed" ? "error" : ""}">${htmlEscape(result.status || "queued")}</span><br><small>${htmlEscape(compactProviderError(result.error || "", 120))}</small></td>`;
+  }
+  const confidence = result.confidence === null || result.confidence === undefined ? "" : `${fmtNum(Number(result.confidence) * 100)}%`;
+  const baseline = String(baselineRow.category || "").toLowerCase();
+  const llmCategory = String(result.llm_category || "").toLowerCase();
+  const needsReview = Number(result.confidence || 0) < 0.6 || (baseline && llmCategory && baseline !== llmCategory);
+  return `
+    <td>
+      <strong>${htmlEscape(result.llm_category || "Uncategorized")}</strong>
+      <br><small>${htmlEscape(result.page_type || "other")} ${confidence ? `| ${confidence}` : ""}</small>
+      <br>${needsReview ? `<span class="status-pill error">Review</span>` : `<span class="status-pill imported">Aligned</span>`}
+      ${result.explanation ? `<br><small>${htmlEscape(result.explanation)}</small>` : ""}
+    </td>
+  `;
+}
+
+function renderNlpComparisonRunCards(runs) {
+  if (!runs.length) return `<div class="note-box">No LLM comparison runs have been created for this batch yet.</div>`;
+  return `
+    <div class="nlp-run-card-list">
+      ${runs.map((run) => {
+        const statusClass = run.status === "complete" ? "imported" : (run.status === "failed" ? "error" : "");
+        return `
+          <article class="nlp-run-card">
+            <div class="nlp-run-card-main">
+              <strong>${htmlEscape(run.provider || "LLM")}</strong>
+              <small>${htmlEscape(run.model || "Default model")}</small>
+            </div>
+            <div>
+              <label>Taxonomy</label>
+              <span>${htmlEscape(run.taxonomy || "seo_page_type")}</span>
+            </div>
+            <div>
+              <label>Status</label>
+              <span class="status-pill ${statusClass}">${htmlEscape(run.status || "queued")}</span>
+            </div>
+            <div>
+              <label>Progress</label>
+              <span>${fmtNum(run.complete_count || 0)} / ${fmtNum(run.target_count || 0)}</span>
+            </div>
+            ${run.error ? `<div class="nlp-run-card-error"><label>Error</label><span>${htmlEscape(compactProviderError(run.error || "", 180))}</span></div>` : ""}
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderNlpLlmReview(data) {
+  const complete = (data.urls || []).filter((row) => row.status === "complete").length;
+  const comparison = data.comparison || {};
+  const modelTargets = entityModelTargets();
+  const runs = data.comparison_runs || [];
+  const selectedModels = modelTargets.filter((target) => target.selected).length;
+  return `
+    <section class="nlp-llm-review">
+      <div class="panel-head compact">
+        <h4>LLM/API Review</h4>
+        <span class="muted">${fmtNum(complete)} categorized URLs ready for custom taxonomy review</span>
+      </div>
+      <div class="nlp-review-grid">
+        <form id="nlp-llm-comparison-form" class="nlp-llm-comparison-form">
+          <details class="nlp-model-selection" open>
+            <summary>
+              <span>
+                <strong>LLM Selection</strong>
+                <small>${fmtNum(modelTargets.length)} available models, ${fmtNum(selectedModels)} selected by default</small>
+              </span>
+              <span class="nlp-model-selection-cue">Models</span>
+            </summary>
+            <div class="nlp-model-selection-body">
+              <div class="entity-model-picker-head">
+                <label>Models</label>
+                <div class="entity-model-actions">
+                  <button id="nlp-model-select-defaults" type="button" class="secondary">Defaults</button>
+                  <button id="nlp-model-clear" type="button" class="secondary">Clear</button>
+                </div>
+              </div>
+              ${renderEntityModelPicker(modelTargets)}
+            </div>
+          </details>
+          <div class="nlp-llm-control-row">
+            <label>
+              Taxonomy
+              <select id="nlp-llm-taxonomy">
+                <option value="seo_page_type">SEO page type</option>
+                <option value="google_like">Google-like topic</option>
+                <option value="custom">Reusable content category</option>
+              </select>
+            </label>
+            <div class="nlp-categorizer-actions">
+              <button type="submit" ${complete && modelTargets.length ? "" : "disabled"}>Run LLM Comparison</button>
+              <button id="nlp-llm-settings" type="button" class="secondary">API Providers</button>
+            </div>
+          </div>
+          <div id="nlp-llm-comparison-status" class="ai-test-result"></div>
+        </form>
+        <div class="nlp-review-run-panel">
+          <div class="note-box">Compare ${htmlEscape(comparison.baseline_provider || "Google NLP")} against ${(comparison.next_provider_slots || ["OpenAI", "Anthropic", "Google Gemini", "xAI", "Perplexity"]).map(htmlEscape).join(", ")}. Select one or more saved LLM models, then run the comparison to add provider columns to the matrix.</div>
+          ${renderNlpComparisonRunCards(runs)}
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function renderNlpExports(data) {
+  const batch = data.batch || {};
+  return `
+    <section class="nlp-export-panel">
+      <div class="panel-head compact">
+        <h4>Exports</h4>
+        <span class="muted">Batch ${htmlEscape(batch.id || "")}</span>
+      </div>
+      <div class="nlp-export-actions">
+        <a class="button-link" href="/api/nlp-categorizer/batches/${batch.id}/export">Download CSV</a>
+        <button type="button" class="secondary" disabled>Provider Comparison Export</button>
+        <button type="button" class="secondary" disabled>Report Attachment</button>
+      </div>
+    </section>
+  `;
+}
+
+function renderNlpUrlTable(rows) {
+  if (!rows.length) return `<div class="note-box">No URLs were queued.</div>`;
+  return `
+    <div class="nlp-url-card-list">
+      ${rows.map((row) => {
+        const statusClass = row.status === "complete" ? "imported" : (row.status === "failed" ? "error" : (row.status === "cancelled" ? "cancelled" : ""));
+        const confidence = row.confidence === null || row.confidence === undefined ? "" : `${fmtNum(Number(row.confidence) * 100)}%`;
+        return `
+          <article class="nlp-url-card">
+            <div class="nlp-url-card-main">
+              <strong>${htmlEscape(row.title || row.url || "Untitled URL")}</strong>
+              <a href="${htmlEscape(row.url || "#")}" target="_blank" rel="noopener">${htmlEscape(row.url || "")}</a>
+            </div>
+            <div>
+              <label>Status</label>
+              <span class="status-pill ${statusClass}">${htmlEscape(row.status || "")}</span>
+            </div>
+            <div>
+              <label>Primary Category</label>
+              <span>${htmlEscape(row.category || "Uncategorized")}</span>
+            </div>
+            <div>
+              <label>Confidence</label>
+              <strong>${htmlEscape(confidence || "n/a")}</strong>
+            </div>
+            <div>
+              <label>Words</label>
+              <strong>${fmtNum(row.word_count || 0)}</strong>
+            </div>
+            ${row.error ? `<div class="nlp-url-card-error"><label>Error</label><span>${htmlEscape(compactProviderError(row.error || "", 180))}</span></div>` : ""}
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function bindNlpBatchActions(data) {
+  document.querySelectorAll(".nlp-analysis-tab").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.nlpCategoryTab = button.dataset.nlpTab || "urls";
+      el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(data);
+      bindNlpBatchActions(data);
+    });
+  });
+  document.querySelectorAll(".nlp-comparison-filter").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.nlpComparisonFilter = button.dataset.nlpFilter || "all";
+      el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(data);
+      bindNlpBatchActions(data);
+    });
+  });
+  document.querySelectorAll(".nlp-batch-cancel").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Cancelling...";
+      const result = await api(`/api/nlp-categorizer/batches/${button.dataset.batchId}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(result);
+      bindNlpBatchActions(result);
+      toast("NLP categorizer batch cancelled.");
+    });
+  });
+  document.querySelectorAll(".nlp-batch-retry").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      button.textContent = "Retrying...";
+      const result = await api(`/api/nlp-categorizer/batches/${button.dataset.batchId}/retry-failed`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(result);
+      bindNlpBatchActions(result);
+      if (nlpHasRunningWork(result)) startNlpCategoryProgressPolling(result.batch.id, result.batch.project_id);
+      toast("Failed NLP URLs requeued.");
+    });
+  });
+  bindNlpBatchDeleteButtons();
+  el("nlp-model-select-defaults")?.addEventListener("click", () => {
+    const defaults = new Set(entityModelTargets().filter((target) => target.selected).map((target) => `${target.api_key_id}::${target.model}`));
+    document.querySelectorAll(".nlp-llm-review .entity-model-check").forEach((box) => { box.checked = defaults.has(box.value); });
+  });
+  el("nlp-model-clear")?.addEventListener("click", () => {
+    document.querySelectorAll(".nlp-llm-review .entity-model-check").forEach((box) => { box.checked = false; });
+  });
+  document.querySelectorAll(".nlp-llm-review .entity-provider-toggle").forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = button.closest(".entity-model-provider");
+      const boxes = Array.from(panel?.querySelectorAll(".entity-model-check") || []);
+      const shouldCheck = boxes.some((box) => !box.checked);
+      boxes.forEach((box) => { box.checked = shouldCheck; });
+    });
+  });
+  el("nlp-llm-settings")?.addEventListener("click", () => showMainView("api-keys-view"));
+  el("nlp-llm-comparison-form")?.addEventListener("submit", (event) => runNlpLlmComparison(event, data.batch?.id).catch((err) => {
+    const status = el("nlp-llm-comparison-status");
+    if (status) {
+      status.className = "ai-test-result error";
+      status.textContent = err.message;
+    }
+    toast(err.message);
+  }));
+  if (!nlpHasRunningWork(data)) {
+    stopNlpCategoryProgressPolling();
+  }
+}
+
+async function runNlpLlmComparison(event, batchId) {
+  event.preventDefault();
+  if (!batchId) return;
+  const status = el("nlp-llm-comparison-status");
+  const button = event.submitter || el("nlp-llm-comparison-form")?.querySelector("button[type='submit']");
+  const targets = Array.from(document.querySelectorAll(".nlp-llm-review .entity-model-check:checked")).map((box) => ({
+    api_key_id: Number(box.dataset.apiKeyId || 0),
+    model: box.dataset.model || "",
+  }));
+  if (!targets.length) {
+    toast("Choose at least one LLM model.");
+    return;
+  }
+  if (button) button.disabled = true;
+  if (status) {
+    status.className = "ai-test-result";
+    status.textContent = "Queueing LLM comparison runs...";
+  }
+  try {
+    const result = await api(`/api/nlp-categorizer/batches/${batchId}/llm-comparison`, {
+      method: "POST",
+      body: JSON.stringify({
+        targets,
+        taxonomy: el("nlp-llm-taxonomy")?.value || "seo_page_type",
+      }),
+    });
+    state.nlpCategoryTab = "comparison";
+    el("nlp-categorizer-results").innerHTML = renderNlpBatchDetail(result);
+    bindNlpBatchActions(result);
+    if (nlpHasRunningWork(result)) startNlpCategoryProgressPolling(result.batch.id, result.batch.project_id);
+    toast("LLM comparison queued.");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
 function renderApiKeys() {
   const root = el("api-keys");
   const providers = state.aiProviders.length ? state.aiProviders : [
     { key: "openai", name: "OpenAI", placeholder: "sk-...", base_url: "https://api.openai.com", default_model: "gpt-5.5", models: ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"] },
     { key: "anthropic", name: "Anthropic", placeholder: "sk-ant-...", base_url: "https://api.anthropic.com", default_model: "claude-opus-4-8", models: ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"] },
-    { key: "google", name: "Google", placeholder: "AIza...", base_url: "https://generativelanguage.googleapis.com", default_model: "gemini-3.5-flash", models: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-latest"] },
+    { key: "google", name: "Google Gemini", placeholder: "AIza...", base_url: "https://generativelanguage.googleapis.com", default_model: "gemini-3.5-flash", models: ["gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview", "gemini-3.1-flash-lite", "gemini-flash-latest"] },
+    { key: "google_nlp", name: "Google NLP", placeholder: "AIza...", base_url: "https://language.googleapis.com", default_model: "classifyText-v2", models: [] },
     { key: "xai", name: "xAI / Grok", placeholder: "xai-...", base_url: "https://api.x.ai", default_model: "grok-4.3", models: ["grok-4.3", "grok-4.3-latest", "grok-latest", "grok-build-0.1", "grok-code-fast"] },
     { key: "perplexity", name: "Perplexity", placeholder: "pplx-...", base_url: "https://api.perplexity.ai", default_model: "perplexity/sonar", models: ["perplexity/sonar", "openai/gpt-5.4", "anthropic/claude-sonnet-4-6", "xai/grok-4.3", "xai/grok-4.20-reasoning", "xai/grok-4.20-non-reasoning", "xai/grok-4.20-multi-agent"] },
     { key: "dataforseo", name: "DataForSEO", placeholder: "API password", login_placeholder: "api-login@example.com", base_url: "https://api.dataforseo.com", default_model: "", models: [], auth_type: "basic", test_path: "/v3/appendix/user_data" },
@@ -5044,12 +6452,18 @@ function renderAiProviderCard(provider) {
 
 function renderSavedAiKey(key) {
   const status = key.status || "untested";
+  const keyMeta = key.pseudo || key.key_length === null || key.key_length === undefined
+    ? "Configured in Cloudflare"
+    : `${fmtNum(key.key_length)} chars`;
+  const testedLabel = key.last_tested_at
+    ? (key.last_tested_at === "configured" ? "Configured in Cloudflare" : `Tested ${fmtDate(key.last_tested_at)}`)
+    : "Not tested yet";
   return `
     <div class="ai-saved-key" data-key-id="${key.id}">
       <div>
         <strong>${htmlEscape(key.label)}</strong>
-        <span class="key-preview">${htmlEscape(key.key_preview)} <span class="muted">(${fmtNum(key.key_length)} chars)</span></span>
-        <small>${htmlEscape(key.default_model || "No default model")} | ${key.last_tested_at ? `Tested ${fmtDate(key.last_tested_at)}` : "Not tested yet"}</small>
+        <span class="key-preview">${htmlEscape(key.key_preview)} <span class="muted">(${htmlEscape(keyMeta)})</span></span>
+        <small>${htmlEscape(key.default_model || "No default model")} | ${htmlEscape(testedLabel)}</small>
         ${key.last_error ? `<small class="error-text">${htmlEscape(key.last_error)}</small>` : ""}
       </div>
       <div class="row-actions">
@@ -5133,7 +6547,12 @@ async function testSavedAiKey(keyId) {
     method: "POST",
     body: JSON.stringify({ key_id: keyId }),
   });
-  await loadApiKeys();
+  if (data.api_key) {
+    state.apiKeys = state.apiKeys.map((key) => String(key.id) === String(keyId) ? { ...key, ...data.api_key } : key);
+    renderApiKeys();
+  } else {
+    await loadApiKeys();
+  }
   toast(data.test.ok ? "Saved API key test passed." : "Saved API key test failed.");
 }
 
@@ -5515,6 +6934,10 @@ function isEditingCoraTool() {
 }
 
 async function setQueueState(paused, autoResume = false, stopAfterCurrent = false, reason = "") {
+  if (isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const data = await api("/api/jobs/queue", {
     method: "POST",
     body: JSON.stringify({
@@ -5536,6 +6959,10 @@ async function setQueueState(paused, autoResume = false, stopAfterCurrent = fals
 
 async function startManagedJob(event) {
   event.preventDefault();
+  if (isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const keyword = el("job-keyword").value.trim();
   const target = el("job-target").value.trim();
   const coraProfile = el("job-profile").value;
@@ -5592,6 +7019,10 @@ async function selectActiveProfile(profileId) {
 }
 
 async function forceStopCora() {
+  if (isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const confirmed = window.confirm("Force stop the current Cora operation?");
   if (!confirmed) return;
   const result = await api("/api/cora/stop", {
@@ -5604,6 +7035,10 @@ async function forceStopCora() {
 }
 
 async function clearStaleCoraState() {
+  if (isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const result = await api("/api/cora/stop", {
     method: "POST",
     body: JSON.stringify({ reason: "Dashboard clear stale state" }),
@@ -5614,6 +7049,10 @@ async function clearStaleCoraState() {
 }
 
 async function restartCora() {
+  if (isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const confirmed = window.confirm("Restart Cora now? This will stop the current Cora process and relaunch it.");
   if (!confirmed) return;
   await setQueueState(true, false, false, "Dashboard health restart");
@@ -6003,6 +7442,10 @@ async function createShareReport(runId) {
 }
 
 async function importLatest() {
+  if (isCloudRuntime()) {
+    toast(cloudCoraMessage());
+    return;
+  }
   const latest = await api("/api/latest-report");
   const target = window.prompt("Target URL/domain for this Cora run:", "https://www.sandiegopools.com/");
   const keyword = window.prompt("Keyword for this Cora run:", "san diego pools");
@@ -6030,7 +7473,9 @@ function setupTabs() {
 
 async function boot() {
   loadThemePreference();
+  applyRuntimeMode();
   setupTabs();
+  setupMenuGroups();
   el("theme-mode")?.addEventListener("change", (event) => saveThemePreference(event.target.value));
   document.querySelectorAll(".main-tab").forEach((tab) => {
     tab.addEventListener("click", () => showMainView(tab.dataset.view));

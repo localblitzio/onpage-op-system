@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>On Page Optimization System Dashboard</title>
-  <link rel="stylesheet" href="/static/styles.css?v=cloudflare-sync-1">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+  <link rel="stylesheet" href="/static/styles.css?v=beeblitz-2">
 </head>
 <body>
   <header class="topbar">
@@ -21,12 +22,63 @@
 
   <div class="app-shell">
     <aside class="app-sidebar">
+      <div class="sidebar-brand">
+        <strong>⚡ On Page OPS</strong>
+        <span>SEO optimization platform</span>
+      </div>
       <div class="profile-context">
         <label>
           Current Client
           <select id="active-client"></select>
         </label>
       </div>
+      <nav class="main-menu" aria-label="Main menu">
+        <div class="menu-group" data-group="clients">
+          <button class="menu-group-toggle" type="button" aria-expanded="false">Clients</button>
+          <div class="menu-group-items">
+            <button class="main-tab active" type="button" data-view="clients-view">Client Dashboard</button>
+            <button class="main-tab" type="button" data-view="new-client-view">New Client</button>
+          </div>
+        </div>
+        <div class="menu-group" data-group="cora">
+          <button class="menu-group-toggle" type="button" aria-expanded="false">Cora</button>
+          <div class="menu-group-items">
+            <button class="main-tab" type="button" data-view="cora-view">Run Cora</button>
+            <button class="main-tab" type="button" data-view="cora-profiles-view">Cora Profiles</button>
+            <button class="main-tab" type="button" data-view="reports-view">Cora Reports</button>
+          </div>
+        </div>
+        <div class="menu-group" data-group="entity">
+          <button class="menu-group-toggle" type="button" aria-expanded="false">Entity Explorer</button>
+          <div class="menu-group-items">
+            <button class="main-tab" type="button" data-view="entity-view">Entity &amp; LSI Explorer</button>
+            <button class="main-tab" type="button" data-view="entity-crossover-view">Entity Crossover</button>
+            <button class="main-tab" type="button" data-view="entity-sets-view">Entity Sets</button>
+          </div>
+        </div>
+        <div class="menu-group" data-group="ranking">
+          <button class="menu-group-toggle" type="button" aria-expanded="false">Ranking</button>
+          <div class="menu-group-items">
+            <button class="main-tab" type="button" data-view="ranking-snapshot-view">Ranking Snapshot</button>
+            <button class="main-tab" type="button" data-view="ranking-targets-view">Saved Targets</button>
+          </div>
+        </div>
+        <div class="menu-group" data-group="content">
+          <button class="menu-group-toggle" type="button" aria-expanded="false">Content</button>
+          <div class="menu-group-items">
+            <button class="main-tab" type="button" data-view="planner-view">Content Planner</button>
+            <button class="main-tab" type="button" data-view="nlp-categorizer-view">NLP Categorizer</button>
+          </div>
+        </div>
+        <div class="menu-group" data-group="system">
+          <button class="menu-group-toggle" type="button" aria-expanded="false">System</button>
+          <div class="menu-group-items">
+            <button class="main-tab" type="button" data-view="overview-view">Overview</button>
+            <button class="main-tab" type="button" data-view="cloud-sync-view">Cloud Sync</button>
+            <button class="main-tab" type="button" data-view="api-keys-view">Settings</button>
+          </div>
+        </div>
+      </nav>
       <div class="theme-context">
         <label>
           Theme
@@ -37,33 +89,6 @@
           </select>
         </label>
       </div>
-      <nav class="main-menu" aria-label="Main menu">
-        <div class="menu-section-label">Clients</div>
-        <button class="main-tab active" type="button" data-view="clients-view">Client Dashboard</button>
-        <button class="main-tab submenu-tab" type="button" data-view="new-client-view">New Client</button>
-
-        <div class="menu-section-label">Cora</div>
-        <button class="main-tab" type="button" data-view="cora-view">Run Cora</button>
-        <button class="main-tab submenu-tab" type="button" data-view="cora-profiles-view">Cora Profiles</button>
-        <button class="main-tab submenu-tab" type="button" data-view="reports-view">Cora Reports</button>
-
-        <div class="menu-section-label">Entity Explorer</div>
-        <button class="main-tab" type="button" data-view="entity-view">Entity &amp; LSI Explorer</button>
-        <button class="main-tab submenu-tab" type="button" data-view="entity-crossover-view">Entity Crossover</button>
-        <button class="main-tab submenu-tab" type="button" data-view="entity-sets-view">Entity Sets</button>
-
-        <div class="menu-section-label">Ranking</div>
-        <button class="main-tab" type="button" data-view="ranking-snapshot-view">Ranking Snapshot</button>
-        <button class="main-tab submenu-tab" type="button" data-view="ranking-targets-view">Saved Targets</button>
-
-        <div class="menu-section-label">Planning</div>
-        <button class="main-tab" type="button" data-view="planner-view">Content Planner</button>
-
-        <div class="menu-section-label">System</div>
-        <button class="main-tab" type="button" data-view="overview-view">Overview</button>
-        <button class="main-tab" type="button" data-view="cloud-sync-view">Cloud Sync</button>
-        <button class="main-tab" type="button" data-view="api-keys-view">Settings</button>
-      </nav>
     </aside>
     <div class="app-content">
 
@@ -432,12 +457,18 @@
     </section>
   </main>
 
+  <main id="nlp-categorizer-view" class="settings-view app-view hidden">
+    <section class="settings-panel tool-page nlp-categorizer-shell">
+      <div id="nlp-categorizer-content"></div>
+    </section>
+  </main>
+
   <main id="api-keys-view" class="settings-view app-view hidden">
     <section class="settings-panel">
       <div class="detail-head">
         <div>
           <h2>API Providers</h2>
-          <p>Store and test API credentials for OpenAI, Anthropic, Google, xAI / Grok, Perplexity, and DataForSEO.</p>
+          <p>Store and test API credentials for OpenAI, Anthropic, Google Gemini, Google NLP, xAI / Grok, Perplexity, and DataForSEO.</p>
         </div>
       </div>
 
@@ -449,6 +480,6 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/static/app.js?v=hardening-1"></script>
+  <script src="/static/app.js?v=beeblitz-2"></script>
 </body>
 </html>
